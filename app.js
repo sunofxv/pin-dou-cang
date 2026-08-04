@@ -2756,12 +2756,14 @@
     el.innerHTML = `<div class="flex flex-wrap gap-x-3 gap-y-4">
       ${bom.map(x => {
         const lack = Math.max(0, x.qty - x.stock);
+        const light = patternLuminance(x.hex) > 150;
         return `<div class="flex flex-col items-center text-center cursor-default"
                   style="width:62px"
                   title="${escapeHtml(x.colorNumber)} ${escapeHtml(x.colorName)} · 需 ${x.qty} / 现有 ${x.stock} / ${lack ? '缺 ' + lack : '充足'}">
-          <div class="text-[11px] font-semibold text-mk-ink leading-none tracking-wide">${escapeHtml(x.colorNumber)}</div>
-          <div class="w-full rounded-xl shadow-soft mt-1 relative ${lack ? 'ring-2 ring-rose-500' : ''}"
-               style="height:38px; background:${x.hex}"></div>
+          <div class="w-full rounded-xl shadow-soft flex items-center justify-center ${lack ? 'ring-2 ring-rose-500' : ''}"
+               style="height:44px; background:${x.hex}">
+            <span class="text-[11px] font-bold ${light ? 'text-gray-900' : 'text-white'}">${escapeHtml(x.colorNumber)}</span>
+          </div>
           <div class="text-base font-extrabold text-mk-ink mt-1 leading-none">${x.qty}</div>
         </div>`;
       }).join('')}
@@ -2839,10 +2841,10 @@
     const H_grid = pRows * cp;
     const bom = patternBOM();
     const total = bom.reduce((s, x) => s + x.qty, 0);
-    // 用料清单区布局（色号 ↑ / 色卡色块 / 数量 ↓，与用户截图样式一致）
-    const capW = 62, capH = 38, gap = 12;                 // 色块
-    const labelH = 14, numH = 20, blockGap = 4;            // 上方色号、下方数量、间距
-    const cellH = labelH + blockGap + capH + blockGap + numH;   // 每颗 cell 总高
+    // 用料清单区布局（色号印在框内 / 色卡色块 / 数量在框下）
+    const capW = 62, capH = 44, gap = 12;                 // 色块（内含色号）
+    const numH = 22, blockGap = 4;                         // 色块下方数量
+    const cellH = capH + blockGap + numH;                  // 每颗 cell 总高（色块 + 间隔 + 数量）
     const perRow = Math.max(1, Math.floor((W - 16 + gap) / (capW + gap)));
     const rowsCount = Math.ceil(bom.length / perRow);
     const listPadTop = 18, titleH = 24, sumH = 36, listGap = 12;
@@ -2901,21 +2903,21 @@
         const col = i % perRow, row = Math.floor(i / perRow);
         const x0 = 8 + col * (capW + gap);
         const y0 = y + row * (cellH + gap);
-        // 上：色号
-        ctx.fillStyle = '#3a2a1f';
-        ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-        ctx.font = '600 11px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
-        ctx.fillText(x.colorNumber, x0 + capW / 2, y0 + labelH);
-        // 中：色卡色块（圆角）
+        // 色卡色块（圆角），色号印在框内
         ctx.fillStyle = x.hex;
-        rr(x0, y0 + labelH + blockGap, capW, capH, 8); ctx.fill();
+        rr(x0, y0, capW, capH, 8); ctx.fill();
         const lack = Math.max(0, x.qty - x.stock);
-        if (lack) { ctx.strokeStyle = '#f43f5e'; ctx.lineWidth = 2; rr(x0 + 1, y0 + labelH + blockGap + 1, capW - 2, capH - 2, 7); ctx.stroke(); }
-        // 下：数量
+        if (lack) { ctx.strokeStyle = '#f43f5e'; ctx.lineWidth = 2; rr(x0 + 1, y0 + 1, capW - 2, capH - 2, 7); ctx.stroke(); }
+        const light = patternLuminance(x.hex) > 150;
+        ctx.fillStyle = light ? '#1a1a1a' : '#ffffff';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.font = 'bold 14px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+        ctx.fillText(x.colorNumber, x0 + capW / 2, y0 + capH / 2);
+        // 色块下方：数量
         ctx.fillStyle = '#1f1f1f';
         ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
         ctx.font = 'bold 18px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
-        ctx.fillText(String(x.qty), x0 + capW / 2, y0 + labelH + blockGap + capH + blockGap + numH);
+        ctx.fillText(String(x.qty), x0 + capW / 2, y0 + capH + blockGap + numH - 4);
       });
       const sy = y + rowsCount * (cellH + gap) + 6;
       ctx.textAlign = 'left';
