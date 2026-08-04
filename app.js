@@ -671,6 +671,7 @@
     { key: 'warehouse', label: '豆子仓库' },
     { key: 'recognize', label: '图纸识别' },
     { key: 'recipes',   label: '配方库' },
+    { key: 'pattern',   label: '图纸生成器' },
     { key: 'logs',      label: '操作记录' },
     { key: 'settings',  label: '设置' }
   ];
@@ -690,6 +691,7 @@
     if (key === 'warehouse')  renderWarehouse(v);
     if (key === 'recognize')  renderRecognize(v);
     if (key === 'recipes')    renderRecipes(v);
+    if (key === 'pattern')    renderPattern(v);
     if (key === 'logs')       renderLogs(v);
     if (key === 'settings')   renderSettings(v);
   }
@@ -2122,20 +2124,26 @@
     $$('.rc-del').forEach(b => b.onclick = () => {
       if (confirm('删除该配方？')) { state.recipes = state.recipes.filter(r => r.id !== b.dataset.id); save(); renderRecipes(v); }
     });
+    $$('.rc-edit').forEach(b => b.onclick = () => editPatternFromRecipe(b.dataset.id));
   }
   function recipeCard(rc) {
     const total = rc.items.reduce((s, i) => s + i.qty, 0);
+    const gridBadge = rc.grid ? `<span class="text-[11px] px-2 py-0.5 rounded-full bg-mk-mint/60 text-mk-ink whitespace-nowrap">📐 ${rc.grid.cols}×${rc.grid.rows} 图纸</span>` : '';
     return `<div class="mk-card rounded-2xl shadow-soft p-4">
-      <div class="flex items-center justify-between">
-        <div class="font-bold">${escapeHtml(rc.name)}</div>
-        <div class="text-xs text-mk-sub">${fmtTime(rc.createdAt)}</div>
+      <div class="flex items-center justify-between gap-2">
+        <div class="font-bold truncate">${escapeHtml(rc.name)}</div>
+        <div class="flex items-center gap-1.5 shrink-0">
+          ${gridBadge}
+          <span class="text-xs text-mk-sub">${fmtTime(rc.createdAt)}</span>
+        </div>
       </div>
       <div class="flex flex-wrap gap-1.5 mt-2">
         ${rc.items.slice(0, 12).map(i => `<span class="w-5 h-5 rounded-full swatch inline-block" style="background:${i.hex}" title="${i.colorNumber} ${i.colorName} ×${i.qty}"></span>`).join('')}
         ${rc.items.length > 12 ? `<span class="text-xs text-mk-sub self-center">+${rc.items.length - 12}</span>` : ''}
       </div>
       <div class="text-sm text-mk-sub mt-2">${rc.items.length} 种颜色 · 约 ${total} 颗豆</div>
-      <div class="flex gap-2 mt-3">
+      <div class="flex flex-wrap gap-2 mt-3">
+        ${rc.grid ? `<button class="rc-edit text-xs px-3 py-1.5 rounded-xl bg-mk-lemon text-mk-ink font-semibold" data-id="${rc.id}">✏️ 编辑图纸</button>` : ''}
         <button class="rc-view text-xs px-3 py-1.5 rounded-xl bg-mk-sky text-mk-ink font-semibold" data-id="${rc.id}">预览/预扣</button>
         <button class="rc-del text-xs px-3 py-1.5 rounded-xl bg-rose-50 text-rose-400" data-id="${rc.id}">删除</button>
       </div>
@@ -2412,6 +2420,619 @@
       } catch (err) { toast('恢复失败：文件格式错误', 'error'); }
     };
     reader.readAsText(file);
+  }
+
+  /* ===================== 17.5 拼豆图纸生成器 ===================== */
+  // 模块级状态：画布尺寸 / 格子 / 当前工具与颜色 / 模式 / 已上传参考图
+  let pCols = 20, pRows = 20;
+  let pCells = null;          // pRows×pCols 二维数组，元素为 colorNumber 字符串或 null（空白）
+  let pTool = 'pen';          // pen 画笔 | eraser 橡皮 | fill 填充 | picker 取色
+  let pColor = null;          // 当前选中 colorNumber
+  let pMode = 'blank';        // blank 空白画布 | image 图片转图纸
+  let pImage = null;          // 已上传参考图 Image 对象
+  let pShowNumbers = true;    // 画布与导出 PNG 上是否在格子上印色号
+  let pImgAspect = null;      // 已上传参考图的宽高比（naturalWidth / naturalHeight），用于锁定纵横比
+  let pAspectLock = true;     // 设置列/行时是否锁定纵横比（空白 1:1、图片按原图比例）
+  let pDrawing = false;
+  let pInited = false;
+
+  function initPatternCells(cols, rows) {
+    pCells = Array.from({ length: rows }, () => new Array(cols).fill(null));
+  }
+  function ensurePatternCells() {
+    if (!pCells || pCells.length !== pRows || (pCells[0] && pCells[0].length !== pCols)) initPatternCells(pCols, pRows);
+  }
+  // 仅匹配用户仓库里已有的色卡（保证“只能选用自己拥有的色卡”）
+  function nearestOwnedColor(r, g, b) {
+    let best = null, bestD = Infinity;
+    for (const bead of state.beads) {
+      const [br, bg, bb] = hexToRgb(bead.hex);
+      const d = colorDist(r, g, b, br, bg, bb);
+      if (d < bestD) { bestD = d; best = bead; }
+    }
+    return best ? best.colorNumber : null;
+  }
+
+  function renderPattern(v) {
+    ensurePatternCells();
+    if (!pColor && state.beads.length) pColor = state.beads[0].colorNumber;
+    pDrawing = false;
+    const toolBtns = [
+      ['pen', '🖌️ 画笔'], ['eraser', '🧽 橡皮'], ['fill', '🪣 填充'], ['picker', '💉 取色']
+    ].map(([t, l]) =>
+      `<button class="ptool px-3 py-1.5 rounded-xl text-sm font-semibold ${pTool === t ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub'}" data-tool="${t}">${l}</button>`
+    ).join('');
+
+    v.innerHTML = `
+      <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <h2 class="text-xl font-bold">🎨 拼豆图纸生成器</h2>
+        <span class="text-sm text-mk-sub">绘图 → 用料统计 → 消耗库存，一条龙</span>
+      </div>
+
+      <div class="flex gap-2 mb-4 flex-wrap">
+        <button class="pmode-btn px-3 py-1.5 rounded-xl text-sm font-semibold ${pMode === 'blank' ? 'bg-mk-rose text-white shadow-soft' : 'bg-white/70 text-mk-sub'}" data-mode="blank">① 空白画布自由绘制</button>
+        <button class="pmode-btn px-3 py-1.5 rounded-xl text-sm font-semibold ${pMode === 'image' ? 'bg-mk-rose text-white shadow-soft' : 'bg-white/70 text-mk-sub'}" data-mode="image">② 图片转拼豆图纸</button>
+      </div>
+
+      <div class="grid lg:grid-cols-[300px_1fr] gap-4 items-start">
+        <!-- 左：控制 + 色板 -->
+        <div class="space-y-4">
+          <!-- 空白画布控制 -->
+          <section class="mk-card rounded-2xl shadow-soft p-4 ${pMode === 'blank' ? '' : 'hidden'}">
+            <h3 class="font-bold mb-3">📐 画布尺寸</h3>
+            <div class="flex items-end gap-2">
+              <label class="text-sm flex-1">列（宽）<input id="p-cols" type="number" min="2" max="150" value="${pCols}" class="w-full mt-1 px-2 py-1.5 rounded-xl bg-white/70 border border-mk-sand"></label>
+              <label class="text-sm flex-1">行（高）<input id="p-rows" type="number" min="2" max="150" value="${pRows}" class="w-full mt-1 px-2 py-1.5 rounded-xl bg-white/70 border border-mk-sand"></label>
+            </div>
+            <label class="flex items-center gap-2 text-xs mt-2 text-mk-sub select-none">
+              <input id="p-aspect-blank" type="checkbox" ${pAspectLock ? 'checked' : ''} class="accent-mk-rose"> 🔒 锁定纵横比（1:1，改一项另一项自动同步）
+            </label>
+            <button id="p-new" class="w-full mt-3 px-3 py-2 rounded-xl bg-mk-sky text-mk-ink text-sm font-semibold">🆕 新建画布</button>
+            <h3 class="font-bold mb-2 mt-4">🛠️ 工具</h3>
+            <div class="flex flex-wrap gap-2">${toolBtns}</div>
+            <button id="p-clear" class="w-full mt-3 px-3 py-2 rounded-xl bg-rose-50 text-rose-400 text-sm font-semibold">🗑️ 清空画布</button>
+          </section>
+
+          <!-- 图片转图纸控制 -->
+          <section class="mk-card rounded-2xl shadow-soft p-4 ${pMode === 'image' ? '' : 'hidden'}">
+            <h3 class="font-bold mb-3">🖼️ 上传参考图</h3>
+            <div id="p-drop" class="border-2 border-dashed border-mk-sand rounded-xl p-4 text-center text-sm text-mk-sub cursor-pointer hover:bg-white/50">
+              点击或拖拽图片到此处<br>（PNG / JPG）
+              <input id="p-file" type="file" accept="image/*" class="hidden">
+            </div>
+            ${pImage ? `<img id="p-img-preview" src="${pImage.src}" class="mt-3 w-full rounded-xl border border-mk-sand">` : `<img id="p-img-preview" class="hidden mt-3 w-full rounded-xl border border-mk-sand">`}
+            <h3 class="font-bold mb-2 mt-4">🎯 目标网格</h3>
+            <div class="flex items-end gap-2">
+              <label class="text-sm flex-1">列（宽）<input id="p-icols" type="number" min="2" max="150" value="${pCols}" class="w-full mt-1 px-2 py-1.5 rounded-xl bg-white/70 border border-mk-sand"></label>
+              <label class="text-sm flex-1">行（高）<input id="p-irows" type="number" min="2" max="150" value="${pRows}" class="w-full mt-1 px-2 py-1.5 rounded-xl bg-white/70 border border-mk-sand"></label>
+            </div>
+            <label class="flex items-center gap-2 text-xs mt-2 text-mk-sub select-none">
+              <input id="p-aspect-image" type="checkbox" ${pAspectLock ? 'checked' : ''} class="accent-mk-rose"> 🔒 锁定纵横比${pImgAspect ? `（原图 ${pImgAspect.toFixed(2)}:1，改一项另一项自动按比例）` : '（上传图后按原图比例，先传图更准）'}
+            </label>
+            <button id="p-generate" class="w-full mt-3 px-3 py-2 rounded-xl bg-mk-rose text-white text-sm font-semibold shadow-soft">✨ 生成拼豆图纸</button>
+            <p class="text-[11px] text-mk-sub mt-2">生成后自动按色值匹配你仓库里已有的色卡并填入画布，可继续手动微调。</p>
+          </section>
+
+          <!-- 色板（仅拥有色卡） -->
+          <section class="mk-card rounded-2xl shadow-soft p-4">
+            <h3 class="font-bold mb-1">🎨 色板（仅你拥有的色卡）</h3>
+            <p class="text-[11px] text-mk-sub mb-2">点击选色，再在画布上涂色。</p>
+            <input id="p-search" type="text" placeholder="搜索色号 / 名称" class="w-full px-3 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-sm mb-2">
+            <div id="p-current" class="text-sm mb-2"></div>
+            <div id="p-swatches" class="grid grid-cols-8 gap-1.5 max-h-64 overflow-auto pr-1"></div>
+          </section>
+        </div>
+
+        <!-- 右：画布 + 用料清单 -->
+        <div class="space-y-4">
+          <section class="mk-card rounded-2xl shadow-soft p-4">
+            <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+              <h3 class="font-bold">🧩 画布（${pCols} × ${pRows}）</h3>
+              <div class="flex items-center gap-2 flex-wrap">
+                <button id="p-numbers" class="text-xs px-2.5 py-1 rounded-lg ${pShowNumbers ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub border border-mk-sand'}" title="切换格子上是否显示色号">🔢 显示色号</button>
+                <span class="text-xs text-mk-sub">${pMode === 'blank' ? '画笔/橡皮可拖动涂色，填充/取色单击' : '生成的图纸可继续微调'}</span>
+              </div>
+            </div>
+            <div class="overflow-auto bg-mk-cream rounded-xl p-2 flex justify-center">
+              <canvas id="p-canvas" class="rounded-md" style="image-rendering:pixelated;touch-action:none;"></canvas>
+            </div>
+          </section>
+
+          <section class="mk-card rounded-2xl shadow-soft p-4">
+            <div class="flex items-center justify-between mb-2">
+              <h3 class="font-bold">📋 用料清单</h3>
+              <span id="p-total" class="text-sm text-mk-sub"></span>
+            </div>
+            <div id="p-bom"></div>
+            <label class="text-sm block mt-3">图纸名称
+              <input id="p-name" type="text" placeholder="留空则自动命名" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand">
+            </label>
+            <div class="flex flex-wrap gap-2 mt-3">
+              <button id="p-png" class="px-3 py-2 rounded-xl bg-mk-mint text-mk-ink text-sm font-semibold">🖼️ 导出 PNG 预览图</button>
+              <button id="p-csv" class="px-3 py-2 rounded-xl bg-mk-sky text-mk-ink text-sm font-semibold">📄 导出用料 CSV</button>
+              <button id="p-copy" class="px-3 py-2 rounded-xl bg-mk-lav text-mk-ink text-sm font-semibold">📋 复制文本</button>
+              <button id="p-save" class="px-3 py-2 rounded-xl bg-mk-lemon text-mk-ink text-sm font-semibold">💾 保存到配方库</button>
+              <button id="p-consume" class="px-3 py-2 rounded-xl bg-mk-rose text-white text-sm font-semibold shadow-soft">✅ 进入确认面板 · 扣减库存</button>
+            </div>
+          </section>
+        </div>
+      </div>`;
+
+    // 模式切换
+    $$('.pmode-btn').forEach(b => b.onclick = () => { pMode = b.dataset.mode; renderPattern(v); });
+    // 锁定纵横比 checkbox
+    const lockBlank = $('#p-aspect-blank');
+    const lockImage = $('#p-aspect-image');
+    if (lockBlank) lockBlank.onchange = () => { pAspectLock = lockBlank.checked; };
+    if (lockImage) lockImage.onchange = () => { pAspectLock = lockImage.checked; };
+    // 纵横比联动：改 cols 同步改 rows，反之亦然
+    const bindLock = (colsEl, rowsEl, mode) => {
+      if (!colsEl || !rowsEl) return;
+      const sync = (srcKey) => {
+        if (!pAspectLock) return;
+        const cv = parseInt(colsEl.value, 10);
+        const rv = parseInt(rowsEl.value, 10);
+        if (!isFinite(cv) || !isFinite(rv)) return;
+        const clamp = (v) => Math.min(150, Math.max(2, v));
+        if (srcKey === 'cols') {
+          let newRows;
+          if (mode === 'image' && pImgAspect) newRows = Math.round(cv / pImgAspect);
+          else                                newRows = cv;                  // 空白模式 1:1
+          rowsEl.value = clamp(newRows);
+        } else {
+          let newCols;
+          if (mode === 'image' && pImgAspect) newCols = Math.round(rv * pImgAspect);
+          else                                newCols = rv;
+          colsEl.value = clamp(newCols);
+        }
+      };
+      colsEl.addEventListener('input', () => sync('cols'));
+      rowsEl.addEventListener('input', () => sync('rows'));
+    };
+    bindLock($('#p-cols'),  $('#p-rows'),  'blank');
+    bindLock($('#p-icols'), $('#p-irows'), 'image');
+    // 工具切换
+    $$('.ptool').forEach(b => b.onclick = () => {
+      pTool = b.dataset.tool;
+      $$('.ptool').forEach(x => x.classList.remove('bg-mk-rose', 'text-white'));
+      b.classList.add('bg-mk-rose', 'text-white');
+    });
+    // 新建画布
+    $('#p-new').onclick = () => {
+      let c = parseInt($('#p-cols').value, 10) || 20, r = parseInt($('#p-rows').value, 10) || 20;
+      c = Math.min(150, Math.max(2, c)); r = Math.min(150, Math.max(2, r));
+      pCols = c; pRows = r; initPatternCells(c, r);
+      renderPattern(v);
+    };
+    $('#p-clear').onclick = () => {
+      if (confirm('清空整个画布？')) { initPatternCells(pCols, pRows); patternRenderCanvas(); patternRenderBOM(); }
+    };
+    // 图片上传（点击 + 拖拽）
+    const fileInput = $('#p-file');
+    if (fileInput) fileInput.onchange = e => { if (e.target.files[0]) patternLoadImage(e.target.files[0]); };
+    const dz = $('#p-drop');
+    if (dz) {
+      dz.onclick = () => fileInput && fileInput.click();
+      dz.ondragover = e => { e.preventDefault(); dz.classList.add('ring-2', 'ring-mk-rose'); };
+      dz.ondragleave = () => dz.classList.remove('ring-2', 'ring-mk-rose');
+      dz.ondrop = e => {
+        e.preventDefault(); dz.classList.remove('ring-2', 'ring-mk-rose');
+        if (e.dataTransfer.files[0]) patternLoadImage(e.dataTransfer.files[0]);
+      };
+    }
+    $('#p-generate').onclick = () => {
+      if (!pImage) return toast('请先上传参考图', 'warn');
+      let c = parseInt($('#p-icols').value, 10) || 30, r = parseInt($('#p-irows').value, 10) || 30;
+      c = Math.min(150, Math.max(2, c)); r = Math.min(150, Math.max(2, r));
+      pCols = c; pRows = r;
+      patternGenerateFromImage();
+      renderPattern(v);
+    };
+    // 色板搜索
+    $('#p-search').oninput = patternRenderPalette;
+    // 色号显隐
+    $('#p-numbers').onclick = () => { pShowNumbers = !pShowNumbers; renderPattern(v); };
+    // 导出 / 保存 / 确认
+    $('#p-png').onclick = patternExportPNG;
+    $('#p-csv').onclick = patternExportCSV;
+    $('#p-copy').onclick = patternCopyText;
+    $('#p-save').onclick = patternSaveRecipe;
+    $('#p-consume').onclick = patternConsume;
+
+    patternRenderCanvas();
+    patternRenderPalette();
+    patternRenderCurrentColor();
+    patternRenderBOM();
+    patternAttachCanvas();
+  }
+
+  function patternCellPx() {
+    const maxDim = Math.max(pCols, pRows, 1);
+    // 80×80 给 18px 仍能勉强显示色号；20×20 给 40px 大格子方便编辑
+    return Math.max(18, Math.min(40, Math.floor(800 / maxDim)));
+  }
+  // 按色值亮度决定文字颜色（深底用白字，浅底用深字）
+  function patternLuminance(hex) {
+    const [r, g, b] = hexToRgb(hex || '#ffffff');
+    return 0.299 * r + 0.587 * g + 0.114 * b;
+  }
+  function patternRenderCanvas() {
+    const cv = $('#p-canvas'); if (!cv) return;
+    const cp = patternCellPx();
+    cv.width = pCols * cp; cv.height = pRows * cp;
+    cv.style.maxWidth = '100%';
+    const ctx = cv.getContext('2d');
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (let r = 0; r < pRows; r++) {
+      for (let c = 0; c < pCols; c++) {
+        const num = pCells[r][c];
+        const bead = num ? beadByNumber(num) : null;
+        const hex = bead ? bead.hex : null;
+        ctx.fillStyle = hex || '#FFFDF9';
+        ctx.fillRect(c * cp, r * cp, cp, cp);
+        if (pShowNumbers && num && hex) {
+          ctx.fillStyle = patternLuminance(hex) > 150 ? '#3a2a1f' : '#ffffff';
+          // 字号随色号长度自动缩放，保证 4 位色号（如 H221）在小格子里也完整显示
+          const fs = Math.max(7, Math.min(Math.floor(cp * 0.52), Math.floor(cp * 1.6 / num.length)));
+          ctx.font = `bold ${fs}px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif`;
+          ctx.fillText(num, c * cp + cp / 2, r * cp + cp / 2 + 0.5);
+        }
+      }
+    }
+    // 细网格线
+    ctx.strokeStyle = 'rgba(150,120,100,0.22)';
+    ctx.lineWidth = 1;
+    for (let c = 0; c <= pCols; c++) { ctx.beginPath(); ctx.moveTo(c * cp + 0.5, 0); ctx.lineTo(c * cp + 0.5, cv.height); ctx.stroke(); }
+    for (let r = 0; r <= pRows; r++) { ctx.beginPath(); ctx.moveTo(0, r * cp + 0.5); ctx.lineTo(cv.width, r * cp + 0.5); ctx.stroke(); }
+    // 每 10 格画一条粗线方便数数
+    ctx.strokeStyle = 'rgba(60,40,30,0.55)';
+    ctx.lineWidth = 1.5;
+    for (let c = 0; c <= pCols; c += 10) { ctx.beginPath(); ctx.moveTo(c * cp + 0.5, 0); ctx.lineTo(c * cp + 0.5, cv.height); ctx.stroke(); }
+    for (let r = 0; r <= pRows; r += 10) { ctx.beginPath(); ctx.moveTo(0, r * cp + 0.5); ctx.lineTo(cv.width, r * cp + 0.5); ctx.stroke(); }
+  }
+  function patternAttachCanvas() {
+    const cv = $('#p-canvas'); if (!cv) return;
+    if (!pInited) { document.addEventListener('mouseup', () => { pDrawing = false; }); pInited = true; }
+    const getCell = (e) => {
+      const rect = cv.getBoundingClientRect();
+      const x = (e.clientX - rect.left) * (cv.width / rect.width);
+      const y = (e.clientY - rect.top) * (cv.height / rect.height);
+      const cp = patternCellPx();
+      const c = Math.floor(x / cp), r = Math.floor(y / cp);
+      if (r < 0 || c < 0 || r >= pRows || c >= pCols) return null;
+      return { r, c };
+    };
+    const apply = (cell) => {
+      if (!cell) return;
+      const { r, c } = cell;
+      if (pTool === 'pen') pCells[r][c] = pColor;
+      else if (pTool === 'eraser') pCells[r][c] = null;
+      else if (pTool === 'fill') patternFloodFill(r, c, pColor);
+      else if (pTool === 'picker') {
+        const n = pCells[r][c];
+        if (n) { pColor = n; patternRenderPalette(); patternRenderCurrentColor(); }
+      }
+      patternRenderCanvas(); patternRenderBOM();
+    };
+    cv.onmousedown = (e) => { pDrawing = true; apply(getCell(e)); };
+    cv.onmousemove = (e) => { if (pDrawing && (pTool === 'pen' || pTool === 'eraser')) apply(getCell(e)); };
+    cv.ontouchstart = (e) => { e.preventDefault(); pDrawing = true; apply(getCell(e.touches[0])); };
+    cv.ontouchmove = (e) => { e.preventDefault(); if (pDrawing && (pTool === 'pen' || pTool === 'eraser')) apply(getCell(e.touches[0])); };
+    cv.ontouchend = () => { pDrawing = false; };
+  }
+  function patternFloodFill(r, c, newColor) {
+    const target = pCells[r][c];
+    if (target === newColor) return;
+    const stack = [[r, c]];
+    while (stack.length) {
+      const [cr, cc] = stack.pop();
+      if (cr < 0 || cc < 0 || cr >= pRows || cc >= pCols) continue;
+      if (pCells[cr][cc] !== target) continue;
+      pCells[cr][cc] = newColor;
+      stack.push([cr + 1, cc], [cr - 1, cc], [cr, cc + 1], [cr, cc - 1]);
+    }
+  }
+  function patternBOM() {
+    const counts = {};
+    for (let r = 0; r < pRows; r++) for (let c = 0; c < pCols; c++) {
+      const n = pCells[r][c]; if (n) counts[n] = (counts[n] || 0) + 1;
+    }
+    return Object.keys(counts).map(num => {
+      const bead = beadByNumber(num);
+      return { colorNumber: num, colorName: bead ? bead.colorName : '', hex: bead ? bead.hex : '#ccc', qty: counts[num], stock: bead ? bead.stock : 0 };
+    }).sort((a, b) => b.qty - a.qty);
+  }
+  // 胶囊样式色卡统计：色号标在胶囊上方，数量标在胶囊下方，胶囊只显本色（一眼看清，文字不挤）
+  function patternRenderBOM() {
+    const el = $('#p-bom'); if (!el) return;
+    const bom = patternBOM();
+    const total = bom.reduce((s, x) => s + x.qty, 0);
+    const totEl = $('#p-total'); if (totEl) totEl.textContent = `共 ${bom.length} 色 · ${total} 颗`;
+    if (!bom.length) {
+      el.innerHTML = '<p class="text-sm text-mk-sub">还没有涂色——先用左侧色板选色，在画布上点击/拖动涂色，或上传图片生成图纸。</p>';
+      return;
+    }
+    el.innerHTML = `<div class="flex flex-wrap gap-x-3 gap-y-4">
+      ${bom.map(x => {
+        const lack = Math.max(0, x.qty - x.stock);
+        return `<div class="flex flex-col items-center text-center cursor-default"
+                  style="width:62px"
+                  title="${escapeHtml(x.colorNumber)} ${escapeHtml(x.colorName)} · 需 ${x.qty} / 现有 ${x.stock} / ${lack ? '缺 ' + lack : '充足'}">
+          <div class="text-[11px] font-semibold text-mk-ink leading-none tracking-wide">${escapeHtml(x.colorNumber)}</div>
+          <div class="w-full rounded-xl shadow-soft mt-1 relative ${lack ? 'ring-2 ring-rose-500' : ''}"
+               style="height:38px; background:${x.hex}"></div>
+          <div class="text-base font-extrabold text-mk-ink mt-1 leading-none">${x.qty}</div>
+        </div>`;
+      }).join('')}
+    </div>
+    <p class="text-sm text-mk-sub mt-3">所需豆子数量：<b class="text-mk-ink font-bold">${total}</b></p>
+    <p class="text-sm text-mk-sub">图纸尺寸：<b class="text-mk-ink font-bold">${pCols} × ${pRows}</b>（共 ${pCols * pRows} 格 · 已用 ${total} 格）</p>`;
+  }
+  function patternRenderPalette() {
+    const wrap = $('#p-swatches'); if (!wrap) return;
+    const q = ($('#p-search').value || '').trim().toLowerCase();
+    const beads = state.beads.filter(b => !q || b.colorNumber.toLowerCase().includes(q) || (b.colorName || '').toLowerCase().includes(q));
+    wrap.innerHTML = beads.map(b =>
+      `<button class="pw-swatch h-7 rounded-md ${b.colorNumber === pColor ? 'ring-2 ring-mk-rose ring-offset-1' : ''}" title="${b.colorNumber} ${escapeHtml(b.colorName)}（库存 ${b.stock}）" data-num="${b.colorNumber}" style="background:${b.hex}"></button>`
+    ).join('');
+    $$('#p-swatches .pw-swatch').forEach(btn => btn.onclick = () => {
+      pColor = btn.dataset.num; patternRenderPalette(); patternRenderCurrentColor();
+    });
+  }
+  function patternRenderCurrentColor() {
+    const el = $('#p-current'); if (!el) return;
+    const bead = pColor ? beadByNumber(pColor) : null;
+    el.innerHTML = `<span class="w-7 h-7 rounded-lg swatch inline-block align-middle mr-2" style="background:${bead ? bead.hex : '#fff'}"></span>${bead ? (bead.colorNumber + ' ' + escapeHtml(bead.colorName)) : '未选择（请点色板选色）'}`;
+  }
+  function patternLoadImage(file) {
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const img = new Image();
+      img.onload = () => {
+        pImage = img;
+        // 记录原图纵横比，供"目标网格 锁定纵横比"使用
+        if (img.naturalWidth && img.naturalHeight) {
+          pImgAspect = img.naturalWidth / img.naturalHeight;
+        }
+        const pr = $('#p-img-preview');
+        if (pr) { pr.src = img.src; pr.classList.remove('hidden'); }
+        // 同步刷新图片模式 checkbox 提示文案（强制 re-render 让 pImgAspect 后的文案显示出来）
+        toast('图片已加载' + (pImgAspect ? `（原图 ${img.naturalWidth}×${img.naturalHeight}，比例 ${pImgAspect.toFixed(2)}:1）` : '') + '，设置网格后点「生成拼豆图纸」', 'success');
+      };
+      img.onerror = () => toast('图片加载失败', 'error');
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
+  // 像素网格降色：2× 过采样保清晰，直接匹配仓库色卡（不去背景）
+  function patternGenerateFromImage() {
+    if (!pImage) return;
+    const S = 2;                                          // 2× 过采样：每个 cell 取 2×2 像素均值，细节更锐
+    const OW = pCols * S, OH = pRows * S;
+    const off = document.createElement('canvas'); off.width = OW; off.height = OH;
+    const octx = off.getContext('2d');
+    octx.imageSmoothingEnabled = true;
+    octx.imageSmoothingQuality = 'high';
+    octx.drawImage(pImage, 0, 0, OW, OH);
+    const data = octx.getImageData(0, 0, OW, OH).data;
+
+    const cells = [];
+    for (let r = 0; r < pRows; r++) {
+      const row = [];
+      for (let c = 0; c < pCols; c++) {
+        let sr = 0, sg = 0, sb = 0, n = 0;
+        for (let yy = 0; yy < S; yy++) for (let xx = 0; xx < S; xx++) {
+          const px = ((r * S + yy) * OW + (c * S + xx)) * 4;
+          sr += data[px]; sg += data[px + 1]; sb += data[px + 2]; n++;
+        }
+        sr /= n; sg /= n; sb /= n;
+        row.push(nearestOwnedColor(sr, sg, sb));
+      }
+      cells.push(row);
+    }
+    pCells = cells;
+  }
+  function patternExportPNG() {
+    const cp = pShowNumbers ? 30 : 20;     // 启用色号时格子大一些，文字才清楚
+    const W = pCols * cp;
+    const H_grid = pRows * cp;
+    const bom = patternBOM();
+    const total = bom.reduce((s, x) => s + x.qty, 0);
+    // 用料清单区布局（色号 ↑ / 色卡色块 / 数量 ↓，与用户截图样式一致）
+    const capW = 62, capH = 38, gap = 12;                 // 色块
+    const labelH = 14, numH = 20, blockGap = 4;            // 上方色号、下方数量、间距
+    const cellH = labelH + blockGap + capH + blockGap + numH;   // 每颗 cell 总高
+    const perRow = Math.max(1, Math.floor((W - 16 + gap) / (capW + gap)));
+    const rowsCount = Math.ceil(bom.length / perRow);
+    const listPadTop = 18, titleH = 24, sumH = 36, listGap = 12;
+    const listH = bom.length ? (titleH + rowsCount * (cellH + gap) + listGap + sumH) : 0;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H_grid + (bom.length ? listPadTop + listH : 0) + 16;
+    const ctx = cv.getContext('2d');
+    // 白底
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    // 填色 + 色号
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (let r = 0; r < pRows; r++) for (let c = 0; c < pCols; c++) {
+      const num = pCells[r][c];
+      const bead = num ? beadByNumber(num) : null;
+      const hex = bead ? bead.hex : '#ffffff';
+      ctx.fillStyle = hex;
+      ctx.fillRect(c * cp, r * cp, cp, cp);
+      if (pShowNumbers && num) {
+        ctx.fillStyle = patternLuminance(hex) > 150 ? '#2a1f18' : '#ffffff';
+        // 字号随色号长度自动缩放，保证 4 位色号在小格子里也完整显示
+        const fs = Math.max(9, Math.min(Math.floor(cp * 0.52), Math.floor(cp * 1.6 / num.length)));
+        ctx.font = `bold ${fs}px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif`;
+        ctx.fillText(num, c * cp + cp / 2, r * cp + cp / 2 + 0.5);
+      }
+    }
+    // 细网格线（仅网格区内，不穿透清单）
+    ctx.strokeStyle = 'rgba(0,0,0,0.22)';
+    ctx.lineWidth = 1;
+    for (let c = 0; c <= pCols; c++) { ctx.beginPath(); ctx.moveTo(c * cp + 0.5, 0); ctx.lineTo(c * cp + 0.5, H_grid); ctx.stroke(); }
+    for (let r = 0; r <= pRows; r++) { ctx.beginPath(); ctx.moveTo(0, r * cp + 0.5); ctx.lineTo(W, r * cp + 0.5); ctx.stroke(); }
+    // 每 10 格加粗辅助线，方便按区块数数
+    ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+    ctx.lineWidth = 1.6;
+    for (let c = 0; c <= pCols; c += 10) { ctx.beginPath(); ctx.moveTo(c * cp + 0.5, 0); ctx.lineTo(c * cp + 0.5, H_grid); ctx.stroke(); }
+    for (let r = 0; r <= pRows; r += 10) { ctx.beginPath(); ctx.moveTo(0, r * cp + 0.5); ctx.lineTo(W, r * cp + 0.5); ctx.stroke(); }
+    // ===== 用料清单（拼到图纸底部，生成的图纸自带清单） =====
+    if (bom.length) {
+      const rr = (x, y, w, h, r) => {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
+      };
+      let y = H_grid + listPadTop;
+      ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+      ctx.fillStyle = '#3a2a1f';
+      ctx.font = 'bold 16px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.fillText('用料清单（共 ' + bom.length + ' 色 · ' + total + ' 颗）', 8, y + 14);
+      y += titleH;
+      bom.forEach((x, i) => {
+        const col = i % perRow, row = Math.floor(i / perRow);
+        const x0 = 8 + col * (capW + gap);
+        const y0 = y + row * (cellH + gap);
+        // 上：色号
+        ctx.fillStyle = '#3a2a1f';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+        ctx.font = '600 11px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+        ctx.fillText(x.colorNumber, x0 + capW / 2, y0 + labelH);
+        // 中：色卡色块（圆角）
+        ctx.fillStyle = x.hex;
+        rr(x0, y0 + labelH + blockGap, capW, capH, 8); ctx.fill();
+        const lack = Math.max(0, x.qty - x.stock);
+        if (lack) { ctx.strokeStyle = '#f43f5e'; ctx.lineWidth = 2; rr(x0 + 1, y0 + labelH + blockGap + 1, capW - 2, capH - 2, 7); ctx.stroke(); }
+        // 下：数量
+        ctx.fillStyle = '#1f1f1f';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+        ctx.font = 'bold 18px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+        ctx.fillText(String(x.qty), x0 + capW / 2, y0 + labelH + blockGap + capH + blockGap + numH);
+      });
+      const sy = y + rowsCount * (cellH + gap) + 6;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#555';
+      ctx.font = '13px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.fillText('所需豆子数量：' + total, 8, sy + 14);
+      ctx.fillText('图纸尺寸：' + pCols + ' × ' + pRows + '（共 ' + (pCols * pRows) + ' 格 · 已用 ' + total + ' 格）', 8, sy + 32);
+    }
+    const a = document.createElement('a');
+    a.href = cv.toDataURL('image/png');
+    a.download = `拼豆图纸_${pCols}x${pRows}_${Date.now()}.png`;
+    a.click();
+    toast('已导出 PNG（含用料清单）', 'success');
+  }
+  function patternExportCSV() {
+    const bom = patternBOM();
+    if (!bom.length) return toast('还没有用料数据', 'warn');
+    const rows = bom.map(x => ({ 色号: x.colorNumber, 颜色名称: x.colorName, 色值: x.hex, 数量: x.qty, 现有库存: x.stock }));
+    downloadCsv(rows, `拼豆用料清单_${pCols}x${pRows}.csv`);
+    toast('已导出 CSV', 'success');
+  }
+  function patternCopyText() {
+    const bom = patternBOM();
+    if (!bom.length) return toast('还没有用料数据', 'warn');
+    const total = bom.reduce((s, x) => s + x.qty, 0);
+    const lines = ['拼豆图纸用料清单 (' + pCols + '×' + pRows + ')', '共 ' + bom.length + ' 色，' + total + ' 颗豆', ''];
+    bom.forEach(x => lines.push(x.colorNumber + ' ' + x.colorName + '  × ' + x.qty + '  (HEX ' + x.hex + ')'));
+    const text = lines.join('\n');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => toast('已复制文本', 'success'), () => copyTextFallback(text));
+    } else copyTextFallback(text);
+  }
+  function copyTextFallback(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); toast('已复制文本', 'success'); }
+    catch (e) { toast('复制失败，请手动复制', 'error'); }
+    ta.remove();
+  }
+  function patternSaveRecipe() {
+    const bom = patternBOM();
+    if (!bom.length) return toast('画布为空，无法保存', 'warn');
+    const name = ($('#p-name').value || '').trim() || ('拼豆图纸 ' + fmtTime(Date.now()));
+    state.recipes.unshift({
+      id: uid('rc'), name, createdAt: Date.now(),
+      items: bom.map(x => ({ colorNumber: x.colorNumber, colorName: x.colorName, hex: x.hex, qty: x.qty })),
+      grid: { cols: pCols, rows: pRows, cells: pCells.map(row => row.slice()) },
+      source: 'pattern'
+    });
+    save();
+    toast('已保存到配方库，可随时回来编辑', 'success');
+  }
+  function patternConsume() {
+    const bom = patternBOM();
+    if (!bom.length) return toast('画布为空', 'warn');
+    const items = bom.map(x => ({ colorNumber: x.colorNumber, colorName: x.colorName, hex: x.hex, qty: x.qty }));
+    openConsumeConfirm('图纸用料确认 · 扣减库存', items, '图纸生成');
+  }
+  // 通用“识别确认面板”：预扣预览 + 存为配方 + 确认扣减库存
+  function openConsumeConfirm(title, items, sourceLabel) {
+    const need = {};
+    items.forEach(i => { need[i.colorNumber] = (need[i.colorNumber] || 0) + i.qty; });
+    const rows = Object.keys(need).map(num => {
+      const bead = beadByNumber(num);
+      const req = need[num], have = bead ? bead.stock : 0, lack = Math.max(0, req - have);
+      return `<tr class="border-t border-mk-sand/50">
+        <td class="px-3 py-2"><span class="w-5 h-5 rounded-full swatch inline-block align-middle mr-1" style="background:${bead ? bead.hex : '#ccc'}"></span>${num} ${bead ? escapeHtml(bead.colorName) : '<span class="text-rose-400">库存无此色</span>'}</td>
+        <td class="px-3 py-2 text-right">${req}</td>
+        <td class="px-3 py-2 text-right">${have}</td>
+        <td class="px-3 py-2 text-right font-bold ${lack ? 'text-rose-500' : 'text-emerald-600'}">${lack ? ('缺 ' + lack) : '充足'}</td>
+      </tr>`;
+    }).join('');
+    const body = `
+      <p class="text-sm text-mk-sub mb-2">确认后将从库存对应色号扣除以下用量（来源：${escapeHtml(sourceLabel || '图纸生成')}）。红色为库存不足，仍可扣减（库存会降到 0）。</p>
+      <div class="overflow-x-auto"><table class="w-full text-sm">
+        <thead class="bg-mk-sand/40 text-mk-sub"><tr>
+          <th class="px-3 py-2 text-left">色号</th><th class="px-3 py-2 text-right">需要</th><th class="px-3 py-2 text-right">现有</th><th class="px-3 py-2 text-right">差额</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>`;
+    openModal(title, body, { wide: true });
+    setModalFoot(`
+      <button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">取消</button>
+      <button id="cc-recipe" class="px-4 py-2 rounded-xl bg-mk-lav text-mk-ink font-semibold">存为配方</button>
+      <button id="cc-confirm" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold shadow-soft">确认扣减库存</button>`);
+    $('#cc-recipe').onclick = () => {
+      const name = '图纸配方 ' + fmtTime(Date.now());
+      state.recipes.unshift({
+        id: uid('rc'), name, createdAt: Date.now(),
+        items: items.map(i => ({ colorNumber: i.colorNumber, colorName: i.colorName, hex: i.hex, qty: i.qty })),
+        source: 'consume'
+      });
+      save(); closeModal(); switchView('recipes'); toast('已存为配方', 'success');
+    };
+    $('#cc-confirm').onclick = () => {
+      let ok = 0, skip = 0;
+      items.forEach(i => {
+        const bead = beadByNumber(i.colorNumber);
+        if (!bead) { skip++; return; }
+        bead.stock = Math.max(0, bead.stock - i.qty);
+        addLog('图纸消耗', bead, -i.qty, sourceLabel || '图纸生成');
+        ok++;
+      });
+      save(); closeModal(); switchView('dashboard');
+      toast(`已扣减 ${ok} 种颜色${skip ? `，跳过 ${skip} 种未匹配` : ''}`, 'success');
+    };
+  }
+  // 从配方库载入图纸到编辑器（再次编辑 / 复用）
+  function editPatternFromRecipe(id) {
+    const rc = state.recipes.find(r => r.id === id);
+    if (!rc || !rc.grid) return toast('该配方不含图纸网格', 'warn');
+    pCols = rc.grid.cols; pRows = rc.grid.rows;
+    pCells = rc.grid.cells.map(row => row.slice());
+    pMode = 'blank'; pColor = null; pImage = null;
+    switchView('pattern');
+    toast('已载入图纸到编辑器', 'success');
   }
 
   /* ===================== 18. 启动 ===================== */
