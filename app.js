@@ -2435,6 +2435,8 @@
   let pAspectLock = true;     // 设置列/行时是否锁定纵横比（空白 1:1、图片按原图比例）
   let pDrawing = false;
   let pInited = false;
+  let pHighlight = null;      // 当前在图纸上高亮的色号（点击用料清单项触发，再次点击取消）
+  let pName = '';             // 图纸名称，用作导出文件名；保存到配方库时一并写入
 
   function initPatternCells(cols, rows) {
     pCells = Array.from({ length: rows }, () => new Array(cols).fill(null));
@@ -2543,9 +2545,17 @@
               <h3 class="font-bold">📋 用料清单</h3>
               <span id="p-total" class="text-sm text-mk-sub"></span>
             </div>
+            <div class="flex items-center gap-2 flex-wrap mb-2">
+              <label class="text-xs text-mk-sub flex items-center gap-1">合并阈值
+                <input id="p-merge-th" type="number" min="1" max="200" value="40" class="w-14 px-1.5 py-1 rounded-lg bg-white/70 border border-mk-sand">
+              </label>
+              <button id="p-merge" class="text-xs px-2.5 py-1.5 rounded-lg bg-mk-lav text-mk-ink font-semibold">🧬 合并相近色</button>
+              <button id="p-hl-off" class="text-xs px-2.5 py-1.5 rounded-lg bg-white/70 border border-mk-sand text-mk-sub ${pHighlight ? '' : 'hidden'}">✕ 取消高亮</button>
+            </div>
+            <p id="p-hl-tip" class="text-[11px] text-mk-sub mb-2 ${pHighlight ? '' : 'hidden'}">🔍 正在高亮：<b>${pHighlight || ''}</b>（点图纸或此按钮取消）</p>
             <div id="p-bom"></div>
-            <label class="text-sm block mt-3">图纸名称
-              <input id="p-name" type="text" placeholder="留空则自动命名" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand">
+            <label class="text-sm block mt-3">图纸名称（用于导出文件名）
+              <input id="p-name" type="text" placeholder="留空则自动命名" value="${escapeHtml(pName)}" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand">
             </label>
             <div class="flex flex-wrap gap-2 mt-3">
               <button id="p-png" class="px-3 py-2 rounded-xl bg-mk-mint text-mk-ink text-sm font-semibold">🖼️ 导出 PNG 预览图</button>
@@ -2601,11 +2611,11 @@
     $('#p-new').onclick = () => {
       let c = parseInt($('#p-cols').value, 10) || 20, r = parseInt($('#p-rows').value, 10) || 20;
       c = Math.min(150, Math.max(2, c)); r = Math.min(150, Math.max(2, r));
-      pCols = c; pRows = r; initPatternCells(c, r);
+      pCols = c; pRows = r; initPatternCells(c, r); pHighlight = null;
       renderPattern(v);
     };
     $('#p-clear').onclick = () => {
-      if (confirm('清空整个画布？')) { initPatternCells(pCols, pRows); patternRenderCanvas(); patternRenderBOM(); }
+      if (confirm('清空整个画布？')) { initPatternCells(pCols, pRows); pHighlight = null; patternRenderCanvas(); patternRenderBOM(); }
     };
     // 图片上传（点击 + 拖拽）
     const fileInput = $('#p-file');
@@ -2624,7 +2634,7 @@
       if (!pImage) return toast('请先上传参考图', 'warn');
       let c = parseInt($('#p-icols').value, 10) || 30, r = parseInt($('#p-irows').value, 10) || 30;
       c = Math.min(150, Math.max(2, c)); r = Math.min(150, Math.max(2, r));
-      pCols = c; pRows = r;
+      pCols = c; pRows = r; pHighlight = null;
       patternGenerateFromImage();
       renderPattern(v);
     };
@@ -2638,6 +2648,20 @@
     $('#p-copy').onclick = patternCopyText;
     $('#p-save').onclick = patternSaveRecipe;
     $('#p-consume').onclick = patternConsume;
+    // 图纸名称（导出文件名）
+    $('#p-name').oninput = () => { pName = $('#p-name').value; };
+    // 合并相近色（按 RGB 距离阈值）
+    $('#p-merge').onclick = () => {
+      const th = Math.max(1, Math.min(200, parseInt($('#p-merge-th').value, 10) || 40));
+      patternMergeSimilar(th);
+    };
+    // 取消高亮
+    $('#p-hl-off').onclick = () => {
+      pHighlight = null; patternRenderBOM(); patternRenderCanvas();
+      const off = $('#p-hl-off'), tip = $('#p-hl-tip');
+      if (off) off.classList.add('hidden');
+      if (tip) tip.classList.add('hidden');
+    };
 
     patternRenderCanvas();
     patternRenderPalette();
@@ -2671,6 +2695,8 @@
         const hex = bead ? bead.hex : null;
         ctx.fillStyle = hex || '#FFFDF9';
         ctx.fillRect(c * cp, r * cp, cp, cp);
+        // 高亮模式下，把非目标色淡出，突出当前选中的色号
+        if (pHighlight && num && num !== pHighlight) { ctx.fillStyle = 'rgba(248,246,242,0.55)'; ctx.fillRect(c * cp, r * cp, cp, cp); }
         if (pShowNumbers && num && hex) {
           ctx.fillStyle = patternLuminance(hex) > 150 ? '#3a2a1f' : '#ffffff';
           // 字号随色号长度自动缩放，保证 4 位色号（如 H221）在小格子里也完整显示
@@ -2690,6 +2716,19 @@
     ctx.lineWidth = 1.5;
     for (let c = 0; c <= pCols; c += 10) { ctx.beginPath(); ctx.moveTo(c * cp + 0.5, 0); ctx.lineTo(c * cp + 0.5, cv.height); ctx.stroke(); }
     for (let r = 0; r <= pRows; r += 10) { ctx.beginPath(); ctx.moveTo(0, r * cp + 0.5); ctx.lineTo(cv.width, r * cp + 0.5); ctx.stroke(); }
+    // 高亮：给当前选中色号的格子描粗边（按底色明暗选黑/白描边，保证可见）
+    if (pHighlight) {
+      const lw = Math.max(2, cp * 0.16);
+      for (let r = 0; r < pRows; r++) for (let c = 0; c < pCols; c++) {
+        const num = pCells[r][c];
+        if (num === pHighlight) {
+          const hx = (beadByNumber(num) || {}).hex || '#fff';
+          ctx.strokeStyle = patternLuminance(hx) > 140 ? '#111' : '#fff';
+          ctx.lineWidth = lw;
+          ctx.strokeRect(c * cp + lw / 2, r * cp + lw / 2, cp - lw, cp - lw);
+        }
+      }
+    }
   }
   function patternAttachCanvas() {
     const cv = $('#p-canvas'); if (!cv) return;
@@ -2744,6 +2783,65 @@
     }).sort((a, b) => b.qty - a.qty);
   }
   // 胶囊样式色卡统计：色号标在胶囊上方，数量标在胶囊下方，胶囊只显本色（一眼看清，文字不挤）
+  // 文件名安全化：去掉非法字符、连空格转下划线、限长
+  function patternSafeName(s) {
+    return (s || '').trim().replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_').slice(0, 60) || '拼豆图纸';
+  }
+  // 把图纸中某色号全部替换为另一个色号（可并入已存在的色）
+  function patternReplaceColor(oldNum, newNum) {
+    if (!oldNum || !newNum || oldNum === newNum) return;
+    for (let r = 0; r < pRows; r++) for (let c = 0; c < pCols; c++) {
+      if (pCells[r][c] === oldNum) pCells[r][c] = newNum;
+    }
+    if (pHighlight === oldNum) pHighlight = newNum;
+  }
+  // 相近色号合并：按 RGB 距离阈值，把较少用的相近色并入较多用的相近色
+  function patternMergeSimilar(threshold) {
+    const used = patternBOM();
+    if (used.length < 2) return toast('颜色太少，无需合并', 'warn');
+    const byNum = {}; used.forEach(x => byNum[x.colorNumber] = x);
+    const order = used.slice().sort((a, b) => b.qty - a.qty).map(x => x.colorNumber); // 数量多者优先当锚点
+    const removed = new Set();
+    let merged = 0;
+    for (const anchor of order) {
+      if (removed.has(anchor)) continue;
+      let best = null, bestD = Infinity;
+      for (const other of order) {
+        if (other === anchor || removed.has(other)) continue;
+        const [ar, ag, ab] = hexToRgb(byNum[anchor].hex);
+        const [or, og, ob] = hexToRgb(byNum[other].hex);
+        const d = colorDist(ar, ag, ab, or, og, ob);
+        if (d < bestD) { bestD = d; best = other; }
+      }
+      if (best && bestD <= threshold) {
+        patternReplaceColor(best, anchor);
+        removed.add(best);
+        merged++;
+      }
+    }
+    patternRenderBOM(); patternRenderCanvas();
+    if (merged) toast(`已合并 ${merged} 组相近色`, 'success');
+    else toast(`阈值 ${threshold} 内没有可合并的相近色`, 'warn');
+  }
+  // 替换色号弹窗：从你拥有的色卡里选目标色
+  function openReplaceModal(oldNum) {
+    const opts = state.beads.filter(b => b.colorNumber !== oldNum)
+      .map(b => `<option value="${escapeHtml(b.colorNumber)}">${escapeHtml(b.colorNumber)} ${escapeHtml(b.colorName || '')}</option>`).join('');
+    const body = `<p class="text-sm text-mk-sub mb-2">将图纸中所有 <b class="text-mk-ink">${escapeHtml(oldNum)}</b> 替换为：</p>
+      <select id="p-repl-sel" class="w-full px-3 py-2 rounded-xl bg-white/70 border border-mk-sand">${opts}</select>`;
+    openModal('替换色号', body, {});
+    setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="closeModal()">取消</button>
+      <button id="p-repl-ok" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold">确认替换</button>`);
+    const sel = $('#p-repl-sel');
+    $('#p-repl-ok').onclick = () => {
+      const newNum = sel ? sel.value : null;
+      if (!newNum) return closeModal();
+      patternReplaceColor(oldNum, newNum);
+      closeModal();
+      patternRenderBOM(); patternRenderCanvas();
+      toast(`已将 ${oldNum} → ${newNum}`, 'success');
+    };
+  }
   function patternRenderBOM() {
     const el = $('#p-bom'); if (!el) return;
     const bom = patternBOM();
@@ -2757,12 +2855,14 @@
       ${bom.map(x => {
         const lack = Math.max(0, x.qty - x.stock);
         const light = patternLuminance(x.hex) > 150;
-        return `<div class="flex flex-col items-center text-center cursor-default"
-                  style="width:62px"
-                  title="${escapeHtml(x.colorNumber)} ${escapeHtml(x.colorName)} · 需 ${x.qty} / 现有 ${x.stock} / ${lack ? '缺 ' + lack : '充足'}">
-          <div class="w-full rounded-xl shadow-soft flex items-center justify-center ${lack ? 'ring-2 ring-rose-500' : ''}"
+        const active = pHighlight === x.colorNumber;
+        return `<div class="bom-item flex flex-col items-center text-center cursor-pointer select-none ${active ? 'ring-2 ring-mk-rose rounded-xl p-1 -m-1' : ''}"
+                  data-num="${escapeHtml(x.colorNumber)}"
+                  title="点击：在图纸上高亮此色 · 需 ${x.qty} / 现有 ${x.stock} / ${lack ? '缺 ' + lack : '充足'}">
+          <div class="relative w-full rounded-xl shadow-soft flex items-center justify-center ${lack ? 'ring-2 ring-rose-500' : ''}"
                style="height:44px; background:${x.hex}">
             <span class="text-[11px] font-bold ${light ? 'text-gray-900' : 'text-white'}">${escapeHtml(x.colorNumber)}</span>
+            <button class="bom-replace absolute -top-2 -right-2 text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-white border border-mk-sand text-mk-sub shadow hover:bg-mk-rose hover:text-white" data-num="${escapeHtml(x.colorNumber)}" title="替换为其它色号">⇄</button>
           </div>
           <div class="text-base font-extrabold text-mk-ink mt-1 leading-none">${x.qty}</div>
         </div>`;
@@ -2770,6 +2870,20 @@
     </div>
     <p class="text-sm text-mk-sub mt-3">所需豆子数量：<b class="text-mk-ink font-bold">${total}</b></p>
     <p class="text-sm text-mk-sub">图纸尺寸：<b class="text-mk-ink font-bold">${pCols} × ${pRows}</b>（共 ${pCols * pRows} 格 · 已用 ${total} 格）</p>`;
+    // 整项点击 = 高亮；替换按钮 = 打开替换弹窗（阻止冒泡，避免误触发高亮）
+    $$('#p-bom .bom-item').forEach(it => {
+      it.onclick = () => {
+        const num = it.dataset.num;
+        pHighlight = (pHighlight === num) ? null : num;
+        patternRenderBOM(); patternRenderCanvas();
+        const off = $('#p-hl-off'), tip = $('#p-hl-tip');
+        if (off) off.classList.toggle('hidden', !pHighlight);
+        if (tip) { tip.classList.toggle('hidden', !pHighlight); const b = tip.querySelector('b'); if (b) b.textContent = pHighlight || ''; }
+      };
+    });
+    $$('#p-bom .bom-replace').forEach(b => {
+      b.onclick = (e) => { e.stopPropagation(); openReplaceModal(b.dataset.num); };
+    });
   }
   function patternRenderPalette() {
     const wrap = $('#p-swatches'); if (!wrap) return;
@@ -2836,6 +2950,7 @@
     pCells = cells;
   }
   function patternExportPNG() {
+    const safe = patternSafeName(pName);
     const cp = pShowNumbers ? 30 : 20;     // 启用色号时格子大一些，文字才清楚
     const W = pCols * cp;
     const H_grid = pRows * cp;
@@ -2928,22 +3043,24 @@
     }
     const a = document.createElement('a');
     a.href = cv.toDataURL('image/png');
-    a.download = `拼豆图纸_${pCols}x${pRows}_${Date.now()}.png`;
+    a.download = `${safe}_${pCols}x${pRows}.png`;
     a.click();
     toast('已导出 PNG（含用料清单）', 'success');
   }
   function patternExportCSV() {
+    const safe = patternSafeName(pName);
     const bom = patternBOM();
     if (!bom.length) return toast('还没有用料数据', 'warn');
     const rows = bom.map(x => ({ 色号: x.colorNumber, 颜色名称: x.colorName, 色值: x.hex, 数量: x.qty, 现有库存: x.stock }));
-    downloadCsv(rows, `拼豆用料清单_${pCols}x${pRows}.csv`);
+    downloadCsv(rows, `${safe}_用料清单_${pCols}x${pRows}.csv`);
     toast('已导出 CSV', 'success');
   }
   function patternCopyText() {
     const bom = patternBOM();
     if (!bom.length) return toast('还没有用料数据', 'warn');
     const total = bom.reduce((s, x) => s + x.qty, 0);
-    const lines = ['拼豆图纸用料清单 (' + pCols + '×' + pRows + ')', '共 ' + bom.length + ' 色，' + total + ' 颗豆', ''];
+    const title = (pName || '拼豆图纸').trim() || '拼豆图纸';
+    const lines = [title + ' · 用料清单 (' + pCols + '×' + pRows + ')', '共 ' + bom.length + ' 色，' + total + ' 颗豆', ''];
     bom.forEach(x => lines.push(x.colorNumber + ' ' + x.colorName + '  × ' + x.qty + '  (HEX ' + x.hex + ')'));
     const text = lines.join('\n');
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -2961,7 +3078,8 @@
   function patternSaveRecipe() {
     const bom = patternBOM();
     if (!bom.length) return toast('画布为空，无法保存', 'warn');
-    const name = ($('#p-name').value || '').trim() || ('拼豆图纸 ' + fmtTime(Date.now()));
+    pName = ($('#p-name').value || '').trim();
+    const name = pName || ('拼豆图纸 ' + fmtTime(Date.now()));
     state.recipes.unshift({
       id: uid('rc'), name, createdAt: Date.now(),
       items: bom.map(x => ({ colorNumber: x.colorNumber, colorName: x.colorName, hex: x.hex, qty: x.qty })),
@@ -3032,7 +3150,8 @@
     if (!rc || !rc.grid) return toast('该配方不含图纸网格', 'warn');
     pCols = rc.grid.cols; pRows = rc.grid.rows;
     pCells = rc.grid.cells.map(row => row.slice());
-    pMode = 'blank'; pColor = null; pImage = null;
+    pName = rc.name || '';
+    pMode = 'blank'; pColor = null; pImage = null; pHighlight = null;
     switchView('pattern');
     toast('已载入图纸到编辑器', 'success');
   }
