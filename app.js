@@ -209,21 +209,31 @@
   }
   // 登录 / 注册
   async function doAuth(mode) {
+    if (!supabase) return toast('云端同步未配置', 'error');
     const email = $('#acc-email').value.trim();
     const pass = $('#acc-pass').value;
     if (!email || !pass) return toast('请填写邮箱和密码', 'error');
     if (pass.length < 6) return toast('密码至少 6 位', 'error');
-    const fn = mode === 'signup' ? supabase.auth.signUp : supabase.auth.signInWithPassword;
-    const { data, error } = await fn({ email, password: pass });
-    if (error) return toast((mode === 'signup' ? '注册' : '登录') + '失败：' + error.message, 'error');
-    if (mode === 'signup' && data.user && !data.session) {
-      return toast('注册成功，请查收验证邮件后登录', 'success');
+    try {
+      const { data, error } = mode === 'signup'
+        ? await supabase.auth.signUp({ email, password: pass })
+        : await supabase.auth.signInWithPassword({ email, password: pass });
+      if (error) {
+        console.warn('auth error', error);
+        return toast((mode === 'signup' ? '注册' : '登录') + '失败：' + error.message, 'error');
+      }
+      if (mode === 'signup' && data.user && !data.session) {
+        return toast('注册成功，请查收验证邮件后登录', 'success');
+      }
+      currentUser = (data.session && data.session.user) || data.user || null;
+      if (!currentUser) return toast('登录异常，未获取到用户', 'error');
+      toast('已登录', 'success');
+      await syncPull();
+      renderSettings($('#view'));
+    } catch (e) {
+      console.error('doAuth 异常', e);
+      toast((mode === 'signup' ? '注册' : '登录') + '异常：' + (e && e.message ? e.message : String(e)), 'error');
     }
-    currentUser = (data.session && data.session.user) || data.user || null;
-    if (!currentUser) return toast('登录异常，未获取到用户', 'error');
-    toast('已登录', 'success');
-    await syncPull();
-    renderSettings($('#view'));
   }
   async function doLogout() {
     await supabase.auth.signOut();
