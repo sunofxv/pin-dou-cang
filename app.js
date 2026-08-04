@@ -67,19 +67,6 @@
     M11:'深紫棕灰',M12:'浅棕色',M13:'浅棕色',M14:'浅棕',M15:'深绿灰'
   };
 
-  // 示例库存：仅给少量代表性色号预置“演示用”库存/阈值，其余 221 色默认初始库存 1000（阈值 0，纯目录）
-  const SAMPLE_STOCK = {
-    A1:{stock:320,threshold:100,location:'黄橙盒'},  A14:{stock:60,threshold:120,location:'黄橙盒'},
-    B1:{stock:180,threshold:100,location:'绿盒'},    B8:{stock:240,threshold:100,location:'绿盒'},
-    C1:{stock:160,threshold:100,location:'蓝青盒'},  C5:{stock:90,threshold:100,location:'蓝青盒'},
-    D13:{stock:70,threshold:100,location:'紫盒'},
-    E1:{stock:140,threshold:100,location:'粉盒'},    E6:{stock:150,threshold:80,location:'粉盒'},
-    F1:{stock:120,threshold:100,location:'红盒'},    F5:{stock:40,threshold:80,location:'红盒'},
-    G1:{stock:100,threshold:100,location:'棕盒'},    G13:{stock:130,threshold:80,location:'棕盒'},
-    H1:{stock:200,threshold:100,location:'灰白盒'},  H3:{stock:90,threshold:100,location:'灰白盒'}, H7:{stock:110,threshold:80,location:'灰白盒'},
-    M1:{stock:55,threshold:80,location:'莫兰盒'},    M5:{stock:130,threshold:80,location:'莫兰盒'}
-  };
-
   // 根据 HEX 粗略推断颜色家族（用于 A–F 等无官方名系列的快速命名）
   function autoName(hex) {
     const [r, g, b] = hexToRgb(hex);
@@ -108,19 +95,18 @@
   }
 
   function defaultState() {
-    // 以 MARD 221 作为默认仓库分类；内置色卡即默认“RGB→标准色号”对照
-    const beads = MARD_PALETTE.map((p, i) => {
-      const s = SAMPLE_STOCK[p.code];
-      return {
-        id: 'b' + (i + 1),
-        colorNumber: p.code,
-        colorName: MARD_NAMES[p.code] || autoName(p.hex),
-        hex: p.hex,
-        location: s ? s.location : '',
-        stock: s ? s.stock : 1000,
-        threshold: s ? s.threshold : 0
-      };
-    });
+    // 默认仓库 = MARD 221 色卡：每个色号初始库存 1000 颗，无存放位置、阈值 0（0 = 使用全局补货阈值）。
+    // 不预置任何“演示用”低库存数据，首次使用所有色号库存均为 1000。
+    // MARD_PALETTE / MARD_NAMES 同时作为“RGB→标准色号”内部对照，用于图纸识别时做颜色匹配。
+    const beads = MARD_PALETTE.map((p, i) => ({
+      id: 'b' + (i + 1),
+      colorNumber: p.code,
+      colorName: MARD_NAMES[p.code] || autoName(p.hex),
+      hex: p.hex,
+      location: '',
+      stock: 1000,
+      threshold: 0
+    }));
     return {
       beads,
       logs: [],
@@ -135,7 +121,10 @@
         gridCols: 80, gridRows: 80,
         // 单元格高宽比（行距 = 列距 × cellAspect）。MARD 标准图纸默认 0.555 ≈ 该图实测行列距比，
         // 不同图纸若行数不对，可在此微调（一般 0.45~0.7）。
-        cellAspect: 0.555
+        cellAspect: 0.555,
+        // 全局补货阈值：库存低于此值即触发“低库存/需补货”预警（可在设置中调整，默认 100）。
+        // 单个色号在「豆子仓库」里可单独设置覆盖值（阈值填 0 = 使用此全局值）。
+        replenishThreshold: 100
       }
     };
   }
@@ -150,20 +139,10 @@
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return defaultState();
       const parsed = JSON.parse(raw);
-      // 一次性迁移：旧数据里未编辑过的默认色（stock=0 & threshold=0 & location=''）应用新默认 1000
-      if (!parsed._migratedDefaultStock && Array.isArray(parsed.beads)) {
-        parsed.beads = parsed.beads.map(b => {
-          if (b.stock === 0 && b.threshold === 0 && b.location === '') {
-            return { ...b, stock: 1000 };
-          }
-          return b;
-        });
-        parsed._migratedDefaultStock = true;
-        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed)); }
-        catch (e) { console.warn('库存迁移后保存失败', e); }
-      }
-      // 简单兜底，避免旧数据结构缺字段
-      return Object.assign(defaultState(), parsed);
+      // 简单兜底，避免旧数据结构缺字段；settings 需深层补齐（向后兼容旧数据缺失的新增项如 replenishThreshold）
+      const merged = Object.assign(defaultState(), parsed);
+      merged.settings = Object.assign(defaultState().settings, parsed.settings || {});
+      return merged;
     } catch (e) {
       console.warn('读取本地数据失败，使用默认数据', e);
       return defaultState();
@@ -172,6 +151,111 @@
   function save() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
     catch (e) { toast('保存失败：' + e.message, 'error'); }
+    scheduleSync();
+  }
+
+  /* ===================== 2.5 云端同步（Supabase，可选） ===================== */
+  // 若 config.js 未配置（仍为 YOUR-... 占位），supabase 为 null，所有同步逻辑自动跳过，
+  // 应用降级为纯 localStorage，不报错、不影响任何现有功能。
+  let supabase = null;
+  try {
+    if (window.supabase && window.SUPABASE_URL && window.SUPABASE_ANON_KEY &&
+        !/YOUR-/.test(window.SUPABASE_URL) && !/YOUR-/.test(window.SUPABASE_ANON_KEY)) {
+      supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+    }
+  } catch (e) { console.warn('Supabase 初始化失败，降级为 localStorage', e); }
+  let currentUser = null;   // 当前登录用户（supabase.auth.user）
+  let lastSyncAt = null;    // 上次成功同步时间
+  let syncTimer = null;     // 防抖计时器
+
+  // 上传本地 state 到云端（upsert，按 user_id 唯一）
+  async function syncPush() {
+    if (!supabase || !currentUser) return;
+    const { error } = await supabase
+      .from('user_state')
+      .upsert({ user_id: currentUser.id, data: state, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+    if (error) { console.warn('syncPush 失败', error); toast('云端同步失败：' + error.message, 'error'); }
+    else { lastSyncAt = new Date(); }
+  }
+  // 保存后防抖上传（800ms 内多次保存只上传一次，避免频繁请求）
+  function scheduleSync() {
+    if (!supabase || !currentUser) return;
+    if (syncTimer) clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => { syncPush(); }, 800);
+  }
+  // 从云端拉取并覆盖本地（云端优先；若云端无记录则上传本地）
+  async function syncPull() {
+    if (!supabase || !currentUser) return;
+    const { data, error } = await supabase
+      .from('user_state')
+      .select('data, updated_at')
+      .eq('user_id', currentUser.id)
+      .maybeSingle();
+    if (error) { toast('云端拉取失败：' + error.message, 'error'); return; }
+    if (data && data.data) {
+      const merged = Object.assign(defaultState(), data.data);
+      merged.settings = Object.assign(defaultState().settings, (data.data && data.data.settings) || {});
+      state = merged;
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+      lastSyncAt = data.updated_at ? new Date(data.updated_at) : new Date();
+      toast('已从云端同步', 'success');
+    } else {
+      await syncPush(); // 云端还没有数据，把本地上传上去
+      return;
+    }
+    if (currentView === 'dashboard') renderDashboard($('#view'));
+    else if (currentView === 'warehouse') renderWarehouse($('#view'));
+    else if (currentView === 'settings') renderSettings($('#view'));
+  }
+  // 登录 / 注册
+  async function doAuth(mode) {
+    const email = $('#acc-email').value.trim();
+    const pass = $('#acc-pass').value;
+    if (!email || !pass) return toast('请填写邮箱和密码', 'error');
+    if (pass.length < 6) return toast('密码至少 6 位', 'error');
+    const fn = mode === 'signup' ? supabase.auth.signUp : supabase.auth.signInWithPassword;
+    const { data, error } = await fn({ email, password: pass });
+    if (error) return toast((mode === 'signup' ? '注册' : '登录') + '失败：' + error.message, 'error');
+    if (mode === 'signup' && data.user && !data.session) {
+      return toast('注册成功，请查收验证邮件后登录', 'success');
+    }
+    currentUser = (data.session && data.session.user) || data.user || null;
+    if (!currentUser) return toast('登录异常，未获取到用户', 'error');
+    toast('已登录', 'success');
+    await syncPull();
+    renderSettings($('#view'));
+  }
+  async function doLogout() {
+    await supabase.auth.signOut();
+    currentUser = null;
+    toast('已退出登录（本机数据已保留）', 'success');
+    renderSettings($('#view'));
+  }
+  // 设置页“账户与同步”卡片内容（按登录态渲染）
+  function accountSyncInner() {
+    if (!supabase) {
+      return `<p class="text-xs text-mk-sub">未配置云端同步（config.js 中未填写 Supabase 项目）。当前数据仅保存在本机浏览器（localStorage），换设备或清缓存会丢失。配置 Supabase 后即可跨设备自动同步。</p>`;
+    }
+    if (currentUser) {
+      return `
+        <div class="flex flex-wrap items-center gap-3">
+          <span class="text-sm">已登录：<b>${escapeHtml(currentUser.email || currentUser.id)}</b></span>
+          <span class="text-xs text-mk-sub">${lastSyncAt ? '上次同步：' + lastSyncAt.toLocaleString() : '尚未同步'}</span>
+          <button id="sync-now" class="px-3 py-1.5 rounded-xl bg-mk-sky text-mk-ink text-sm font-semibold">立即同步</button>
+          <button id="sync-out" class="px-3 py-1.5 rounded-xl bg-rose-100 text-rose-500 text-sm font-semibold">退出登录</button>
+        </div>
+        <p class="text-xs text-mk-sub mt-2">数据已在本地与云端双向同步（每次保存后自动上传，登录/启动时拉取）。换设备登录同一账号即可恢复全部数据。</p>`;
+    }
+    return `
+      <div class="grid sm:grid-cols-2 gap-3 max-w-md">
+        <label class="text-sm">邮箱<input id="acc-email" type="email" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="you@example.com"></label>
+        <label class="text-sm">密码（至少 6 位）<input id="acc-pass" type="password" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="••••••"></label>
+      </div>
+      <div class="flex gap-2 mt-3">
+        <button id="acc-login" class="px-4 py-2 rounded-xl bg-mk-mint text-mk-ink font-semibold">登录</button>
+        <button id="acc-signup" class="px-4 py-2 rounded-xl bg-mk-lav text-mk-ink font-semibold">注册新账号</button>
+      </div>
+      <p class="text-xs text-mk-sub mt-2">登录后数据将自动同步到云端，可跨设备使用。账号仅用于标识你的数据，不与任何人共享。</p>`;
   }
 
   /* ===================== 3. 通用工具函数 ===================== */
@@ -230,7 +314,11 @@
     return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
   function beadByNumber(num) { return state.beads.find(b => b.colorNumber === num); }
-  function isLow(b) { return b.stock < b.threshold; }
+  // 有效补货阈值：单色单独设置且 >0 时优先，否则使用全局默认（设置里的 replenishThreshold）
+  function effThreshold(b) {
+    return (b.threshold && b.threshold > 0) ? b.threshold : (state.settings.replenishThreshold || 0);
+  }
+  function isLow(b) { return b.stock < effThreshold(b); }
 
   /* ===================== 4. 轻提示 Toast ===================== */
   function toast(msg, type = 'info') {
@@ -650,7 +738,7 @@
         <span class="w-5 h-5 rounded-full swatch" style="background:${b.hex}"></span>
         <span class="font-semibold text-sm">${b.colorNumber} ${escapeHtml(b.colorName)}</span>
       </div>
-      <span class="text-sm text-rose-500 font-bold">${b.stock} / 阈值 ${b.threshold}</span>
+      <span class="text-sm text-rose-500 font-bold">${b.stock} / 阈值 ${effThreshold(b)}${(b.threshold && b.threshold > 0) ? '' : ' <span class="text-[10px]">默认</span>'}</span>
     </button>`;
   }
   function logRow(l) {
@@ -686,7 +774,7 @@
               <tr>
                 <th class="px-3 py-2 text-left">色号</th><th class="px-3 py-2 text-left">颜色</th>
                 <th class="px-3 py-2 text-left">色值</th><th class="px-3 py-2 text-left">存放位置</th>
-                <th class="px-3 py-2 text-right">库存</th><th class="px-3 py-2 text-right">阈值</th>
+                <th class="px-3 py-2 text-right">库存</th><th class="px-3 py-2 text-right">补货阈值</th>
                 <th class="px-3 py-2 text-center">状态</th><th class="px-3 py-2 text-center">操作</th>
               </tr>
             </thead>
@@ -720,7 +808,7 @@
       <td class="px-3 py-2"><span class="inline-flex items-center gap-1"><span class="w-4 h-4 rounded-full swatch inline-block" style="background:${b.hex}"></span><span class="text-xs text-mk-sub">${b.hex}</span></span></td>
       <td class="px-3 py-2 text-mk-sub">${escapeHtml(b.location)}</td>
       <td class="px-3 py-2 text-right font-semibold ${low ? 'text-rose-500' : ''}">${b.stock}</td>
-      <td class="px-3 py-2 text-right text-mk-sub">${b.threshold}</td>
+      <td class="px-3 py-2 text-right text-mk-sub">${effThreshold(b)}${(b.threshold && b.threshold > 0) ? '' : ' <span class="text-[10px]">默认</span>'}</td>
       <td class="px-3 py-2 text-center">${low ? '<span class="px-2 py-0.5 rounded-full bg-rose-100 text-rose-600 text-xs font-bold">补货</span>' : '<span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-600 text-xs">正常</span>'}</td>
       <td class="px-3 py-2 text-center whitespace-nowrap">
         <button class="bead-adj text-xs px-2 py-1 rounded-lg bg-mk-mint text-mk-ink font-semibold mr-1" data-id="${b.id}">入库/消耗</button>
@@ -731,16 +819,29 @@
   }
   function openAddBead(id) {
     const b = id ? state.beads.find(x => x.id === id) : null;
+    const stdOpts = MARD_PALETTE.map(p => {
+      const nm = MARD_NAMES[p.code] || autoName(p.hex);
+      return `<option value="${p.code}" data-hex="${p.hex}" data-name="${escapeHtml(nm)}">${p.code} · ${escapeHtml(nm)}</option>`;
+    }).join('');
     const body = `
       <div class="grid grid-cols-2 gap-3">
+        <label class="text-sm col-span-2">从 MARD 221 标准色卡选择（可选）<select id="f-std" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand"><option value="">— 不使用标准色卡，手动填写 —</option>${stdOpts}</select></label>
         <label class="text-sm">色号<input id="f-num" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${b ? b.colorNumber : ''}" placeholder="如 P13"></label>
         <label class="text-sm">颜色名称<input id="f-name" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${b ? b.colorName : ''}" placeholder="如 湖蓝"></label>
         <label class="text-sm">色值(HEX)<input id="f-hex" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${b ? b.hex : '#FFFFFF'}" type="color"></label>
         <label class="text-sm">存放位置<input id="f-loc" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${b ? b.location : ''}" placeholder="如 E盒-2"></label>
         <label class="text-sm">当前库存<input id="f-stock" type="number" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${b ? b.stock : 1000}"></label>
-        <label class="text-sm">最低补货阈值<input id="f-thr" type="number" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${b ? b.threshold : 50}"></label>
+        <label class="text-sm">补货阈值（填 0 = 用全局默认 ${state.settings.replenishThreshold}）<input id="f-thr" type="number" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${b ? b.threshold : 0}"></label>
       </div>`;
     openModal(b ? '编辑豆子' : '新增豆子', body);
+    const fstd = $('#f-std');
+    if (fstd) fstd.onchange = () => {
+      const opt = fstd.options[fstd.selectedIndex];
+      if (!opt.value) return;
+      $('#f-num').value = opt.value;
+      $('#f-name').value = opt.getAttribute('data-name') || '';
+      $('#f-hex').value = opt.getAttribute('data-hex') || '#FFFFFF';
+    };
     setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="(function(){document.getElementById('modal-root').innerHTML=''})()">取消</button>
       <button id="f-save" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold shadow-soft">保存</button>`);
     $('#f-save').onclick = () => {
@@ -2113,6 +2214,15 @@
           <p class="text-xs text-mk-sub">启用后，图纸识别页会出现“使用云端视觉AI”选项，上传后调用 VLM 输出结构化 JSON。</p>
         </section>
 
+        <!-- 补货阈值设置 -->
+        <section class="mk-card rounded-2xl shadow-soft p-5">
+          <h3 class="font-bold mb-3">📦 补货阈值设置</h3>
+          <label class="text-sm block mb-2">全局补货阈值（库存低于此值即预警，默认 100）
+            <input id="replenish-thr" type="number" min="0" step="1" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${state.settings.replenishThreshold}">
+          </label>
+          <p class="text-xs text-mk-sub">该值为所有色号的默认补货阈值；单个色号可在「豆子仓库」编辑时单独设置覆盖值（阈值填 0 即使用此全局值）。首次使用默认每色 1000 颗，均高于阈值，无需补货。</p>
+        </section>
+
         <!-- 数据：导入导出 / 备份恢复 -->
         <section class="mk-card rounded-2xl shadow-soft p-5 lg:col-span-2">
           <h3 class="font-bold mb-3">💾 数据管理</h3>
@@ -2123,19 +2233,38 @@
             <button id="backup" class="px-4 py-2 rounded-xl bg-mk-lemon text-mk-ink font-semibold">备份全部数据</button>
             <button id="restore" class="px-4 py-2 rounded-xl bg-mk-peach text-mk-ink font-semibold">恢复备份</button>
             <input id="restore-file" type="file" accept=".json" class="hidden">
-            <button id="reset" class="px-4 py-2 rounded-xl bg-rose-100 text-rose-500 font-semibold">重置示例数据</button>
+            <button id="reset" class="px-4 py-2 rounded-xl bg-rose-100 text-rose-500 font-semibold">恢复默认数据</button>
           </div>
           <p class="text-xs text-mk-sub mt-3">Excel 导出依赖 SheetJS（联网）；离线时自动改用 CSV。备份为完整 JSON，可用于换设备恢复。</p>
+        </section>
+
+        <!-- 账户与云端同步 -->
+        <section class="mk-card rounded-2xl shadow-soft p-5 lg:col-span-2">
+          <h3 class="font-bold mb-3">☁️ 账户与云端同步</h3>
+          ${accountSyncInner()}
         </section>
       </div>`;
 
     $('#map-add').onclick = openAddMapping;
+
+    const accLogin = $('#acc-login'); if (accLogin) accLogin.onclick = () => doAuth('login');
+    const accSignup = $('#acc-signup'); if (accSignup) accSignup.onclick = () => doAuth('signup');
+    const syncNow = $('#sync-now'); if (syncNow) syncNow.onclick = () => syncPull();
+    const syncOut = $('#sync-out'); if (syncOut) syncOut.onclick = () => doLogout();
     $$('.map-del').forEach(b => b.onclick = () => {
       state.mappings = state.mappings.filter(m => m.id !== b.dataset.id); save(); renderSettings(v); toast('已删除映射', 'success');
     });
     $('#vision-on').onchange = e => { state.settings.enableVision = e.target.checked; save(); };
     $('#vision-key').onchange = e => { state.settings.apiKey = e.target.value; save(); };
     $('#vision-model').onchange = e => { state.settings.model = e.target.value; save(); };
+    $('#replenish-thr').onchange = e => {
+      const val = parseInt(e.target.value, 10);
+      state.settings.replenishThreshold = (isNaN(val) || val < 0) ? 0 : val;
+      save(); renderSettings(v);
+      if (currentView === 'dashboard') renderDashboard($('#view'));
+      else if (currentView === 'warehouse') renderWarehouse($('#view'));
+      toast('补货阈值已更新', 'success');
+    };
 
     $('#exp-xlsx').onclick = exportInventory;
     $('#imp-xlsx').onclick = () => $('#imp-file').click();
@@ -2143,7 +2272,7 @@
     $('#backup').onclick = backupAll;
     $('#restore').onclick = () => $('#restore-file').click();
     $('#restore-file').onchange = e => { if (e.target.files[0]) restoreAll(e.target.files[0]); };
-    $('#reset').onclick = () => { if (confirm('重置将清空当前数据并恢复示例？')) { state = defaultState(); save(); toast('已重置', 'success'); switchView('dashboard'); } };
+    $('#reset').onclick = () => { if (confirm('将恢复为默认 221 色卡（每色 1000 颗），并清空所有日志、配方与自定义映射，且不可恢复。确定？')) { state = defaultState(); save(); toast('已恢复默认数据', 'success'); switchView('dashboard'); } };
   }
 
   function openAddMapping() {
@@ -2242,6 +2371,12 @@
   }
 
   /* ===================== 18. 启动 ===================== */
+  if (supabase) {
+    // 启动时若已有会话（同一浏览器之前登录过），自动恢复登录态并拉取云端数据
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session) { currentUser = data.session.user; syncPull(); }
+    }).catch(() => {});
+  }
   renderNav();
   switchView('dashboard');
 })();
