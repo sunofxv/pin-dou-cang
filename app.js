@@ -264,15 +264,28 @@
         <p class="text-xs text-mk-sub mt-2">数据已在本地与云端双向同步（每次保存后自动上传，登录/启动时拉取）。换设备登录同一账号即可恢复全部数据。</p>`;
     }
     return `
-      <div class="grid sm:grid-cols-2 gap-3 max-w-md">
-        <label class="text-sm">邮箱<input id="${p}-email" type="email" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="you@example.com"></label>
-        <label class="text-sm">密码（至少 6 位）<input id="${p}-pass" type="password" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="••••••"></label>
-      </div>
-      <div class="flex gap-2 mt-3">
-        <button id="${p}-login" class="px-4 py-2 rounded-xl bg-mk-mint text-mk-ink font-semibold">登录</button>
-        <button id="${p}-signup" class="px-4 py-2 rounded-xl bg-mk-lav text-mk-ink font-semibold">注册新账号</button>
-      </div>
-      <p class="text-xs text-mk-sub mt-2">登录后数据将自动同步到云端，可跨设备使用。账号仅用于标识你的数据，不与任何人共享。</p>`;
+      <button id="${p}-toggle" class="inline-flex items-center gap-1 px-4 py-2 rounded-xl bg-mk-lav text-mk-ink font-semibold">登录 / 注册 <span class="${p}-chevron">▾</span></button>
+      <div id="${p}-form" class="hidden mt-3">
+        <div class="grid sm:grid-cols-2 gap-3 max-w-md">
+          <label class="text-sm">邮箱<input id="${p}-email" type="email" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="you@example.com"></label>
+          <label class="text-sm">密码（至少 6 位）<input id="${p}-pass" type="password" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="••••••"></label>
+        </div>
+        <div class="flex gap-2 mt-3">
+          <button id="${p}-login" class="px-4 py-2 rounded-xl bg-mk-mint text-mk-ink font-semibold">登录</button>
+          <button id="${p}-signup" class="px-4 py-2 rounded-xl bg-mk-lav text-mk-ink font-semibold">注册新账号</button>
+        </div>
+        <p class="text-xs text-mk-sub mt-2">登录后数据将自动同步到云端，可跨设备使用。账号仅用于标识你的数据，不与任何人共享。</p>
+      </div>`;
+  }
+  // 折叠按钮：点击展开/收起账户表单（首页 home / 设置页 acc 各一份）
+  function wireAccountToggle(p, root) {
+    const tgl = root.querySelector('#' + p + '-toggle');
+    const frm = root.querySelector('#' + p + '-form');
+    const chv = root.querySelector('.' + p + '-chevron');
+    if (tgl && frm) tgl.onclick = () => {
+      frm.classList.toggle('hidden');
+      if (chv) chv.textContent = frm.classList.contains('hidden') ? '▾' : '▴';
+    };
   }
 
   /* ===================== 3. 通用工具函数 ===================== */
@@ -753,6 +766,7 @@
     const homeSignup = $('#home-signup'); if (homeSignup) homeSignup.onclick = () => doAuth('signup', $('#home-email').value, $('#home-pass').value);
     const homeSyncnow = $('#home-syncnow'); if (homeSyncnow) homeSyncnow.onclick = () => syncPull();
     const homeLogout = $('#home-logout'); if (homeLogout) homeLogout.onclick = () => doLogout();
+    wireAccountToggle('home', v);
   }
   function statCard(label, val, icon, grad, valColor = 'text-mk-ink') {
     return `<div class="mk-card rounded-2xl shadow-soft p-4 bg-gradient-to-br ${grad}">
@@ -2280,6 +2294,7 @@
     const accSignup = $('#acc-signup'); if (accSignup) accSignup.onclick = () => doAuth('signup', $('#acc-email').value, $('#acc-pass').value);
     const syncNow = $('#acc-syncnow'); if (syncNow) syncNow.onclick = () => syncPull();
     const syncOut = $('#acc-logout'); if (syncOut) syncOut.onclick = () => doLogout();
+    wireAccountToggle('acc', v);
     $$('.map-del').forEach(b => b.onclick = () => {
       state.mappings = state.mappings.filter(m => m.id !== b.dataset.id); save(); renderSettings(v); toast('已删除映射', 'success');
     });
