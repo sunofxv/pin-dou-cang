@@ -208,10 +208,10 @@
     else if (currentView === 'settings') renderSettings($('#view'));
   }
   // 登录 / 注册
-  async function doAuth(mode) {
+  async function doAuth(mode, emailVal, passVal) {
     if (!supabase) return toast('云端同步未配置', 'error');
-    const email = $('#acc-email').value.trim();
-    const pass = $('#acc-pass').value;
+    const email = (emailVal || '').trim();
+    const pass = passVal || '';
     if (!email || !pass) return toast('请填写邮箱和密码', 'error');
     if (pass.length < 6) return toast('密码至少 6 位', 'error');
     try {
@@ -233,7 +233,8 @@
       if (!currentUser) return toast('登录异常，未获取到用户', 'error');
       toast('已登录', 'success');
       await syncPull();
-      renderSettings($('#view'));
+      if (currentView === 'dashboard') renderDashboard($('#view'));
+      else renderSettings($('#view'));
     } catch (e) {
       console.error('doAuth 异常', e);
       toast((mode === 'signup' ? '注册' : '登录') + '异常：' + (e && e.message ? e.message : String(e)), 'error');
@@ -243,10 +244,12 @@
     await supabase.auth.signOut();
     currentUser = null;
     toast('已退出登录（本机数据已保留）', 'success');
-    renderSettings($('#view'));
+    if (currentView === 'dashboard') renderDashboard($('#view'));
+    else renderSettings($('#view'));
   }
-  // 设置页“账户与同步”卡片内容（按登录态渲染）
-  function accountSyncInner() {
+  // “账户与同步”卡片内容（按登录态渲染）。prefix 区分设置页(acc)与首页(home)的多个实例，避免 id 冲突。
+  function accountSyncInner(prefix) {
+    const p = prefix || 'acc';
     if (!supabase) {
       return `<p class="text-xs text-mk-sub">未配置云端同步（config.js 中未填写 Supabase 项目）。当前数据仅保存在本机浏览器（localStorage），换设备或清缓存会丢失。配置 Supabase 后即可跨设备自动同步。</p>`;
     }
@@ -255,19 +258,19 @@
         <div class="flex flex-wrap items-center gap-3">
           <span class="text-sm">已登录：<b>${escapeHtml(currentUser.email || currentUser.id)}</b></span>
           <span class="text-xs text-mk-sub">${lastSyncAt ? '上次同步：' + lastSyncAt.toLocaleString() : '尚未同步'}</span>
-          <button id="sync-now" class="px-3 py-1.5 rounded-xl bg-mk-sky text-mk-ink text-sm font-semibold">立即同步</button>
-          <button id="sync-out" class="px-3 py-1.5 rounded-xl bg-rose-100 text-rose-500 text-sm font-semibold">退出登录</button>
+          <button id="${p}-syncnow" class="px-3 py-1.5 rounded-xl bg-mk-sky text-mk-ink text-sm font-semibold">立即同步</button>
+          <button id="${p}-logout" class="px-3 py-1.5 rounded-xl bg-rose-100 text-rose-500 text-sm font-semibold">退出登录</button>
         </div>
         <p class="text-xs text-mk-sub mt-2">数据已在本地与云端双向同步（每次保存后自动上传，登录/启动时拉取）。换设备登录同一账号即可恢复全部数据。</p>`;
     }
     return `
       <div class="grid sm:grid-cols-2 gap-3 max-w-md">
-        <label class="text-sm">邮箱<input id="acc-email" type="email" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="you@example.com"></label>
-        <label class="text-sm">密码（至少 6 位）<input id="acc-pass" type="password" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="••••••"></label>
+        <label class="text-sm">邮箱<input id="${p}-email" type="email" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="you@example.com"></label>
+        <label class="text-sm">密码（至少 6 位）<input id="${p}-pass" type="password" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="••••••"></label>
       </div>
       <div class="flex gap-2 mt-3">
-        <button id="acc-login" class="px-4 py-2 rounded-xl bg-mk-mint text-mk-ink font-semibold">登录</button>
-        <button id="acc-signup" class="px-4 py-2 rounded-xl bg-mk-lav text-mk-ink font-semibold">注册新账号</button>
+        <button id="${p}-login" class="px-4 py-2 rounded-xl bg-mk-mint text-mk-ink font-semibold">登录</button>
+        <button id="${p}-signup" class="px-4 py-2 rounded-xl bg-mk-lav text-mk-ink font-semibold">注册新账号</button>
       </div>
       <p class="text-xs text-mk-sub mt-2">登录后数据将自动同步到云端，可跨设备使用。账号仅用于标识你的数据，不与任何人共享。</p>`;
   }
@@ -685,6 +688,14 @@
     const recent = state.logs.slice(0, 6);
 
     v.innerHTML = `
+      <section class="mk-card rounded-2xl shadow-soft p-5 mb-5 ${currentUser ? '' : 'ring-2 ring-mk-lav'}">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="font-bold">☁️ 账户与云端同步</h3>
+          ${currentUser ? '' : '<span class="text-xs text-mk-sub">登录后即可跨设备同步数据</span>'}
+        </div>
+        ${accountSyncInner('home')}
+      </section>
+
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
         ${statCard('色号种类', state.beads.length, '🌈', 'from-mk-pink to-mk-rose')}
         ${statCard('当前总库存', totalStock, '📦', 'from-mk-sky to-mk-mint')}
@@ -738,6 +749,10 @@
       pendingWarehouseColor = btn.dataset.num;
       switchView('warehouse');
     });
+    const homeLogin = $('#home-login'); if (homeLogin) homeLogin.onclick = () => doAuth('login', $('#home-email').value, $('#home-pass').value);
+    const homeSignup = $('#home-signup'); if (homeSignup) homeSignup.onclick = () => doAuth('signup', $('#home-email').value, $('#home-pass').value);
+    const homeSyncnow = $('#home-syncnow'); if (homeSyncnow) homeSyncnow.onclick = () => syncPull();
+    const homeLogout = $('#home-logout'); if (homeLogout) homeLogout.onclick = () => doLogout();
   }
   function statCard(label, val, icon, grad, valColor = 'text-mk-ink') {
     return `<div class="mk-card rounded-2xl shadow-soft p-4 bg-gradient-to-br ${grad}">
@@ -2255,16 +2270,16 @@
         <!-- 账户与云端同步 -->
         <section class="mk-card rounded-2xl shadow-soft p-5 lg:col-span-2">
           <h3 class="font-bold mb-3">☁️ 账户与云端同步</h3>
-          ${accountSyncInner()}
+          ${accountSyncInner('acc')}
         </section>
       </div>`;
 
     $('#map-add').onclick = openAddMapping;
 
-    const accLogin = $('#acc-login'); if (accLogin) accLogin.onclick = () => doAuth('login');
-    const accSignup = $('#acc-signup'); if (accSignup) accSignup.onclick = () => doAuth('signup');
-    const syncNow = $('#sync-now'); if (syncNow) syncNow.onclick = () => syncPull();
-    const syncOut = $('#sync-out'); if (syncOut) syncOut.onclick = () => doLogout();
+    const accLogin = $('#acc-login'); if (accLogin) accLogin.onclick = () => doAuth('login', $('#acc-email').value, $('#acc-pass').value);
+    const accSignup = $('#acc-signup'); if (accSignup) accSignup.onclick = () => doAuth('signup', $('#acc-email').value, $('#acc-pass').value);
+    const syncNow = $('#acc-syncnow'); if (syncNow) syncNow.onclick = () => syncPull();
+    const syncOut = $('#acc-logout'); if (syncOut) syncOut.onclick = () => doLogout();
     $$('.map-del').forEach(b => b.onclick = () => {
       state.mappings = state.mappings.filter(m => m.id !== b.dataset.id); save(); renderSettings(v); toast('已删除映射', 'success');
     });
