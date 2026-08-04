@@ -216,7 +216,11 @@
     if (pass.length < 6) return toast('密码至少 6 位', 'error');
     try {
       const { data, error } = mode === 'signup'
-        ? await supabase.auth.signUp({ email, password: pass })
+        ? await supabase.auth.signUp({
+            email,
+            password: pass,
+            options: { emailRedirectTo: typeof window !== 'undefined' ? window.location.origin : undefined }
+          })
         : await supabase.auth.signInWithPassword({ email, password: pass });
       if (error) {
         console.warn('auth error', error);
