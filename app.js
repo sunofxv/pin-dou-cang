@@ -3019,50 +3019,80 @@
   //   - 适合源图已经是"带色号文字/网格线的拼豆图纸"（否则平均色会被黑色文字污染，错配到相邻色）
   function patternGenerateFromImage() {
     if (!pImage) return;
-    const S = 8;
-    const OW = pCols * S, OH = pRows * S;
-    const off = document.createElement('canvas'); off.width = OW; off.height = OH;
-    const octx = off.getContext('2d');
-    octx.imageSmoothingEnabled = true;
-    octx.imageSmoothingQuality = 'high';
-    octx.drawImage(pImage, 0, 0, OW, OH);
-    const data = octx.getImageData(0, 0, OW, OH).data;
+    const W = pImage.naturalWidth || pImage.width;
+    const H = pImage.naturalHeight || pImage.height;
+    if (!W || !H) return;
+    // 直接取原图像素 — 不缩放,避免 Canvas 重新采样时把网格线/文字/相邻格颜色混合进每个像素
+    const tmp = document.createElement('canvas');
+    tmp.width = W; tmp.height = H;
+    const tctx = tmp.getContext('2d');
+    tctx.drawImage(pImage, 0, 0);
+    const data = tctx.getImageData(0, 0, W, H).data;
+
+    // 噪点像素判定: 网格线/黑文字 — 保留白/浅色(浅色珠或图外白边距)
+    // 关键: 网格线是深色 (sum<60) 或三通道都深 (<30)
+    //     文字抗锯齿也是灰色: max-min<15 也算
+    //     白色保留 — 浅珠颜色或图外白边距(后者反正也会显示成白底)
+    function isNoise(r, g, b) {
+      if (r + g + b < 60) return true;              // 网格线 (深灰→黑)
+      if (r < 30 && g < 30 && b < 30) return true;  // 任意通道都 ≤30 (深色)
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      return (max - min) < 15;                       // 极低饱和(纯灰文字抗锯齿)
+    }
 
     const cells = [];
     for (let r = 0; r < pRows; r++) {
       const row = [];
       for (let c = 0; c < pCols; c++) {
-        // cell 内做 4-bit RGB 直方图
-        const buckets = new Map(); // key = (qr<<8)|(qg<<4)|qb → {sr,sg,sb,n}
-        const baseY = r * S, baseX = c * S;
-        let totalN = 0;
-        for (let yy = 0; yy < S; yy++) {
-          const rowOff = (baseY + yy) * OW * 4;
-          for (let xx = 0; xx < S; xx++) {
-            const px = rowOff + (baseX + xx) * 4;
+        // 本 cell 在原图里的像素范围 (整除映射,边界不重叠)
+        const x0 = ((c * W) / pCols) | 0;
+        const x1 = (((c + 1) * W) / pCols) | 0;
+        const y0 = ((r * H) / pRows) | 0;
+        const y1 = (((r + 1) * H) / pRows) | 0;
+        if (x1 <= x0 || y1 <= y0) { row.push(null); continue; }
+        // 内缩 25% 避开格子边缘的网格线 + 相邻格颜色渗入
+        const cw = x1 - x0, chh = y1 - y0;
+        const ix0 = (x0 + cw * 0.25) | 0;
+        const ix1 = (x0 + cw * 0.75) | 0;
+        const iy0 = (y0 + chh * 0.25) | 0;
+        const iy1 = (y0 + chh * 0.75) | 0;
+        if (ix1 <= ix0 || iy1 <= iy0) { row.push(null); continue; }
+
+        // 4-bit RGB 直方图 (仅累计去噪后的像素)
+        const buckets = new Map();
+        let sumR = 0, sumG = 0, sumB = 0, sumN = 0;
+        for (let yy = iy0; yy < iy1; yy++) {
+          const rowOff = yy * W * 4;
+          for (let xx = ix0; xx < ix1; xx++) {
+            const px = rowOff + (xx << 2);
             const dr = data[px], dg = data[px + 1], db = data[px + 2];
+            if (isNoise(dr, dg, db)) continue;
             const qr = dr >> 4, qg = dg >> 4, qb = db >> 4;
             const key = (qr << 8) | (qg << 4) | qb;
-            let b = buckets.get(key);
-            if (!b) { b = { sr: 0, sg: 0, sb: 0, n: 0 }; buckets.set(key, b); }
-            b.sr += dr; b.sg += dg; b.sb += db; b.n++; totalN++;
+            let bb = buckets.get(key);
+            if (!bb) { bb = { sr: 0, sg: 0, sb: 0, n: 0 }; buckets.set(key, bb); }
+            bb.sr += dr; bb.sg += dg; bb.sb += db; bb.n++;
+            sumR += dr; sumG += dg; sumB += db; sumN++;
           }
         }
-        // 取最大桶作为"主色"（占绝大多数像素的就是格子色卡，文字/网格线是少数票）
+        // 主流色: 选最大桶的均值 — 不设阈值门槛,任何非空主桶都比混合均值准
         let bestBucket = null, bestN = 0;
-        for (const b of buckets.values()) if (b.n > bestN) { bestN = b.n; bestBucket = b; }
-        // 如果最大桶超过 35% 像素 → 取它的均值（更鲁棒）；否则退回整 cell 均值
-        let sr, sg, sb;
-        if (bestBucket && bestN / totalN >= 0.35) {
+        for (const bb of buckets.values()) if (bb.n > bestN) { bestN = bb.n; bestBucket = bb; }
+        let sr = 0, sg = 0, sb = 0;
+        if (bestBucket && sumN >= 2) {
           sr = bestBucket.sr / bestBucket.n;
           sg = bestBucket.sg / bestBucket.n;
           sb = bestBucket.sb / bestBucket.n;
-        } else {
-          let tr = 0, tg = 0, tb = 0;
-          for (const b of buckets.values()) { tr += b.sr; tg += b.sg; tb += b.sb; }
-          sr = tr / totalN; sg = tg / totalN; sb = tb / totalN;
+        } else if (sumN >= 1) {
+          // 桶不集中但还有非噪点样本 — 用全部非噪点均值 (仍比含文字强)
+          sr = sumR / sumN; sg = sumG / sumN; sb = sumB / sumN;
         }
-        row.push(nearestOwnedColor(sr, sg, sb));
+        // 极端兜底: sr=sg=sb=0 → 全部噪点,跳过 nearestOwnedColor; 行末再处理 null
+        if (sr === 0 && sg === 0 && sb === 0 && sumN === 0) {
+          row.push(null);
+        } else {
+          row.push(nearestOwnedColor(sr, sg, sb));
+        }
       }
       cells.push(row);
     }
