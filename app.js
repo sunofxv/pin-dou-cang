@@ -3037,12 +3037,11 @@
       return (max - min) < 15;                       // 极低饱和(纯灰文字抗锯齿)
     }
 
-    // === 第一遍: 每 cell 采样本地图主色 (用现有内缩 25% + 4-bit 直方图投票) ===
-    const localColors = [];  // [r, c] -> [sr, sg, sb]  (null 表示空 cell)
-    let bestRgb = (cellSr, cellSg, cellSb) => [cellSr, cellSg, cellSb];
     // === 第一遍: 每 cell 采样本地代表 RGB (不直接映射,留作聚类) ===
     const local = [];  // 每 cell: {r, c, rgb: [sr, sg, sb]} 或 null
     const tmp_cells = [];  // 2D 数组 (用于第二遍)
+    // 内缩比例: 10% (保留 80% cell 区域, 避免 25% 过大把边角的 H29 标签吃掉)
+    const CROP = 0.10;
     for (let r = 0; r < pRows; r++) {
       const rowRgb = new Array(pCols).fill(null);
       for (let c = 0; c < pCols; c++) {
@@ -3052,14 +3051,13 @@
         const y1 = (((r + 1) * H) / pRows) | 0;
         if (x1 <= x0 || y1 <= y0) continue;
         const cw = x1 - x0, chh = y1 - y0;
-        const ix0 = (x0 + cw * 0.25) | 0;
-        const ix1 = (x0 + cw * 0.75) | 0;
-        const iy0 = (y0 + chh * 0.25) | 0;
-        const iy1 = (y0 + chh * 0.75) | 0;
+        const ix0 = (x0 + cw * CROP) | 0;
+        const ix1 = (x0 + cw * (1 - CROP)) | 0;
+        const iy0 = (y0 + chh * CROP) | 0;
+        const iy1 = (y0 + chh * (1 - CROP)) | 0;
         if (ix1 <= ix0 || iy1 <= iy0) continue;
 
         const buckets = new Map();
-        let sumR = 0, sumG = 0, sumB = 0, sumN = 0;
         for (let yy = iy0; yy < iy1; yy++) {
           const rowOff = yy * W * 4;
           for (let xx = ix0; xx < ix1; xx++) {
@@ -3071,22 +3069,34 @@
             let bb = buckets.get(key);
             if (!bb) { bb = { sr: 0, sg: 0, sb: 0, n: 0 }; buckets.set(key, bb); }
             bb.sr += dr; bb.sg += dg; bb.sb += db; bb.n++;
-            sumR += dr; sumG += dg; sumB += db; sumN++;
           }
         }
-        let bestBucket = null, bestN = 0;
-        for (const bb of buckets.values()) if (bb.n > bestN) { bestN = bb.n; bestBucket = bb; }
-        let sr = 0, sg = 0, sb = 0;
-        if (bestBucket && sumN >= 2) {
-          sr = bestBucket.sr / bestBucket.n;
-          sg = bestBucket.sg / bestBucket.n;
-          sb = bestBucket.sb / bestBucket.n;
-        } else if (sumN >= 1) {
-          // 桶不集中但还有非噪点样本 — 用全部非噪点均值 (仍比含文字强)
-          sr = sumR / sumN; sg = sumG / sumN; sb = sumB / sumN;
+        if (!buckets.size) continue;
+        // 找 top 桶并按 n 排序
+        const sorted = [...buckets.values()].sort((a, b) => b.n - a.n);
+        const best = sorted[0];
+        // 智能白底识别: 如果 best 是"白"色 (H16背景/标签cell的白底)
+        //   → 找最大非白桶 (≥6% 总像素) 替代 — 处理 "白底+小色块" label cell
+        //   否则 (饱和色 cell) 直接用 best
+        function isWhiteish(b) {
+          const ar = b.sr / b.n, ag = b.sg / b.n, ab = b.sb / b.n;
+          return ar > 210 && ag > 210 && ab > 200;
         }
-        // 存本地 RGB (留待全局聚类)
-        if (sr || sg || sb) rowRgb[c] = [sr, sg, sb];
+        let totalN = 0;
+        for (const b of buckets.values()) totalN += b.n;
+        let chosen = best;
+        if (isWhiteish(best)) {
+          for (const b of sorted) {
+            if (!isWhiteish(b) && b.n >= totalN * 0.06) {
+              chosen = b;
+              break;
+            }
+          }
+        }
+        const sr = chosen.sr / chosen.n;
+        const sg = chosen.sg / chosen.n;
+        const sb = chosen.sb / chosen.n;
+        rowRgb[c] = [sr, sg, sb];
       }
       tmp_cells.push(rowRgb);
     }
