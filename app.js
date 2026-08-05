@@ -2775,7 +2775,7 @@
                 <span class="text-xs text-mk-sub">${pMode === 'blank' ? '画笔/橡皮拖动涂色；点「✋ 拖动画布」或按住空格可平移' : '点「✋ 拖动画布」或按住空格 / 中键，平移生成的图纸'}</span>
               </div>
             </div>
-            <p class="text-[11px] text-mk-sub mb-2">💡 选「✋ 拖动画布」工具，或按住 <b class="text-mk-ink">空格</b> / 鼠标 <b class="text-mk-ink">中键</b>，可平移画布；滚轮缩放；缩放只作用于画布，不影响下方用料清单。</p>
+            <p class="text-[11px] text-mk-sub mb-2">💡 选「✋ 拖动画布」工具，或按住 <b class="text-mk-ink">空格</b> / 鼠标 <b class="text-mk-ink">中键</b>，可平移画布；滚轮缩放只作用于画布，不影响下方用料清单。若浏览器已被意外缩放，按 <b class="text-mk-ink">Ctrl+0</b>（Mac：⌘+0）复位。</p>
             <div id="p-canvas-wrap" class="overflow-hidden bg-mk-cream rounded-xl p-2 relative" style="max-height: 75vh;touch-action:none;">
               <canvas id="p-canvas" class="rounded-md" style="image-rendering:pixelated;touch-action:none;"></canvas>
             </div>
@@ -3015,8 +3015,8 @@
           return;
         }
         // 拦截浏览器整页缩放快捷键（Ctrl/Cmd + =/+/-/0），避免「用料清单跟着缩放」
+        // 注意：这里不再检查 inField —— 焦点在输入框时也必须拦，否则按 Ctrl+= 会把整页（含 BOM）放大
         if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+' || e.key === '-' || e.key === '0')) {
-          if (inField) return;
           if (!$('#p-canvas')) return;
           e.preventDefault();
           return;
@@ -3027,8 +3027,18 @@
         if (e.key === ' ') { pSpacePan = false; const c = $('#p-canvas'); if (c) c.style.cursor = ''; }
       });
       // 阻止整页被 Ctrl/Cmd + 滚轮 / 双指捏合放大（仅图纸页生效），避免「用料清单跟着缩放」
-      document.addEventListener('wheel', (e) => { if ((e.ctrlKey || e.metaKey) && $('#p-canvas')) e.preventDefault(); }, { passive: false, capture: true });
-      document.addEventListener('gesturestart', (e) => { if ($('#p-canvas')) e.preventDefault(); });
+      // 同时挂到 window + document，capture 阶段触发，并 stopImmediatePropagation 防止被其它监听器绕过
+      const blockZoom = (e) => {
+        if ((e.ctrlKey || e.metaKey) && $('#p-canvas')) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+        }
+      };
+      window.addEventListener('wheel', blockZoom, { passive: false, capture: true });
+      document.addEventListener('wheel', blockZoom, { passive: false, capture: true });
+      window.addEventListener('gesturestart', blockZoom, { passive: false });
+      document.addEventListener('gesturestart', blockZoom, { passive: false });
       pInited = true;
     }
     const getCell = (e) => {
