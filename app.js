@@ -2639,6 +2639,24 @@
   let pLastPanX = 0, pLastPanY = 0;
   let pPanX = 0, pPanY = 0;    // 画布平移偏移（CSS transform translate，不依赖容器溢出，任意尺寸都能拖）
 
+  // 真实拼豆板尺寸（Perler 标准 pegboard）：标准板 29×29、小板 14×14、迷你板 6×6
+  // 这些才是实物板的固定格数，画布尺寸应贴合它们，而不是 150×150 自由网格
+  const PERLER_BOARDS = [
+    { key: 'std',   label: '标准板', w: 29, h: 29 },
+    { key: 'small', label: '小板',   w: 14, h: 14 },
+    { key: 'mini',  label: '迷你板', w: 6,  h: 6  },
+  ];
+  let pPlanBoard = PERLER_BOARDS[0];   // 板数规划 / 板缝叠加所选用的板型（默认标准板）
+  let pShowBoards = false;             // 是否在画布上叠加「板缝」参考线（帮助对齐实物板）
+
+  // 一键把画布尺寸设为真实板尺寸（同步更新两处输入控件的值）
+  function setBoardSize(n) {
+    pCols = n; pRows = n;
+    const ic = $('#p-cols'), ir = $('#p-rows'), iic = $('#p-icols'), iir = $('#p-irows');
+    if (ic) ic.value = n; if (ir) ir.value = n;
+    if (iic) iic.value = n; if (iir) iir.value = n;
+  }
+
   function initPatternCells(cols, rows) {
     pCells = Array.from({ length: rows }, () => new Array(cols).fill(null));
   }
@@ -2711,6 +2729,12 @@
           <!-- 空白画布控制 -->
           <section class="mk-card rounded-2xl shadow-soft p-4 ${pMode === 'blank' ? '' : 'hidden'}">
             <h3 class="font-bold mb-3">📐 画布尺寸</h3>
+            <p class="text-[11px] text-mk-sub mb-2">想要贴合真实拼豆板？一键新建标准尺寸画布：</p>
+            <div class="flex flex-wrap gap-2 mb-3">
+              <button class="preset-board px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-white/70 text-mk-sub border border-mk-sand" data-preset="29">🟦 标准板 29×29</button>
+              <button class="preset-board px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-white/70 text-mk-sub border border-mk-sand" data-preset="14">🟩 小板 14×14</button>
+              <button class="preset-board px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-white/70 text-mk-sub border border-mk-sand" data-preset="6">🟪 迷你板 6×6</button>
+            </div>
             <div class="flex items-end gap-2">
               <label class="text-sm flex-1">列（宽）<input id="p-cols" type="number" min="2" max="150" value="${pCols}" class="w-full mt-1 px-2 py-1.5 rounded-xl bg-white/70 border border-mk-sand"></label>
               <label class="text-sm flex-1">行（高）<input id="p-rows" type="number" min="2" max="150" value="${pRows}" class="w-full mt-1 px-2 py-1.5 rounded-xl bg-white/70 border border-mk-sand"></label>
@@ -2733,6 +2757,11 @@
             </div>
             ${pImage ? `<img id="p-img-preview" src="${pImage.src}" class="mt-3 w-full rounded-xl border border-mk-sand">` : `<img id="p-img-preview" class="hidden mt-3 w-full rounded-xl border border-mk-sand">`}
             <h3 class="font-bold mb-2 mt-4">🎯 目标网格</h3>
+            <div class="flex flex-wrap gap-2 mb-2">
+              <button class="preset-board px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-white/70 text-mk-sub border border-mk-sand" data-preset="29">标准 29</button>
+              <button class="preset-board px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-white/70 text-mk-sub border border-mk-sand" data-preset="14">小板 14</button>
+              <button class="preset-board px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-white/70 text-mk-sub border border-mk-sand" data-preset="6">迷你 6</button>
+            </div>
             <div class="flex items-end gap-2">
               <label class="text-sm flex-1">列（宽）<input id="p-icols" type="number" min="2" max="150" value="${pCols}" class="w-full mt-1 px-2 py-1.5 rounded-xl bg-white/70 border border-mk-sand"></label>
               <label class="text-sm flex-1">行（高）<input id="p-irows" type="number" min="2" max="150" value="${pRows}" class="w-full mt-1 px-2 py-1.5 rounded-xl bg-white/70 border border-mk-sand"></label>
@@ -2772,10 +2801,12 @@
                   <button id="p-zoom-reset" class="w-6 h-6 rounded-md hover:bg-mk-sand/40" title="重置 100%">🔄</button>
                 </div>
                 <button id="p-pan-toggle" class="text-xs px-2.5 py-1 rounded-lg ${pTool === 'pan' ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub border border-mk-sand'}" title="开启后可在画布上拖动平移（也可按住空格 / 鼠标中键）">✋ 拖动画布</button>
+                <button id="p-board-plan" class="text-xs px-2.5 py-1 rounded-lg bg-white/70 border border-mk-sand text-mk-sub" title="计算此图案需要多少块真实拼豆板、怎么拼接">📐 板数规划</button>
+                <button id="p-board-overlay" class="text-xs px-2.5 py-1 rounded-lg ${pShowBoards ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub border border-mk-sand'}" title="在画布上叠加板缝参考线，帮助对齐实物板">🧱 板缝</button>
                 <span class="text-xs text-mk-sub">${pMode === 'blank' ? '画笔/橡皮拖动涂色；点「✋ 拖动画布」或按住空格可平移' : '点「✋ 拖动画布」或按住空格 / 中键，平移生成的图纸'}</span>
               </div>
             </div>
-            <p class="text-[11px] text-mk-sub mb-2">💡 选「✋ 拖动画布」工具，或按住 <b class="text-mk-ink">空格</b> / 鼠标 <b class="text-mk-ink">中键</b>，可平移画布；滚轮缩放只作用于画布，不影响下方用料清单。若浏览器已被意外缩放，按 <b class="text-mk-ink">Ctrl+0</b>（Mac：⌘+0）复位。</p>
+            <p class="text-[11px] text-mk-sub mb-2">💡 选「✋ 拖动画布」工具，或按住 <b class="text-mk-ink">空格</b> / 鼠标 <b class="text-mk-ink">中键</b>，可平移画布；滚轮缩放只作用于画布，不影响下方用料清单。若浏览器已被意外缩放，按 <b class="text-mk-ink">Ctrl+0</b>（Mac：⌘+0）复位。点「📐 板数规划」可算此图需几块真实板、怎么拼。</p>
             <div id="p-canvas-wrap" class="overflow-hidden bg-mk-cream rounded-xl p-2 relative" style="max-height: 75vh;touch-action:none;">
               <canvas id="p-canvas" class="rounded-md" style="image-rendering:pixelated;touch-action:none;"></canvas>
             </div>
@@ -2854,6 +2885,26 @@
       const cv = $('#p-canvas'); if (cv) cv.style.cursor = on ? 'grab' : '';
     };
     if (panToggle) panToggle.onclick = () => { pTool = (pTool === 'pan') ? 'pen' : 'pan'; syncPanToggle(); };
+    // 真实板尺寸预设按钮（空白 / 图片两处共用）：一键把画布尺寸设为真实板
+    $$('.preset-board').forEach(b => b.onclick = () => {
+      const n = parseInt(b.dataset.preset, 10);
+      setBoardSize(n);
+      if (pMode === 'blank') { initPatternCells(n, n); pHighlight = null; pUndo = []; pPanX = 0; pPanY = 0; renderPattern(v); }
+    });
+    // 板数规划弹窗
+    const boardPlanBtn = $('#p-board-plan');
+    if (boardPlanBtn) boardPlanBtn.onclick = openBoardPlan;
+    // 板缝参考线开关
+    const boardOverlay = $('#p-board-overlay');
+    const syncBoardOverlay = () => {
+      if (!boardOverlay) return;
+      const on = pShowBoards;
+      boardOverlay.classList.toggle('bg-mk-rose', on);
+      boardOverlay.classList.toggle('text-white', on);
+      boardOverlay.classList.toggle('bg-white/70', !on);
+      boardOverlay.classList.toggle('text-mk-sub', !on);
+    };
+    if (boardOverlay) boardOverlay.onclick = () => { pShowBoards = !pShowBoards; syncBoardOverlay(); patternRenderCanvas(); };
     // 工具切换
     $$('.ptool').forEach(b => b.onclick = () => {
       pTool = b.dataset.tool;
@@ -2979,6 +3030,14 @@
     ctx.lineWidth = 1.5;
     for (let c = 0; c <= pCols; c += 10) { ctx.beginPath(); ctx.moveTo(c * cp + 0.5, 0); ctx.lineTo(c * cp + 0.5, cv.height); ctx.stroke(); }
     for (let r = 0; r <= pRows; r += 10) { ctx.beginPath(); ctx.moveTo(0, r * cp + 0.5); ctx.lineTo(cv.width, r * cp + 0.5); ctx.stroke(); }
+    // 真实板缝参考线（叠加在网格上，帮助用户把图纸对齐到实物拼豆板）
+    if (pShowBoards) {
+      const bw = pPlanBoard.w, bh = pPlanBoard.h;
+      ctx.strokeStyle = 'rgba(214,40,90,0.9)';
+      ctx.lineWidth = Math.max(2, cp * 0.14);
+      for (let c = bw; c < pCols; c += bw) { ctx.beginPath(); ctx.moveTo(c * cp + 0.5, 0); ctx.lineTo(c * cp + 0.5, cv.height); ctx.stroke(); }
+      for (let r = bh; r < pRows; r += bh) { ctx.beginPath(); ctx.moveTo(0, r * cp + 0.5); ctx.lineTo(cv.width, r * cp + 0.5); ctx.stroke(); }
+    }
     // 高亮：给当前选中色号的格子描粗边（按底色明暗选黑/白描边，保证可见）
     if (pHighlight) {
       const lw = Math.max(2, cp * 0.16);
@@ -3331,6 +3390,58 @@
     $$('#p-bom .bom-del').forEach(b => {
       b.onclick = (e) => { e.stopPropagation(); patternDeleteColorConfirm(b.dataset.num); };
     });
+  }
+  // 计算图案实际占用范围（最小/最大行列），用于板数规划
+  function patternUsedBBox() {
+    let minR = Infinity, minC = Infinity, maxR = -1, maxC = -1, used = 0;
+    for (let r = 0; r < pRows; r++) for (let c = 0; c < pCols; c++) {
+      if (pCells[r][c]) {
+        used++;
+        if (r < minR) minR = r; if (c < minC) minC = c;
+        if (r > maxR) maxR = r; if (c > maxC) maxC = c;
+      }
+    }
+    if (!used) return { used: 0, w: pCols, h: pRows, minC: 0, minR: 0, empty: true };
+    return { used, w: maxC - minC + 1, h: maxR - minR + 1, minC, minR, empty: false };
+  }
+  // 板数规划弹窗：按所选真实板型，算此图案要几块板、怎么拼
+  function openBoardPlan() {
+    const renderPlan = () => {
+      const bb = patternUsedBBox();
+      const bw = pPlanBoard.w, bh = pPlanBoard.h;
+      const colsBoards = Math.ceil(bb.w / bw);
+      const rowsBoards = Math.ceil(bb.h / bh);
+      const total = colsBoards * rowsBoards;
+      let layout;
+      if (colsBoards === 1 && rowsBoards === 1) {
+        layout = `✅ <b>一张「${pPlanBoard.label} (${bw}×${bh})」即可装下</b>，无需拼接。`;
+      } else {
+        const seamV = []; for (let c = bw; c < bb.w; c += bw) seamV.push(bb.minC + c);
+        const seamH = []; for (let r = bh; r < bb.h; r += bh) seamH.push(bb.minR + r);
+        layout = `需 <b>${colsBoards} 横 × ${rowsBoards} 纵 = <span class="text-mk-rose font-bold">${total} 块</span>「${pPlanBoard.label} (${bw}×${bh})」</b>。` +
+          `<br>横向拼接 ${colsBoards} 块（覆盖 ${colsBoards * bw} 列），纵向 ${rowsBoards} 块（覆盖 ${rowsBoards * bh} 行）。` +
+          (seamV.length ? `<br>竖向板缝落在第 <b>${seamV.join('、')}</b> 列` : '') +
+          (seamH.length ? `；横向板缝落在第 <b>${seamH.join('、')}</b> 行` : '') + '。';
+      }
+      const boardBtns = PERLER_BOARDS.map(b =>
+        `<button class="plan-board px-3 py-1.5 rounded-xl text-sm font-semibold ${b.key === pPlanBoard.key ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub border border-mk-sand'}" data-key="${b.key}">${b.label} ${b.w}×${b.h}</button>`
+      ).join('');
+      const body = `
+        <p class="text-sm text-mk-sub mb-2">图案实际占用：<b class="text-mk-ink">${bb.w} × ${bb.h}</b> 格（${bb.used} 颗豆${bb.empty ? ' —— 当前画布全空，按整张画布尺寸估算' : ''}）。</p>
+        <p class="text-xs text-mk-sub mb-1">选择板型：</p>
+        <div class="flex flex-wrap gap-2 mb-3">${boardBtns}</div>
+        <div class="mk-card rounded-xl p-3 bg-mk-cream text-sm leading-relaxed text-mk-ink">${layout}</div>
+        <p class="text-[11px] text-mk-sub mt-3 leading-relaxed">📌 实物拼接建议：按板缝把图纸切成 ${total} 块区域，每块在对应板上单独摆豆；摆好后用耐热胶带整片翻面、再熨烫定型。标准板之间可互锁对齐，拼大图时记得留 1 格板边对齐。</p>
+        ${pShowBoards ? '' : '<p class="text-[11px] text-mk-sub mt-2">💡 点画布工具栏「🧱 板缝」可在图纸上直接显示板缝参考线。</p>'}
+      `;
+      openModal('📐 板数规划', body, { wide: true });
+      setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="closeModal()">关闭</button>`);
+      $$('.plan-board').forEach(b => b.onclick = () => {
+        pPlanBoard = PERLER_BOARDS.find(x => x.key === b.dataset.key) || pPlanBoard;
+        renderPlan();
+      });
+    };
+    renderPlan();
   }
   function patternRenderPalette() {
     const wrap = $('#p-swatches'); if (!wrap) return;
