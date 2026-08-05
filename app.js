@@ -3030,9 +3030,6 @@
     const data = tctx.getImageData(0, 0, W, H).data;
 
     // 噪点像素判定: 网格线/黑文字 — 保留白/浅色(浅色珠或图外白边距)
-    // 关键: 网格线是深色 (sum<60) 或三通道都深 (<30)
-    //     文字抗锯齿也是灰色: max-min<15 也算
-    //     白色保留 — 浅珠颜色或图外白边距(后者反正也会显示成白底)
     function isNoise(r, g, b) {
       if (r + g + b < 60) return true;              // 网格线 (深灰→黑)
       if (r < 30 && g < 30 && b < 30) return true;  // 任意通道都 ≤30 (深色)
@@ -3040,25 +3037,27 @@
       return (max - min) < 15;                       // 极低饱和(纯灰文字抗锯齿)
     }
 
-    const cells = [];
+    // === 第一遍: 每 cell 采样本地图主色 (用现有内缩 25% + 4-bit 直方图投票) ===
+    const localColors = [];  // [r, c] -> [sr, sg, sb]  (null 表示空 cell)
+    let bestRgb = (cellSr, cellSg, cellSb) => [cellSr, cellSg, cellSb];
+    // === 第一遍: 每 cell 采样本地代表 RGB (不直接映射,留作聚类) ===
+    const local = [];  // 每 cell: {r, c, rgb: [sr, sg, sb]} 或 null
+    const tmp_cells = [];  // 2D 数组 (用于第二遍)
     for (let r = 0; r < pRows; r++) {
-      const row = [];
+      const rowRgb = new Array(pCols).fill(null);
       for (let c = 0; c < pCols; c++) {
-        // 本 cell 在原图里的像素范围 (整除映射,边界不重叠)
         const x0 = ((c * W) / pCols) | 0;
         const x1 = (((c + 1) * W) / pCols) | 0;
         const y0 = ((r * H) / pRows) | 0;
         const y1 = (((r + 1) * H) / pRows) | 0;
-        if (x1 <= x0 || y1 <= y0) { row.push(null); continue; }
-        // 内缩 25% 避开格子边缘的网格线 + 相邻格颜色渗入
+        if (x1 <= x0 || y1 <= y0) continue;
         const cw = x1 - x0, chh = y1 - y0;
         const ix0 = (x0 + cw * 0.25) | 0;
         const ix1 = (x0 + cw * 0.75) | 0;
         const iy0 = (y0 + chh * 0.25) | 0;
         const iy1 = (y0 + chh * 0.75) | 0;
-        if (ix1 <= ix0 || iy1 <= iy0) { row.push(null); continue; }
+        if (ix1 <= ix0 || iy1 <= iy0) continue;
 
-        // 4-bit RGB 直方图 (仅累计去噪后的像素)
         const buckets = new Map();
         let sumR = 0, sumG = 0, sumB = 0, sumN = 0;
         for (let yy = iy0; yy < iy1; yy++) {
@@ -3075,7 +3074,6 @@
             sumR += dr; sumG += dg; sumB += db; sumN++;
           }
         }
-        // 主流色: 选最大桶的均值 — 不设阈值门槛,任何非空主桶都比混合均值准
         let bestBucket = null, bestN = 0;
         for (const bb of buckets.values()) if (bb.n > bestN) { bestN = bb.n; bestBucket = bb; }
         let sr = 0, sg = 0, sb = 0;
@@ -3087,14 +3085,53 @@
           // 桶不集中但还有非噪点样本 — 用全部非噪点均值 (仍比含文字强)
           sr = sumR / sumN; sg = sumG / sumN; sb = sumB / sumN;
         }
-        // 极端兜底: sr=sg=sb=0 → 全部噪点,跳过 nearestOwnedColor; 行末再处理 null
-        if (sr === 0 && sg === 0 && sb === 0 && sumN === 0) {
-          row.push(null);
-        } else {
-          row.push(nearestOwnedColor(sr, sg, sb));
-        }
+        // 存本地 RGB (留待全局聚类)
+        if (sr || sg || sb) rowRgb[c] = [sr, sg, sb];
       }
-      cells.push(row);
+      tmp_cells.push(rowRgb);
+    }
+
+    // === 第二遍: 全局 4-bit 聚类 — 所有 cell RGB 装桶, 取 Top-K 桶做 cluster ===
+    const globalBuckets = new Map();
+    for (const rowRgb of tmp_cells) {
+      for (const rgb of rowRgb) {
+        if (!rgb) continue;
+        const qr = rgb[0] >> 4, qg = rgb[1] >> 4, qb = rgb[2] >> 4;
+        const k = (qr << 8) | (qg << 4) | qb;
+        let b = globalBuckets.get(k);
+        if (!b) { b = { sumR: 0, sumG: 0, sumB: 0, n: 0 }; globalBuckets.set(k, b); }
+        b.sumR += rgb[0]; b.sumG += rgb[1]; b.sumB += rgb[2]; b.n++;
+      }
+    }
+    // 排序, 取 ≥1% 的桶, 最多 24 个 cluster 中心
+    const totalCells = pRows * pCols;
+    const gBuckets = [...globalBuckets.values()]
+      .filter(b => b.n >= Math.max(2, totalCells * 0.01))
+      .sort((a, b) => b.n - a.n)
+      .slice(0, 24);
+    const centers = gBuckets.map(b => [b.sumR / b.n, b.sumG / b.n, b.sumB / b.n]);
+
+    // 每个 cluster 中心 → 最近的 bead 色号 (一次 nearestOwnedColor)
+    const centerBeads = centers.map(([cr, cg, cb]) => nearestOwnedColor(cr, cg, cb));
+
+    // === 第三遍: 每个 cell → 最近 cluster → 用 cluster 的 bead ===
+    const cells = [];
+    for (let r = 0; r < pRows; r++) {
+      const rowRgb = tmp_cells[r];
+      const outRow = [];
+      for (let c = 0; c < pCols; c++) {
+        const rgb = rowRgb[c];
+        if (!rgb) { outRow.push(null); continue; }
+        let bestI = 0, bestD = Infinity;
+        for (let i = 0; i < centers.length; i++) {
+          const cc = centers[i];
+          const dr = rgb[0] - cc[0], dg = rgb[1] - cc[1], db = rgb[2] - cc[2];
+          const d = dr * dr + dg * dg + db * db;
+          if (d < bestD) { bestD = d; bestI = i; }
+        }
+        outRow.push(centerBeads[bestI]);
+      }
+      cells.push(outRow);
     }
     pCells = cells;
   }
