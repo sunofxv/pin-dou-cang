@@ -2432,6 +2432,7 @@
   let pImage = null;          // 已上传参考图 Image 对象
   let pShowNumbers = true;    // 画布与导出 PNG 上是否在格子上印色号
   let pPaletteShowNumbers = false;  // 色板色块上是否叠加色号文字（独立开关，默认关）
+  let pZoom = 1;                  // 画布缩放倍数（1=原始 / 通过滚轮/按钮/双指调整，0.2–6）
   let pImgAspect = null;      // 已上传参考图的宽高比（naturalWidth / naturalHeight），用于锁定纵横比
   let pAspectLock = true;     // 设置列/行时是否锁定纵横比（空白 1:1、图片按原图比例）
   let pDrawing = false;
@@ -2536,10 +2537,17 @@
               <h3 class="font-bold">🧩 画布（${pCols} × ${pRows}）</h3>
               <div class="flex items-center gap-2 flex-wrap">
                 <button id="p-numbers" class="text-xs px-2.5 py-1 rounded-lg ${pShowNumbers ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub border border-mk-sand'}" title="切换格子上是否显示色号">🔢 显示色号</button>
+                <div class="flex items-center gap-1 bg-white/70 border border-mk-sand rounded-lg px-1 py-0.5 text-xs">
+                  <button id="p-zoom-out" class="w-6 h-6 rounded-md hover:bg-mk-sand/40" title="缩小">➖</button>
+                  <span id="p-zoom-label" class="px-1 min-w-[44px] text-center font-semibold">${Math.round(pZoom * 100)}%</span>
+                  <button id="p-zoom-in" class="w-6 h-6 rounded-md hover:bg-mk-sand/40" title="放大">➕</button>
+                  <button id="p-zoom-reset" class="w-6 h-6 rounded-md hover:bg-mk-sand/40" title="重置 100%">🔄</button>
+                </div>
                 <span class="text-xs text-mk-sub">${pMode === 'blank' ? '画笔/橡皮可拖动涂色，填充/取色单击' : '生成的图纸可继续微调'}</span>
               </div>
             </div>
-            <div class="overflow-auto bg-mk-cream rounded-xl p-2 flex justify-center">
+            <p class="text-[11px] text-mk-sub mb-2">💡 电脑端鼠标滚轮在画布上可缩放；移动端双指捏合缩放。</p>
+            <div id="p-canvas-wrap" class="overflow-auto bg-mk-cream rounded-xl p-2" style="max-height: 75vh;">
               <canvas id="p-canvas" class="rounded-md" style="image-rendering:pixelated;touch-action:none;"></canvas>
             </div>
           </section>
@@ -2648,6 +2656,10 @@
     $('#p-numbers').onclick = () => { pShowNumbers = !pShowNumbers; renderPattern(v); };
     // 色板色块叠加色号（独立开关，仅刷新色板，不影响画布）
     $('#p-pal-numbers').onclick = () => { pPaletteShowNumbers = !pPaletteShowNumbers; renderPattern(v); };
+    // 画布缩放按钮
+    $('#p-zoom-in').onclick     = () => patternSetZoom(pZoom * 1.25);
+    $('#p-zoom-out').onclick    = () => patternSetZoom(pZoom / 1.25);
+    $('#p-zoom-reset').onclick  = () => patternSetZoom(1);
     // 导出 / 保存 / 确认
     $('#p-png').onclick = patternExportPNG;
     $('#p-csv').onclick = patternExportCSV;
@@ -2678,8 +2690,8 @@
 
   function patternCellPx() {
     const maxDim = Math.max(pCols, pRows, 1);
-    // 80×80 给 18px 仍能勉强显示色号；20×20 给 40px 大格子方便编辑
-    return Math.max(18, Math.min(40, Math.floor(800 / maxDim)));
+    // 80×80 给 18px 仍能勉强显示色号；20×20 给 40px 大格子方便编辑；再乘 zoom（用户调整的缩放倍数）
+    return Math.max(4, Math.min(60, Math.floor(800 / maxDim)) * pZoom);
   }
   // 按色值亮度决定文字颜色（深底用白字，浅底用深字）
   function patternLuminance(hex) {
@@ -2690,7 +2702,7 @@
     const cv = $('#p-canvas'); if (!cv) return;
     const cp = patternCellPx();
     cv.width = pCols * cp; cv.height = pRows * cp;
-    cv.style.maxWidth = '100%';
+    cv.style.maxWidth = 'none';   // 取消原 max-width:100%，让放大后的画布能撑出外层滚动区
     const ctx = cv.getContext('2d');
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -2760,11 +2772,74 @@
       }
       patternRenderCanvas(); patternRenderBOM();
     };
-    cv.onmousedown = (e) => { pDrawing = true; apply(getCell(e)); };
+    // 单指 / 鼠标拖动涂色
+    cv.onmousedown = (e) => { if (e.button !== 0) return; pDrawing = true; apply(getCell(e)); };
     cv.onmousemove = (e) => { if (pDrawing && (pTool === 'pen' || pTool === 'eraser')) apply(getCell(e)); };
-    cv.ontouchstart = (e) => { e.preventDefault(); pDrawing = true; apply(getCell(e.touches[0])); };
-    cv.ontouchmove = (e) => { e.preventDefault(); if (pDrawing && (pTool === 'pen' || pTool === 'eraser')) apply(getCell(e.touches[0])); };
-    cv.ontouchend = () => { pDrawing = false; };
+    cv.ontouchstart = (e) => {
+      // 双指交给 pinch handler，单指走原逻辑
+      if (e.touches.length >= 2) { pDrawing = false; return; }
+      e.preventDefault(); pDrawing = true; apply(getCell(e.touches[0]));
+    };
+    cv.ontouchmove = (e) => {
+      if (e.touches.length >= 2) return; // 双指走 pinch
+      e.preventDefault(); if (pDrawing && (pTool === 'pen' || pTool === 'eraser')) apply(getCell(e.touches[0]));
+    };
+    cv.ontouchend = (e) => { if (e.touches.length === 0) pDrawing = false; };
+
+    // ===== 滚轮缩放（电脑端）=====
+    cv.onwheel = (e) => {
+      e.preventDefault();                              // 阻止页面整体滚动
+      const delta = -e.deltaY;
+      const factor = delta > 0 ? 1.12 : 1 / 1.12;     // 向上滚=放大，向下滚=缩小
+      patternSetZoom(pZoom * factor, { anchorX: e.clientX, anchorY: e.clientY });
+    };
+    // ===== 双指 pinch 缩放（移动端）=====
+    const pinchState = { active: false, startDist: 0, startZoom: 1 };
+    const pinchDist = () => {
+      const t = cv.touches; if (t.length < 2) return 0;
+      return Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    };
+    cv.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 2) {
+        pinchState.active = true;
+        pinchState.startDist = pinchDist();
+        pinchState.startZoom = pZoom;
+      }
+    }, { passive: false });
+    cv.addEventListener('touchmove', (e) => {
+      if (!pinchState.active || e.touches.length < 2) return;
+      e.preventDefault();
+      const d = pinchDist();
+      if (!d || !pinchState.startDist) return;
+      const factor = d / pinchState.startDist;
+      patternSetZoom(pinchState.startZoom * factor);
+    }, { passive: false });
+    cv.addEventListener('touchend', (e) => {
+      if (e.touches.length < 2) pinchState.active = false;
+    });
+  }
+  // 设置缩放 + 刷新（带"以光标/触摸点为锚"的体验，让光标下的格子尽量不动）
+  function patternSetZoom(next, anchor) {
+    const z = Math.max(0.2, Math.min(6, next));
+    const cv = $('#p-canvas'); const wrap = $('#p-canvas-wrap');
+    if (cv && wrap && anchor) {
+      // 记录锚点相对 wrap 的位置
+      const wr = wrap.getBoundingClientRect();
+      const ax = anchor.anchorX - wr.left + wrap.scrollLeft;
+      const ay = anchor.anchorY - wr.top + wrap.scrollTop;
+      // 缩放后保持锚点在视口相同位置
+      const ratio = z / pZoom;
+      patternRenderZoomed(z);
+      wrap.scrollLeft = ax * ratio - (anchor.anchorX - wr.left);
+      wrap.scrollTop  = ay * ratio - (anchor.anchorY - wr.top);
+    } else {
+      patternRenderZoomed(z);
+    }
+  }
+  function patternRenderZoomed(z) {
+    pZoom = z;
+    const lbl = $('#p-zoom-label'); if (lbl) lbl.textContent = Math.round(pZoom * 100) + '%';
+    patternRenderCanvas();
   }
   function patternFloodFill(r, c, newColor) {
     const target = pCells[r][c];
