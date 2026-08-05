@@ -2431,6 +2431,7 @@
   let pMode = 'blank';        // blank 空白画布 | image 图片转图纸
   let pImage = null;          // 已上传参考图 Image 对象
   let pShowNumbers = true;    // 画布与导出 PNG 上是否在格子上印色号
+  let pPaletteShowNumbers = false;  // 色板色块上是否叠加色号文字（独立开关，默认关）
   let pImgAspect = null;      // 已上传参考图的宽高比（naturalWidth / naturalHeight），用于锁定纵横比
   let pAspectLock = true;     // 设置列/行时是否锁定纵横比（空白 1:1、图片按原图比例）
   let pDrawing = false;
@@ -2517,11 +2518,14 @@
 
           <!-- 色板（仅拥有色卡） -->
           <section class="mk-card rounded-2xl shadow-soft p-4">
-            <h3 class="font-bold mb-1">🎨 色板（仅你拥有的色卡）</h3>
+            <div class="flex items-center justify-between mb-1">
+              <h3 class="font-bold">🎨 色板（仅你拥有的色卡）</h3>
+              <button id="p-pal-numbers" class="text-xs px-2.5 py-1 rounded-lg ${pPaletteShowNumbers ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub border border-mk-sand'}" title="切换色板色块上是否叠加色号">🔢 色号</button>
+            </div>
             <p class="text-[11px] text-mk-sub mb-2">点击选色，再在画布上涂色。</p>
             <input id="p-search" type="text" placeholder="搜索色号 / 名称" class="w-full px-3 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-sm mb-2">
             <div id="p-current" class="text-sm mb-2"></div>
-            <div id="p-swatches" class="grid grid-cols-8 gap-1.5 max-h-64 overflow-auto pr-1"></div>
+            <div id="p-swatches" class="grid gap-1.5 max-h-64 overflow-auto pr-1 ${pPaletteShowNumbers ? 'grid-cols-6' : 'grid-cols-8'}"></div>
           </section>
         </div>
 
@@ -2642,6 +2646,8 @@
     $('#p-search').oninput = patternRenderPalette;
     // 色号显隐
     $('#p-numbers').onclick = () => { pShowNumbers = !pShowNumbers; renderPattern(v); };
+    // 色板色块叠加色号（独立开关，仅刷新色板，不影响画布）
+    $('#p-pal-numbers').onclick = () => { pPaletteShowNumbers = !pPaletteShowNumbers; renderPattern(v); };
     // 导出 / 保存 / 确认
     $('#p-png').onclick = patternExportPNG;
     $('#p-csv').onclick = patternExportCSV;
@@ -2889,9 +2895,20 @@
     const wrap = $('#p-swatches'); if (!wrap) return;
     const q = ($('#p-search').value || '').trim().toLowerCase();
     const beads = state.beads.filter(b => !q || b.colorNumber.toLowerCase().includes(q) || (b.colorName || '').toLowerCase().includes(q));
-    wrap.innerHTML = beads.map(b =>
-      `<button class="pw-swatch h-7 rounded-md ${b.colorNumber === pColor ? 'ring-2 ring-mk-rose ring-offset-1' : ''}" title="${b.colorNumber} ${escapeHtml(b.colorName)}（库存 ${b.stock}）" data-num="${b.colorNumber}" style="background:${b.hex}"></button>`
-    ).join('');
+    const showN = pPaletteShowNumbers;
+    // 开启色号时格子稍大、列数减少，避免 4 位色号（如 H221）被截
+    const sizeCls = showN ? 'h-9 text-[10px]' : 'h-7 text-[9px]';
+    wrap.innerHTML = beads.map(b => {
+      const light = patternLuminance(b.hex) > 150;
+      const labelCls = light ? 'text-gray-900' : 'text-white';
+      const label = showN
+        ? `<span class="px-0.5 leading-none text-center break-all ${labelCls} font-bold tracking-tight" style="text-shadow:0 0 2px rgba(0,0,0,0.25)">${escapeHtml(b.colorNumber)}</span>`
+        : '';
+      return `<button class="pw-swatch ${sizeCls} rounded-md ${b.colorNumber === pColor ? 'ring-2 ring-mk-rose ring-offset-1' : ''} ${showN ? 'flex items-center justify-center' : ''}"
+                title="${b.colorNumber} ${escapeHtml(b.colorName)}（库存 ${b.stock}）"
+                data-num="${b.colorNumber}"
+                style="background:${b.hex}">${label}</button>`;
+    }).join('');
     $$('#p-swatches .pw-swatch').forEach(btn => btn.onclick = () => {
       pColor = btn.dataset.num; patternRenderPalette(); patternRenderCurrentColor();
     });
