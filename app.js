@@ -2510,6 +2510,34 @@
     }
     return best ? best.colorNumber : null;
   }
+  // sRGB → CIE-Lab (D65)，用于感知一致的色差比较（红/橙/黄/棕等相近色不再混淆）
+  function rgbToLab(R, G, B) {
+    let r = R / 255, g = G / 255, b = B / 255;
+    r = r > 0.04045 ? Math.pow((r + 0.055) / 1.055, 2.4) : r / 12.92;
+    g = g > 0.04045 ? Math.pow((g + 0.055) / 1.055, 2.4) : g / 12.92;
+    b = b > 0.04045 ? Math.pow((b + 0.055) / 1.055, 2.4) : b / 12.92;
+    const X = r * 0.4124 + g * 0.3576 + b * 0.1805;
+    const Y = r * 0.2126 + g * 0.7152 + b * 0.0722;
+    const Z = r * 0.0193 + g * 0.1192 + b * 0.9505;
+    const Xn = 0.95047, Yn = 1.0, Zn = 1.08883;
+    const f = t => t > 0.008856 ? Math.cbrt(t) : (7.787 * t + 16 / 116);
+    const fx = f(X / Xn), fy = f(Y / Yn), fz = f(Z / Zn);
+    return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+  }
+  function labDeltaE(a, b) {
+    const dL = a[0] - b[0], da = a[1] - b[1], db = a[2] - b[2];
+    return Math.sqrt(dL * dL + da * da + db * db); // CIE76 ΔE
+  }
+  // 用感知色差(CIELAB ΔE)找最近的自有色卡；beadLabs 为预计算的所有色卡 Lab
+  function nearestOwnedColorLab(r, g, b, beadLabs) {
+    const lab = rgbToLab(r, g, b);
+    let best = null, bestD = Infinity;
+    for (let i = 0; i < state.beads.length; i++) {
+      const d = labDeltaE(lab, beadLabs[i]);
+      if (d < bestD) { bestD = d; best = state.beads[i]; }
+    }
+    return best ? best.colorNumber : null;
+  }
 
   function renderPattern(v) {
     ensurePatternCells();
@@ -3084,12 +3112,15 @@
     tctx.drawImage(pImage, 0, 0);
     const data = tctx.getImageData(0, 0, W, H).data;
 
-    // 噪点像素判定: 网格线/黑文字 — 保留白/浅色(浅色珠或图外白边距)
+    // 噪点像素判定: 只过滤“浅灰文字抗锯齿光晕”(低饱和 + 中高亮度)。
+    // 关键: 不再过滤纯黑 —— 纯黑可能是真实黑色拼豆(H16 描边)，
+    //       要保留给下方“多数投票”判断，否则黑色描边整圈被当噪点丢弃。
     function isNoise(r, g, b) {
-      if (r + g + b < 60) return true;              // 网格线 (深灰→黑)
-      if (r < 30 && g < 30 && b < 30) return true;  // 任意通道都 ≤30 (深色)
-      const max = Math.max(r, g, b), min = Math.min(r, g, b);
-      return (max - min) < 15;                       // 极低饱和(纯灰文字抗锯齿)
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      const sat = mx === 0 ? 0 : (mx - mn) / mx;
+      const lum = (mx + mn) / 2;
+      if (sat < 0.06 && lum > 0.62 && lum < 0.96) return true;  // 浅灰光晕
+      return false;
     }
 
     // === 第一遍: 每 cell 采样本地代表 RGB (不直接映射,留作聚类) ===
@@ -3127,74 +3158,59 @@
           }
         }
         if (!buckets.size) continue;
-        // 找 top 桶并按 n 排序
         const sorted = [...buckets.values()].sort((a, b) => b.n - a.n);
         const best = sorted[0];
-        // 智能白底识别: 如果 best 是"白"色 (H16背景/标签cell的白底)
-        //   → 找最大非白桶 (≥6% 总像素) 替代 — 处理 "白底+小色块" label cell
-        //   否则 (饱和色 cell) 直接用 best
+        // 白底判定: 主桶为近白 → 可能是标签格(白底+色块)或纯白背景(无拼豆)
         function isWhiteish(b) {
           const ar = b.sr / b.n, ag = b.sg / b.n, ab = b.sb / b.n;
-          return ar > 210 && ag > 210 && ab > 200;
+          return ar > 232 && ag > 232 && ab > 232;
         }
         let totalN = 0;
         for (const b of buckets.values()) totalN += b.n;
-        let chosen = best;
+        let chosen = null;
         if (isWhiteish(best)) {
+          // 找显著非白桶(≥6% 总像素) → 标签格(白底印色块)，用色块色；
+          // 否则整格都是白 → 纯白背景，该格无拼豆 (null)
           for (const b of sorted) {
-            if (!isWhiteish(b) && b.n >= totalN * 0.06) {
-              chosen = b;
-              break;
-            }
+            if (!isWhiteish(b) && b.n >= totalN * 0.06) { chosen = b; break; }
           }
+          if (!chosen) continue;   // 纯白背景 → 空 cell
+        } else {
+          chosen = best;           // 彩色格 → 主色即代表色
         }
-        const sr = chosen.sr / chosen.n;
-        const sg = chosen.sg / chosen.n;
-        const sb = chosen.sb / chosen.n;
-        rowRgb[c] = [sr, sg, sb];
+        rowRgb[c] = [chosen.sr / chosen.n, chosen.sg / chosen.n, chosen.sb / chosen.n];
       }
       tmp_cells.push(rowRgb);
     }
 
-    // === 第二遍: 全局 4-bit 聚类 — 所有 cell RGB 装桶, 取 Top-K 桶做 cluster ===
-    const globalBuckets = new Map();
+    // === 第二遍: 全局调色板 (5-bit 量化合并, 不做任何数量阈值过滤) ===
+    // 关键修复: 旧版按“≥1% 数量”过滤 → 黑色描边(H16 仅 18 颗)在大网格里被直接删掉，
+    //          边框整圈消失/错乱。现在保留所有出现的量化色，稀有但重要的颜色也能保住。
+    const beadLabs = state.beads.map(b => {
+      const [br, bg, bb] = hexToRgb(b.hex);
+      return rgbToLab(br, bg, bb);
+    });
+    const paletteMap = new Map();  // 5-bit 量化 key → 色号
     for (const rowRgb of tmp_cells) {
       for (const rgb of rowRgb) {
         if (!rgb) continue;
-        const qr = rgb[0] >> 4, qg = rgb[1] >> 4, qb = rgb[2] >> 4;
-        const k = (qr << 8) | (qg << 4) | qb;
-        let b = globalBuckets.get(k);
-        if (!b) { b = { sumR: 0, sumG: 0, sumB: 0, n: 0 }; globalBuckets.set(k, b); }
-        b.sumR += rgb[0]; b.sumG += rgb[1]; b.sumB += rgb[2]; b.n++;
+        const qk = ((rgb[0] >> 3) << 10) | ((rgb[1] >> 3) << 5) | (rgb[2] >> 3);
+        if (!paletteMap.has(qk)) {
+          // 用感知色差(CIELAB ΔE)选最近色卡: 红/橙/黄/棕 等相近色不再张冠李戴
+          paletteMap.set(qk, nearestOwnedColorLab(rgb[0], rgb[1], rgb[2], beadLabs));
+        }
       }
     }
-    // 排序, 取 ≥1% 的桶, 最多 24 个 cluster 中心
-    const totalCells = pRows * pCols;
-    const gBuckets = [...globalBuckets.values()]
-      .filter(b => b.n >= Math.max(2, totalCells * 0.01))
-      .sort((a, b) => b.n - a.n)
-      .slice(0, 24);
-    const centers = gBuckets.map(b => [b.sumR / b.n, b.sumG / b.n, b.sumB / b.n]);
 
-    // 每个 cluster 中心 → 最近的 bead 色号 (一次 nearestOwnedColor)
-    const centerBeads = centers.map(([cr, cg, cb]) => nearestOwnedColor(cr, cg, cb));
-
-    // === 第三遍: 每个 cell → 最近 cluster → 用 cluster 的 bead ===
+    // === 第三遍: 每个 cell 用其量化色查全局调色板 → 色号 ===
+    // 同色量化 → 同色号，保证整图风格统一；不同色(即便 RGB 接近)也按真实色差分流。
     const cells = [];
-    for (let r = 0; r < pRows; r++) {
-      const rowRgb = tmp_cells[r];
+    for (const rowRgb of tmp_cells) {
       const outRow = [];
-      for (let c = 0; c < pCols; c++) {
-        const rgb = rowRgb[c];
+      for (const rgb of rowRgb) {
         if (!rgb) { outRow.push(null); continue; }
-        let bestI = 0, bestD = Infinity;
-        for (let i = 0; i < centers.length; i++) {
-          const cc = centers[i];
-          const dr = rgb[0] - cc[0], dg = rgb[1] - cc[1], db = rgb[2] - cc[2];
-          const d = dr * dr + dg * dg + db * db;
-          if (d < bestD) { bestD = d; bestI = i; }
-        }
-        outRow.push(centerBeads[bestI]);
+        const qk = ((rgb[0] >> 3) << 10) | ((rgb[1] >> 3) << 5) | (rgb[2] >> 3);
+        outRow.push(paletteMap.get(qk));
       }
       cells.push(outRow);
     }
