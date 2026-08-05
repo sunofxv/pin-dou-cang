@@ -2493,6 +2493,11 @@
   let pInited = false;
   let pHighlight = null;      // 当前在图纸上高亮的色号（点击用料清单项触发，再次点击取消）
   let pName = '';             // 图纸名称，用作导出文件名；保存到配方库时一并写入
+  let pUndo = [];              // 撤销栈：每次改图前压入 pCells 深拷贝快照（一次拖动 = 一步）
+  let pUndoMax = 60;
+  let pPanning = false;        // 正在拖动画布（平移）
+  let pSpacePan = false;       // 按住空格临时进入平移模式
+  let pLastPanX = 0, pLastPanY = 0;
 
   function initPatternCells(cols, rows) {
     pCells = Array.from({ length: rows }, () => new Array(cols).fill(null));
@@ -2544,7 +2549,7 @@
     if (!pColor && state.beads.length) pColor = state.beads[0].colorNumber;
     pDrawing = false;
     const toolBtns = [
-      ['pen', '🖌️ 画笔'], ['eraser', '🧽 橡皮'], ['fill', '🪣 填充'], ['picker', '💉 取色']
+      ['pen', '🖌️ 画笔'], ['eraser', '🧽 橡皮'], ['fill', '🪣 填充'], ['picker', '💉 取色'], ['pan', '✋ 拖动']
     ].map(([t, l]) =>
       `<button class="ptool px-3 py-1.5 rounded-xl text-sm font-semibold ${pTool === t ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub'}" data-tool="${t}">${l}</button>`
     ).join('');
@@ -2619,13 +2624,14 @@
               <h3 class="font-bold">🧩 画布（${pCols} × ${pRows}）</h3>
               <div class="flex items-center gap-2 flex-wrap">
                 <button id="p-numbers" class="text-xs px-2.5 py-1 rounded-lg ${pShowNumbers ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub border border-mk-sand'}" title="切换格子上是否显示色号">🔢 显示色号</button>
+                <button id="p-undo" class="text-xs px-2.5 py-1 rounded-lg bg-white/70 border border-mk-sand text-mk-sub disabled:opacity-40 disabled:cursor-not-allowed" title="撤销上一步（Ctrl/⌘+Z）" disabled>↩ 撤销</button>
                 <div class="flex items-center gap-1 bg-white/70 border border-mk-sand rounded-lg px-1 py-0.5 text-xs">
                   <button id="p-zoom-out" class="w-6 h-6 rounded-md hover:bg-mk-sand/40" title="缩小">➖</button>
                   <span id="p-zoom-label" class="px-1 min-w-[44px] text-center font-semibold">${Math.round(pZoom * 100)}%</span>
                   <button id="p-zoom-in" class="w-6 h-6 rounded-md hover:bg-mk-sand/40" title="放大">➕</button>
                   <button id="p-zoom-reset" class="w-6 h-6 rounded-md hover:bg-mk-sand/40" title="重置 100%">🔄</button>
                 </div>
-                <span class="text-xs text-mk-sub">${pMode === 'blank' ? '画笔/橡皮可拖动涂色，填充/取色单击' : '生成的图纸可继续微调'}</span>
+                <span class="text-xs text-mk-sub">${pMode === 'blank' ? '画笔/橡皮拖动涂色；选「✋ 拖动」或按住空格可平移画布' : '生成的图纸可继续微调（✋ 拖动 / 空格 平移画布）'}</span>
               </div>
             </div>
             <p class="text-[11px] text-mk-sub mb-2">💡 电脑端鼠标滚轮在画布上可缩放；移动端双指捏合缩放。</p>
@@ -2705,11 +2711,11 @@
     $('#p-new').onclick = () => {
       let c = parseInt($('#p-cols').value, 10) || 20, r = parseInt($('#p-rows').value, 10) || 20;
       c = Math.min(150, Math.max(2, c)); r = Math.min(150, Math.max(2, r));
-      pCols = c; pRows = r; initPatternCells(c, r); pHighlight = null;
+      pCols = c; pRows = r; initPatternCells(c, r); pHighlight = null; pUndo = [];
       renderPattern(v);
     };
     $('#p-clear').onclick = () => {
-      if (confirm('清空整个画布？')) { initPatternCells(pCols, pRows); pHighlight = null; patternRenderCanvas(); patternRenderBOM(); }
+      if (confirm('清空整个画布？')) { patternPushUndo(); initPatternCells(pCols, pRows); pHighlight = null; patternRenderCanvas(); patternRenderBOM(); }
     };
     // 图片上传（点击 + 拖拽）
     const fileInput = $('#p-file');
@@ -2729,6 +2735,7 @@
       let c = parseInt($('#p-icols').value, 10) || 30, r = parseInt($('#p-irows').value, 10) || 30;
       c = Math.min(150, Math.max(2, c)); r = Math.min(150, Math.max(2, r));
       pCols = c; pRows = r; pHighlight = null;
+      patternPushUndo();
       patternGenerateFromImage();
       renderPattern(v);
     };
@@ -2742,6 +2749,7 @@
     $('#p-zoom-in').onclick     = () => patternSetZoom(pZoom * 1.25);
     $('#p-zoom-out').onclick    = () => patternSetZoom(pZoom / 1.25);
     $('#p-zoom-reset').onclick  = () => patternSetZoom(1);
+    $('#p-undo').onclick = patternUndo;
     // 导出 / 保存 / 确认
     $('#p-png').onclick = patternExportPNG;
     $('#p-csv').onclick = patternExportCSV;
@@ -2833,7 +2841,28 @@
   }
   function patternAttachCanvas() {
     const cv = $('#p-canvas'); if (!cv) return;
-    if (!pInited) { document.addEventListener('mouseup', () => { pDrawing = false; }); pInited = true; }
+    const wrap = $('#p-canvas-wrap');
+    if (!pInited) {
+      document.addEventListener('mouseup', () => { pDrawing = false; pPanning = false; const c = $('#p-canvas'); if (c) c.style.cursor = ''; });
+      document.addEventListener('keydown', (e) => {
+        const t = e.target;
+        const inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+          if (inField) return;                 // 输入框内保留原生撤销
+          if (!$('#p-canvas')) return;
+          e.preventDefault(); patternUndo();
+          return;
+        }
+        if (e.key === ' ' && !inField) { pSpacePan = true; const c = $('#p-canvas'); if (c) c.style.cursor = 'grab'; }
+      });
+      document.addEventListener('keyup', (e) => {
+        if (e.key === ' ') { pSpacePan = false; const c = $('#p-canvas'); if (c) c.style.cursor = ''; }
+      });
+      // 阻止整页被 Ctrl+滚轮 / 双指捏合放大（仅图纸页生效），避免「用料清单跟着缩放」
+      document.addEventListener('wheel', (e) => { if (e.ctrlKey && $('#p-canvas')) e.preventDefault(); }, { passive: false, capture: true });
+      document.addEventListener('gesturestart', (e) => { if ($('#p-canvas')) e.preventDefault(); });
+      pInited = true;
+    }
     const getCell = (e) => {
       const rect = cv.getBoundingClientRect();
       const x = (e.clientX - rect.left) * (cv.width / rect.width);
@@ -2843,31 +2872,56 @@
       if (r < 0 || c < 0 || r >= pRows || c >= pCols) return null;
       return { r, c };
     };
+    const panMode = () => pTool === 'pan' || pSpacePan;
     const apply = (cell) => {
       if (!cell) return;
       const { r, c } = cell;
       if (pTool === 'pen') pCells[r][c] = pColor;
       else if (pTool === 'eraser') pCells[r][c] = null;
-      else if (pTool === 'fill') patternFloodFill(r, c, pColor);
+      else if (pTool === 'fill') { patternPushUndo(); patternFloodFill(r, c, pColor); }
       else if (pTool === 'picker') {
         const n = pCells[r][c];
         if (n) { pColor = n; patternRenderPalette(); patternRenderCurrentColor(); }
       }
       patternRenderCanvas(); patternRenderBOM();
     };
-    // 单指 / 鼠标拖动涂色
-    cv.onmousedown = (e) => { if (e.button !== 0) return; pDrawing = true; apply(getCell(e)); };
-    cv.onmousemove = (e) => { if (pDrawing && (pTool === 'pen' || pTool === 'eraser')) apply(getCell(e)); };
+    // 单指 / 鼠标
+    cv.onmousedown = (e) => {
+      if (e.button !== 0) return;
+      if (panMode()) { pPanning = true; pLastPanX = e.clientX; pLastPanY = e.clientY; cv.style.cursor = 'grabbing'; return; }
+      pDrawing = true;
+      if (pTool === 'pen' || pTool === 'eraser') patternPushUndo();   // 一次拖动 = 一步撤销
+      apply(getCell(e));
+    };
+    cv.onmousemove = (e) => {
+      if (pPanning && panMode()) {
+        wrap.scrollLeft -= (e.clientX - pLastPanX);
+        wrap.scrollTop  -= (e.clientY - pLastPanY);
+        pLastPanX = e.clientX; pLastPanY = e.clientY;
+        return;
+      }
+      if (pDrawing && (pTool === 'pen' || pTool === 'eraser')) apply(getCell(e));
+    };
     cv.ontouchstart = (e) => {
-      // 双指交给 pinch handler，单指走原逻辑
-      if (e.touches.length >= 2) { pDrawing = false; return; }
-      e.preventDefault(); pDrawing = true; apply(getCell(e.touches[0]));
+      if (e.touches.length >= 2) { pDrawing = false; pPanning = false; return; }
+      e.preventDefault();
+      if (panMode()) { pPanning = true; pLastPanX = e.touches[0].clientX; pLastPanY = e.touches[0].clientY; return; }
+      pDrawing = true;
+      if (pTool === 'pen' || pTool === 'eraser') patternPushUndo();
+      apply(getCell(e.touches[0]));
     };
     cv.ontouchmove = (e) => {
-      if (e.touches.length >= 2) return; // 双指走 pinch
-      e.preventDefault(); if (pDrawing && (pTool === 'pen' || pTool === 'eraser')) apply(getCell(e.touches[0]));
+      if (e.touches.length >= 2) return;
+      e.preventDefault();
+      if (pPanning && panMode()) {
+        wrap.scrollLeft -= (e.touches[0].clientX - pLastPanX);
+        wrap.scrollTop  -= (e.touches[0].clientY - pLastPanY);
+        pLastPanX = e.touches[0].clientX; pLastPanY = e.touches[0].clientY;
+        return;
+      }
+      if (pDrawing && (pTool === 'pen' || pTool === 'eraser')) apply(getCell(e.touches[0]));
     };
-    cv.ontouchend = (e) => { if (e.touches.length === 0) pDrawing = false; };
+    cv.ontouchend = (e) => { if (e.touches.length === 0) { pDrawing = false; pPanning = false; cv.style.cursor = ''; } };
 
     // ===== 滚轮缩放（电脑端）=====
     cv.onwheel = (e) => {
@@ -2936,6 +2990,43 @@
       stack.push([cr + 1, cc], [cr - 1, cc], [cr, cc + 1], [cr, cc - 1]);
     }
   }
+  // 撤销栈：每次改图前压入 pCells 深拷贝快照
+  function patternSnapshot() { return pCells.map(row => row.slice()); }
+  function patternPushUndo() {
+    pUndo.push(patternSnapshot());
+    if (pUndo.length > pUndoMax) pUndo.shift();
+    const b = $('#p-undo'); if (b) b.disabled = false;
+  }
+  function patternUndo() {
+    if (!pUndo.length) return toast('没有可撤销的操作了', 'warn');
+    pCells = pUndo.pop();
+    patternRenderCanvas(); patternRenderBOM();
+    const b = $('#p-undo'); if (b && !pUndo.length) b.disabled = true;
+  }
+  // 从图纸中删除某色号（所有该色格子置空），返回删除数量
+  function patternDeleteColor(num) {
+    if (!num) return 0;
+    let cnt = 0;
+    for (let r = 0; r < pRows; r++) for (let c = 0; c < pCols; c++) {
+      if (pCells[r][c] === num) { pCells[r][c] = null; cnt++; }
+    }
+    if (pHighlight === num) pHighlight = null;
+    return cnt;
+  }
+  function patternDeleteColorConfirm(num) {
+    if (!num) return;
+    const bead = beadByNumber(num);
+    if (!confirm(`从图纸中删除所有「${num}」${bead ? '（' + bead.colorName + '）' : ''}？此操作可撤销。`)) return;
+    patternPushUndo();
+    const cnt = patternDeleteColor(num);
+    patternRenderBOM(); patternRenderCanvas();
+    if (pHighlight === num) {
+      const off = $('#p-hl-off'), tip = $('#p-hl-tip');
+      if (off) off.classList.add('hidden');
+      if (tip) tip.classList.add('hidden');
+    }
+    toast(`已删除 ${cnt} 颗 ${num}`, 'success');
+  }
   function patternBOM() {
     const counts = {};
     for (let r = 0; r < pRows; r++) for (let c = 0; c < pCols; c++) {
@@ -2967,6 +3058,7 @@
     const order = used.slice().sort((a, b) => b.qty - a.qty).map(x => x.colorNumber); // 数量多者优先当锚点
     const removed = new Set();
     let merged = 0;
+    patternPushUndo();
     for (const anchor of order) {
       if (removed.has(anchor)) continue;
       let best = null, bestD = Infinity;
@@ -3000,6 +3092,7 @@
     $('#p-repl-ok').onclick = () => {
       const newNum = sel ? sel.value : null;
       if (!newNum) return closeModal();
+      patternPushUndo();
       patternReplaceColor(oldNum, newNum);
       closeModal();
       patternRenderBOM(); patternRenderCanvas();
@@ -3027,6 +3120,7 @@
                style="height:44px; background:${x.hex}">
             <span class="text-[11px] font-bold ${light ? 'text-gray-900' : 'text-white'}">${escapeHtml(x.colorNumber)}</span>
             <button class="bom-replace absolute -top-2 -right-2 text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-white border border-mk-sand text-mk-sub shadow hover:bg-mk-rose hover:text-white" data-num="${escapeHtml(x.colorNumber)}" title="替换为其它色号">⇄</button>
+            <button class="bom-del absolute -bottom-2 -right-2 text-[10px] leading-none px-1.5 py-0.5 rounded-full bg-white border border-mk-sand text-mk-sub shadow hover:bg-rose-500 hover:text-white" data-num="${escapeHtml(x.colorNumber)}" title="从图纸删除此色">✕</button>
           </div>
           <div class="text-base font-extrabold text-mk-ink mt-1 leading-none">${x.qty}</div>
         </div>`;
@@ -3047,6 +3141,9 @@
     });
     $$('#p-bom .bom-replace').forEach(b => {
       b.onclick = (e) => { e.stopPropagation(); openReplaceModal(b.dataset.num); };
+    });
+    $$('#p-bom .bom-del').forEach(b => {
+      b.onclick = (e) => { e.stopPropagation(); patternDeleteColorConfirm(b.dataset.num); };
     });
   }
   function patternRenderPalette() {
