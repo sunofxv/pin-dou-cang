@@ -1085,7 +1085,8 @@
   let tempDetectedVLines = [];  // 选中区域内检测到的垂直网格线（归一化 0~1）
   let tempDetectedHLines = [];  // 选中区域内检测到的水平网格线（归一化 0~1）
   let tempDetectedFramePx = null; // 检测到的图纸边框（分析画布像素坐标 {gx0,gy0,gx1,gy1,aw,ah}），用于按行列数重排网格
-  let tempLegendMap = [];     // 用户框选图例后解析出的颜色→色号映射 [{r,g,b,hex,colorNumber,colorName}]
+  let tempLegendMap = [];     // 用户框选图例后解析出的颜色→色号映射 [{r,g,b,hex,colorNumber,colorName,count}]
+  let tempLegendRegion = null; // 图例模式：用户框选的图例区域坐标（与图案区 tempCropRegion 分开保存）
 
 
   /* ---------- 图纸识别辅助：自动框选、格子检测、画布编辑 ---------- */
@@ -1824,6 +1825,7 @@
         tempDetectedHLines = [];
         tempDetectedFramePx = null;
         tempLegendMap = [];
+        tempLegendRegion = null;
         renderRecognize(v);
         // 智能识别模式：上传即自动识别，免去手动点按
         if (state.settings.recognizeMode === 'auto') {
@@ -1846,6 +1848,7 @@
       // 从/到 图例模式切换时，当前选区含义不同（图例区 vs 图案区），清空避免混淆
       if (oldMode === 'legend' || e.target.value === 'legend') {
         tempCropRegion = null;
+        tempLegendRegion = null;
         tempDetectedVLines = []; tempDetectedHLines = [];
       }
       save();
@@ -2004,6 +2007,7 @@
     };
     $('#clear-legend').onclick = () => {
       tempLegendMap = [];
+      tempLegendRegion = null;
       renderRecognize(v);
     };
     // 图例清单编辑事件（事件委托）
@@ -2726,6 +2730,25 @@
   let pPlanBoard = PERLER_BOARDS[0];   // 板数规划 / 板缝叠加所选用的板型（默认标准板）
   let pShowBoards = false;             // 是否在画布上叠加「板缝」参考线（帮助对齐实物板）
 
+  // 画布分组背景主题：每 5×5 格交替上浅色，帮助数格与分区；颜色都极浅，不干扰豆子色号显示
+  // 交替逻辑：(floor(r/5)+floor(c/5))%2 —— 相邻 5×5 区块不同色；none = 纯色无交替
+  const GRID_THEMES = [
+    { key: 'none',   label: '纯色（无交替）', pair: null },
+    { key: 'pb',     label: '粉蓝交替',  pair: ['#ffe6f0', '#dcebff'] },
+    { key: 'gg',     label: '浅绿深绿交替', pair: ['#e8f7e6', '#cdeccf'] },
+    { key: 'lm',     label: '薰衣草薄荷', pair: ['#efe6ff', '#dcf5ec'] },
+    { key: 'ps',     label: '蜜桃天蓝',  pair: ['#ffe9d6', '#d6ecff'] },
+    { key: 'yg',     label: '米黄浅灰',  pair: ['#fff6d6', '#eceae6'] },
+    { key: 'bg',     label: '蓝灰交替',  pair: ['#e2ecf7', '#eae7e2'] },
+  ];
+  let pGridTheme = 'none';   // 当前选用的分组背景主题 key
+  // 取某格所属 5×5 区块的背景色（无交替或空主题返回 null）
+  function gridThemeBg(r, c) {
+    const t = GRID_THEMES.find(x => x.key === pGridTheme);
+    if (!t || !t.pair) return null;
+    return t.pair[(Math.floor(r / 5) + Math.floor(c / 5)) % 2];
+  }
+
   // 一键把画布尺寸设为真实板尺寸（同步更新两处输入控件的值）
   function setBoardSize(n) {
     pCols = n; pRows = n;
@@ -2880,6 +2903,7 @@
                 <button id="p-pan-toggle" class="text-xs px-2.5 py-1 rounded-lg ${pTool === 'pan' ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub border border-mk-sand'}" title="开启后可在画布上拖动平移（也可按住空格 / 鼠标中键）">✋ 拖动画布</button>
                 <button id="p-board-plan" class="text-xs px-2.5 py-1 rounded-lg bg-white/70 border border-mk-sand text-mk-sub" title="计算此图案需要多少块真实拼豆板、怎么拼接">📐 板数规划</button>
                 <button id="p-board-overlay" class="text-xs px-2.5 py-1 rounded-lg ${pShowBoards ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub border border-mk-sand'}" title="在画布上叠加板缝参考线，帮助对齐实物板">🧱 板缝</button>
+                <button id="p-grid-theme" class="text-xs px-2.5 py-1 rounded-lg bg-white/70 border border-mk-sand text-mk-sub" title="选择画布 5×5 分组的背景色（交替浅色，便于数格分区）">🎨 分组底色</button>
                 <span class="text-xs text-mk-sub">${pMode === 'blank' ? '画笔/橡皮拖动涂色；点「✋ 拖动画布」或按住空格可平移' : '点「✋ 拖动画布」或按住空格 / 中键，平移生成的图纸'}</span>
               </div>
             </div>
@@ -2982,6 +3006,9 @@
       boardOverlay.classList.toggle('text-mk-sub', !on);
     };
     if (boardOverlay) boardOverlay.onclick = () => { pShowBoards = !pShowBoards; syncBoardOverlay(); patternRenderCanvas(); };
+    // 分组背景主题选择弹窗
+    const gridThemeBtn = $('#p-grid-theme');
+    if (gridThemeBtn) gridThemeBtn.onclick = openGridThemePicker;
     // 工具切换
     $$('.ptool').forEach(b => b.onclick = () => {
       pTool = b.dataset.tool;
@@ -3084,8 +3111,14 @@
         const num = pCells[r][c];
         const bead = num ? beadByNumber(num) : null;
         const hex = bead ? bead.hex : null;
-        ctx.fillStyle = hex || '#FFFDF9';
-        ctx.fillRect(c * cp, r * cp, cp, cp);
+        if (hex) {
+          ctx.fillStyle = hex;            // 有豆子的格子显示豆色
+          ctx.fillRect(c * cp, r * cp, cp, cp);
+        } else {
+          const bg = gridThemeBg(r, c);   // 空白格按 5×5 分组上交替浅底
+          ctx.fillStyle = bg || '#FFFDF9';
+          ctx.fillRect(c * cp, r * cp, cp, cp);
+        }
         // 高亮模式下，把非目标色淡出，突出当前选中的色号
         if (pHighlight && num && num !== pHighlight) { ctx.fillStyle = 'rgba(248,246,242,0.55)'; ctx.fillRect(c * cp, r * cp, cp, cp); }
         if (pShowNumbers && num && hex) {
@@ -3102,11 +3135,11 @@
     ctx.lineWidth = 1;
     for (let c = 0; c <= pCols; c++) { ctx.beginPath(); ctx.moveTo(c * cp + 0.5, 0); ctx.lineTo(c * cp + 0.5, cv.height); ctx.stroke(); }
     for (let r = 0; r <= pRows; r++) { ctx.beginPath(); ctx.moveTo(0, r * cp + 0.5); ctx.lineTo(cv.width, r * cp + 0.5); ctx.stroke(); }
-    // 每 10 格画一条粗线方便数数
+    // 每 5 格画一条粗线（分组边线），方便按区块数数
     ctx.strokeStyle = 'rgba(60,40,30,0.55)';
     ctx.lineWidth = 1.5;
-    for (let c = 0; c <= pCols; c += 10) { ctx.beginPath(); ctx.moveTo(c * cp + 0.5, 0); ctx.lineTo(c * cp + 0.5, cv.height); ctx.stroke(); }
-    for (let r = 0; r <= pRows; r += 10) { ctx.beginPath(); ctx.moveTo(0, r * cp + 0.5); ctx.lineTo(cv.width, r * cp + 0.5); ctx.stroke(); }
+    for (let c = 0; c <= pCols; c += 5) { ctx.beginPath(); ctx.moveTo(c * cp + 0.5, 0); ctx.lineTo(c * cp + 0.5, cv.height); ctx.stroke(); }
+    for (let r = 0; r <= pRows; r += 5) { ctx.beginPath(); ctx.moveTo(0, r * cp + 0.5); ctx.lineTo(cv.width, r * cp + 0.5); ctx.stroke(); }
     // 真实板缝参考线（叠加在网格上，帮助用户把图纸对齐到实物拼豆板）
     if (pShowBoards) {
       const bw = pPlanBoard.w, bh = pPlanBoard.h;
@@ -3520,6 +3553,27 @@
     };
     renderPlan();
   }
+  // 分组背景主题选择弹窗：每 5×5 分组交替浅色 / 纯色无交替
+  function openGridThemePicker() {
+    const swatch = (pair) => pair
+      ? `<span style="display:inline-block;width:100%;height:14px;border-radius:4px;background:linear-gradient(90deg,${pair[0]} 0 50%,${pair[1]} 50% 100%)"></span>`
+      : `<span style="display:inline-block;width:100%;height:14px;border-radius:4px;background:#FFFDF9;border:1px solid #e6ddd2"></span>`;
+    const body = `
+      <p class="text-[11px] text-mk-sub mb-3">每 5×5 格为一分组，相邻分组交替上浅色，方便数格与分区；颜色极浅，不干扰豆子色号显示。导出 PNG 同样生效。</p>
+      <div class="grid grid-cols-2 gap-2">
+        ${GRID_THEMES.map(t => `
+          <button class="theme-pick flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-semibold ${t.key === pGridTheme ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub border border-mk-sand'}" data-key="${t.key}">
+            <span class="inline-block w-10 shrink-0">${swatch(t.pair)}</span>${t.label}
+          </button>`).join('')}
+      </div>`;
+    openModal('🎨 分组底色', body, { wide: false });
+    setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="closeModal()">关闭</button>`);
+    $$('.theme-pick').forEach(b => b.onclick = () => {
+      pGridTheme = b.dataset.key;
+      $$('.theme-pick').forEach(x => { const on = x.dataset.key === pGridTheme; x.classList.toggle('bg-mk-rose', on); x.classList.toggle('text-white', on); x.classList.toggle('bg-white/70', !on); x.classList.toggle('text-mk-sub', !on); });
+      patternRenderCanvas();
+    });
+  }
   function patternRenderPalette() {
     const wrap = $('#p-swatches'); if (!wrap) return;
     const q = ($('#p-search').value || '').trim().toLowerCase();
@@ -3714,9 +3768,14 @@
     for (let r = 0; r < pRows; r++) for (let c = 0; c < pCols; c++) {
       const num = pCells[r][c];
       const bead = num ? beadByNumber(num) : null;
-      const hex = bead ? bead.hex : '#ffffff';
-      ctx.fillStyle = hex;
-      ctx.fillRect(c * cp, r * cp, cp, cp);
+      const hex = bead ? bead.hex : null;
+      if (hex) {
+        ctx.fillStyle = hex;
+        ctx.fillRect(c * cp, r * cp, cp, cp);
+      } else {
+        ctx.fillStyle = gridThemeBg(r, c) || '#ffffff';
+        ctx.fillRect(c * cp, r * cp, cp, cp);
+      }
       if (pShowNumbers && num) {
         ctx.fillStyle = patternLuminance(hex) > 150 ? '#2a1f18' : '#ffffff';
         // 字号随色号长度自动缩放，保证 4 位色号在小格子里也完整显示
@@ -3730,11 +3789,11 @@
     ctx.lineWidth = 1;
     for (let c = 0; c <= pCols; c++) { ctx.beginPath(); ctx.moveTo(c * cp + 0.5, 0); ctx.lineTo(c * cp + 0.5, H_grid); ctx.stroke(); }
     for (let r = 0; r <= pRows; r++) { ctx.beginPath(); ctx.moveTo(0, r * cp + 0.5); ctx.lineTo(W, r * cp + 0.5); ctx.stroke(); }
-    // 每 10 格加粗辅助线，方便按区块数数
+    // 每 5 格加粗分组边线，方便按区块数数
     ctx.strokeStyle = 'rgba(0,0,0,0.65)';
     ctx.lineWidth = 1.6;
-    for (let c = 0; c <= pCols; c += 10) { ctx.beginPath(); ctx.moveTo(c * cp + 0.5, 0); ctx.lineTo(c * cp + 0.5, H_grid); ctx.stroke(); }
-    for (let r = 0; r <= pRows; r += 10) { ctx.beginPath(); ctx.moveTo(0, r * cp + 0.5); ctx.lineTo(W, r * cp + 0.5); ctx.stroke(); }
+    for (let c = 0; c <= pCols; c += 5) { ctx.beginPath(); ctx.moveTo(c * cp + 0.5, 0); ctx.lineTo(c * cp + 0.5, H_grid); ctx.stroke(); }
+    for (let r = 0; r <= pRows; r += 5) { ctx.beginPath(); ctx.moveTo(0, r * cp + 0.5); ctx.lineTo(W, r * cp + 0.5); ctx.stroke(); }
     // ===== 用料清单（拼到图纸底部，生成的图纸自带清单） =====
     if (bom.length) {
       const rr = (x, y, w, h, r) => {
