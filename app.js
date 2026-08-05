@@ -1720,8 +1720,14 @@
 
             <!-- 图例识别：框选图例 → 解析颜色 → 生成色号清单 -->
             <div id="legend-options" class="${state.settings.recognizeMode === 'legend' ? '' : 'hidden'} space-y-2">
-              <p class="text-[11px] text-mk-sub">先在图上<b>拖拽框选图例区域</b>（通常是图纸底部的色块条），再点「解析图例」。程序会提取图例中的代表色，并尝试匹配到标准色号；你可在清单里手动修正色号，识别时将优先按此清单映射。</p>
-              <button id="parse-legend" type="button" class="w-full px-3 py-2 rounded-xl bg-mk-lav/70 text-mk-ink text-sm font-semibold hover:bg-mk-lav/90">🎨 解析图例</button>
+              <p class="text-[11px] text-mk-sub">先在图上<b>拖拽框选图例区域</b>（通常是图纸底部的色块条），再点「解析图例」。程序会自动估算色块列数；若不准，可手动修改列数后重新解析。</p>
+              <div class="flex items-center justify-between text-sm bg-white/60 rounded-xl px-3 py-2">
+                <span>图例列数（色块个数）</span>
+                <span class="flex items-center gap-2">
+                  <input id="legend-cols" type="number" min="1" max="60" value="${tempLegendMap.estimatedCols || ''}" placeholder="自动" class="w-20 px-2 py-1 rounded-lg bg-white border border-mk-sand text-sm">
+                  <button id="parse-legend" type="button" class="px-3 py-1.5 rounded-lg bg-mk-lav/70 text-mk-ink text-xs font-semibold hover:bg-mk-lav/90">🎨 解析图例</button>
+                </span>
+              </div>
               <div id="legend-list" class="${tempLegendMap.length ? '' : 'hidden'}">
                 <div class="flex items-center justify-between mb-1">
                   <div class="text-xs text-mk-sub">已解析色号清单（点击可编辑）：</div>
@@ -1985,11 +1991,14 @@
     $('#parse-legend').onclick = () => {
       if (!tempImage) return toast('请先上传图片', 'error');
       if (!tempCropRegion) return toast('请先在图上框选图例区域', 'error');
+      const colsInput = $('#legend-cols');
+      const cols = colsInput ? parseInt(colsInput.value, 10) : 0;
       const img = new Image();
       img.onload = () => {
-        tempLegendMap = parseLegendRegion(img, tempCropRegion);
+        tempLegendMap = parseLegendRegion(img, tempCropRegion, { cols });
+        if (colsInput && (!cols || cols <= 0)) colsInput.value = tempLegendMap.estimatedCols || '';
         renderRecognize(v);
-        toast(`已解析 ${tempLegendMap.length} 个图例色`, tempLegendMap.length ? 'success' : 'warn');
+        toast(`已解析 ${tempLegendMap.length} 个图例色（估算列数 ${tempLegendMap.estimatedCols || 0}）`, tempLegendMap.length ? 'success' : 'warn');
       };
       img.src = tempImage;
     };
@@ -2113,55 +2122,123 @@
     img.src = tempImage;
   }
 
-  // 解析用户框选的图例区域：提取代表性颜色并尝试映射到标准色号
-  function parseLegendRegion(img, region) {
+  // 解析用户框选的图例区域：自动估算列数，按列采样色块中心颜色，再映射到标准色号
+  function parseLegendRegion(img, region, opts = {}) {
     const MAX = 800;
     const { w, h, ctx } = createAnalysisCanvas(img, MAX);
     const data = ctx.getImageData(0, 0, w, h).data;
-    const x0 = Math.max(0, Math.round(region.x * w));
-    const y0 = Math.max(0, Math.round(region.y * h));
-    const x1 = Math.min(w, Math.round((region.x + region.w) * w));
-    const y1 = Math.min(h, Math.round((region.y + region.h) * h));
-    const tolerance = state.settings.sampleTolerance || 24;
-    const buckets = [];
-    for (let y = y0; y < y1; y++) {
-      for (let x = x0; x < x1; x++) {
-        const idx = (y * w + x) * 4;
-        const a = data[idx + 3];
-        if (a < 128) continue;
-        const r = data[idx], g = data[idx + 1], b = data[idx + 2];
-        // 跳过背景/网格线和用户忽略色
-        if (isGridBackgroundLike(r, g, b)) continue;
-        let ignored = false;
-        for (const ig of tempIgnoreColors) {
-          if (colorDist(r, g, b, ig.r, ig.g, ig.b) <= (ig.tolerance || 24)) { ignored = true; break; }
-        }
-        if (ignored) continue;
-        let hit = null;
-        for (const bk of buckets) {
-          if (colorDist(r, g, b, bk.r, bk.g, bk.b) <= tolerance) { hit = bk; break; }
-        }
-        if (hit) {
-          hit.r = Math.round((hit.r * hit.count + r) / (hit.count + 1));
-          hit.g = Math.round((hit.g * hit.count + g) / (hit.count + 1));
-          hit.b = Math.round((hit.b * hit.count + b) / (hit.count + 1));
-          hit.count++;
-        } else buckets.push({ r, g, b, count: 1 });
+    const rx0 = Math.max(0, Math.round(region.x * w));
+    const ry0 = Math.max(0, Math.round(region.y * h));
+    const rx1 = Math.min(w, Math.round((region.x + region.w) * w));
+    const ry1 = Math.min(h, Math.round((region.y + region.h) * h));
+
+    function isBg(r, g, b) { return r > 248 && g > 248 && b > 248; }
+    function isText(r, g, b) { return r < 40 && g < 40 && b < 40; }
+    function isGray(r, g, b) { const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return mx - mn < 20 && mx > 60 && mx < 230; }
+    function goodPx(r, g, b) { return !isBg(r, g, b) && !isText(r, g, b) && !isGray(r, g, b); }
+
+    // 1. 找出色块行（y 方向颜色能量最大的几行）
+    let bestY = ry0, bestCount = 0;
+    for (let y = ry0; y < ry1; y++) {
+      let cnt = 0;
+      for (let x = rx0; x < rx1; x++) {
+        const i = (y * w + x) * 4;
+        if (goodPx(data[i], data[i + 1], data[i + 2])) cnt++;
+      }
+      if (cnt > bestCount) { bestCount = cnt; bestY = y; }
+    }
+    if (bestCount < 5) return [];
+    const stripY0 = Math.max(ry0, bestY - 12);
+    const stripY1 = Math.min(ry1 - 1, bestY + 12);
+
+    // 2. 裁剪左右空白边距，并合并色块间的小间隙，取最长连续色块带
+    const runs = [];
+    let run = null;
+    const gapThresh = Math.max(4, Math.round((rx1 - rx0) * 0.015));
+    for (let x = rx0; x < rx1; x++) {
+      let cnt = 0;
+      for (let y = stripY0; y <= stripY1; y++) {
+        const i = (y * w + x) * 4;
+        if (goodPx(data[i], data[i + 1], data[i + 2])) cnt++;
+      }
+      if (cnt > 2) {
+        if (!run) run = { x0: x, x1: x, gap: 0 };
+        else { run.x1 = x; run.gap = 0; }
+      } else if (run) {
+        run.gap++;
+        if (run.gap > gapThresh) { runs.push({ x0: run.x0, x1: run.x1 - run.gap }); run = null; }
       }
     }
-    // 按像素数排序，过滤掉极小的噪声点
-    buckets.sort((a, b) => b.count - a.count);
-    const minCount = Math.max(3, Math.floor(((x1 - x0) * (y1 - y0)) * 0.0005));
-    const filtered = buckets.filter(bk => bk.count >= minCount).slice(0, 40);
-    return filtered.map(bk => {
-      const hex = rgbToHex(bk.r, bk.g, bk.b);
-      const std = mapColorToStandard(bk.r, bk.g, bk.b);
-      return {
-        r: bk.r, g: bk.g, b: bk.b, hex,
+    if (run) runs.push({ x0: run.x0, x1: run.x1 - run.gap });
+    const longest = runs.reduce((a, b) => (b.x1 - b.x0 > a.x1 - a.x0 ? b : a), { x0: 0, x1: -1 });
+    if (longest.x1 - longest.x0 < 5) return [];
+    const firstX = longest.x0, lastX = longest.x1;
+    const stripW = lastX - firstX + 1;
+
+    // 3. 估算列数：按 x 方向颜色能量找峰
+    const energy = [];
+    for (let x = rx0; x < rx1; x++) {
+      let e = 0, cnt = 0;
+      for (let y = stripY0; y <= stripY1; y++) {
+        const i = (y * w + x) * 4;
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        if (goodPx(r, g, b)) { e += Math.max(r, g, b) - Math.min(r, g, b); cnt++; }
+      }
+      energy[x] = cnt ? e / cnt : 0;
+    }
+    // 平滑
+    const smooth = energy.map((v, i) => {
+      let sum = 0, n = 0;
+      for (let d = -2; d <= 2; d++) if (energy[i + d] !== undefined) { sum += energy[i + d]; n++; }
+      return sum / n;
+    });
+    const peaks = [];
+    for (let x = firstX + 3; x <= lastX - 3; x++) {
+      if (smooth[x] > smooth[x - 1] && smooth[x] > smooth[x + 1] && smooth[x] > 8) peaks.push(x);
+    }
+    // 合并邻近峰
+    const groups = [];
+    for (const p of peaks) {
+      const last = groups[groups.length - 1];
+      if (last && p - last[last.length - 1] < 8) last.push(p);
+      else groups.push([p]);
+    }
+    let estimatedCols = groups.length;
+    if (estimatedCols < 2) estimatedCols = 2;
+    if (estimatedCols > 60) estimatedCols = 60;
+
+    // 4. 按目标列数等分采样
+    const targetCols = (opts.cols && opts.cols > 0) ? opts.cols : estimatedCols;
+    const colW = stripW / targetCols;
+    const colors = [];
+    for (let i = 0; i < targetCols; i++) {
+      const cx = firstX + Math.round((i + 0.5) * colW);
+      const colorMap = {};
+      let total = 0;
+      for (let y = stripY0; y <= stripY1; y++) {
+        for (let x = Math.max(rx0, cx - 6); x <= Math.min(rx1 - 1, cx + 6); x++) {
+          const ii = (y * w + x) * 4;
+          const r = data[ii], g = data[ii + 1], b = data[ii + 2];
+          if (goodPx(r, g, b)) {
+            const k = `${Math.round(r / 4) * 4},${Math.round(g / 4) * 4},${Math.round(b / 4) * 4}`;
+            colorMap[k] = (colorMap[k] || 0) + 1; total++;
+          }
+        }
+      }
+      if (!total) continue;
+      const dom = Object.entries(colorMap).sort((a, b) => b[1] - a[1])[0][0].split(',').map(Number);
+      const std = mapColorToStandard(dom[0], dom[1], dom[2]);
+      colors.push({
+        r: dom[0], g: dom[1], b: dom[2],
+        hex: rgbToHex(dom[0], dom[1], dom[2]),
         colorNumber: std.colorNumber || '',
         colorName: std.colorName || ''
-      };
-    });
+      });
+    }
+
+    colors.estimatedCols = estimatedCols;
+    colors.peakCenters = groups.map(g => Math.round(g.reduce((a, b) => a + b, 0) / g.length));
+    return colors;
   }
 
   // 自动取图纸四角颜色加入忽略列表（通常四角是背景/空白）
