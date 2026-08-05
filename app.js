@@ -679,7 +679,7 @@
 
   function renderNav() {
     $('#nav').innerHTML = VIEWS.map(v =>
-      `<button class="nav-btn px-3 py-1.5 rounded-xl text-sm font-semibold text-mk-sub whitespace-nowrap ${v.key === currentView ? 'active' : 'hover:bg-white/60'}" data-view="${v.key}">${v.label}</button>`
+      `<button class="nav-btn px-2 sm:px-3 py-1 sm:py-1.5 rounded-xl text-xs sm:text-sm font-semibold text-mk-sub whitespace-nowrap ${v.key === currentView ? 'active' : 'hover:bg-white/60'}" data-view="${v.key}">${v.label}</button>`
     ).join('');
     $$('#nav .nav-btn').forEach(btn => btn.onclick = () => switchView(btn.dataset.view));
   }
