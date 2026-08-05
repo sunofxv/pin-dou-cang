@@ -596,7 +596,25 @@
    *   3) 均未命中 → matched=false，弹窗中由用户手动从下拉框选择色号。
    * 返回 { colorNumber, colorName, hex, matched, matchedBy }
    * ==================================================================== */
-  function mapColorToStandard(r, g, b) {
+  function mapColorToStandard(r, g, b, legendMap = null) {
+    // 0) 优先使用用户从图例解析出的色号映射（如果存在且颜色接近）
+    if (legendMap && legendMap.length) {
+      let bestL = null, bestLD = Infinity;
+      for (const m of legendMap) {
+        const d = colorDist(r, g, b, m.r, m.g, m.b);
+        if (d < bestLD) { bestLD = d; bestL = m; }
+      }
+      if (bestL && bestLD <= (state.settings.sampleTolerance || 32)) {
+        return {
+          colorNumber: bestL.colorNumber,
+          colorName: bestL.colorName,
+          hex: bestL.hex,
+          matched: !!bestL.colorNumber,
+          matchedBy: '图例',
+          distance: bestLD
+        };
+      }
+    }
     // 1) 色卡对照表
     let best = null, bestD = Infinity;
     for (const m of state.mappings) {
@@ -1067,6 +1085,7 @@
   let tempDetectedVLines = [];  // 选中区域内检测到的垂直网格线（归一化 0~1）
   let tempDetectedHLines = [];  // 选中区域内检测到的水平网格线（归一化 0~1）
   let tempDetectedFramePx = null; // 检测到的图纸边框（分析画布像素坐标 {gx0,gy0,gx1,gy1,aw,ah}），用于按行列数重排网格
+  let tempLegendMap = [];     // 用户框选图例后解析出的颜色→色号映射 [{r,g,b,hex,colorNumber,colorName}]
 
 
   /* ---------- 图纸识别辅助：自动框选、格子检测、画布编辑 ---------- */
@@ -1617,9 +1636,18 @@
       }
       // 当前选中框
       if (tempCropRegion) {
-        ctx.strokeStyle = '#10b981';
+        ctx.strokeStyle = state.settings.recognizeMode === 'legend' ? '#8b5cf6' : '#10b981';
         ctx.lineWidth = 2;
+        ctx.setLineDash(state.settings.recognizeMode === 'legend' ? [6, 3] : []);
         ctx.strokeRect(tempCropRegion.x * dw, tempCropRegion.y * dh, tempCropRegion.w * dw, tempCropRegion.h * dh);
+        ctx.setLineDash([]);
+        if (state.settings.recognizeMode === 'legend') {
+          ctx.fillStyle = 'rgba(139,92,246,0.12)';
+          ctx.fillRect(tempCropRegion.x * dw, tempCropRegion.y * dh, tempCropRegion.w * dw, tempCropRegion.h * dh);
+          ctx.fillStyle = '#8b5cf6';
+          ctx.font = 'bold 12px sans-serif';
+          ctx.fillText('图例区域', (tempCropRegion.x * dw) + 4, (tempCropRegion.y * dh) + 14);
+        }
       }
     };
     img.src = tempImage;
@@ -1664,6 +1692,7 @@
                 <option value="auto" ${state.settings.recognizeMode === 'auto' ? 'selected' : ''}>🤖 智能识别（推荐·自动框图）</option>
                 <option value="grid" ${state.settings.recognizeMode === 'grid' ? 'selected' : ''}>格子采样（手填格子数）</option>
                 <option value="pixel" ${state.settings.recognizeMode === 'pixel' ? 'selected' : ''}>像素聚类（无标注小图）</option>
+                <option value="legend" ${state.settings.recognizeMode === 'legend' ? 'selected' : ''}>🎨 图例识别（框选图例生成色号清单）</option>
               </select>
             </label>
 
@@ -1687,6 +1716,29 @@
                 <span>单元格高宽比 <span class="text-[10px] text-mk-sub">（行距=列距×此值）</span></span>
                 <span><input id="cell-aspect" type="range" min="0.40" max="0.80" step="0.005" value="${state.settings.cellAspect || 0.555}" class="align-middle"><b id="cell-aspect-v" class="ml-1">${(state.settings.cellAspect || 0.555).toFixed(3)}</b></span>
               </label>
+            </div>
+
+            <!-- 图例识别：框选图例 → 解析颜色 → 生成色号清单 -->
+            <div id="legend-options" class="${state.settings.recognizeMode === 'legend' ? '' : 'hidden'} space-y-2">
+              <p class="text-[11px] text-mk-sub">先在图上<b>拖拽框选图例区域</b>（通常是图纸底部的色块条），再点「解析图例」。程序会提取图例中的代表色，并尝试匹配到标准色号；你可在清单里手动修正色号，识别时将优先按此清单映射。</p>
+              <button id="parse-legend" type="button" class="w-full px-3 py-2 rounded-xl bg-mk-lav/70 text-mk-ink text-sm font-semibold hover:bg-mk-lav/90">🎨 解析图例</button>
+              <div id="legend-list" class="${tempLegendMap.length ? '' : 'hidden'}">
+                <div class="flex items-center justify-between mb-1">
+                  <div class="text-xs text-mk-sub">已解析色号清单（点击可编辑）：</div>
+                  <button id="clear-legend" type="button" class="text-xs text-rose-400 hover:underline">清空图例</button>
+                </div>
+                <div id="legend-items" class="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-48 overflow-auto pr-1">
+                  ${tempLegendMap.map((it, i) => `
+                    <div class="legend-item p-2 rounded-xl bg-white border border-mk-sand" data-i="${i}">
+                      <div class="flex items-center gap-2 mb-1.5">
+                        <span class="w-6 h-6 rounded-full swatch shrink-0" style="background:${it.hex}"></span>
+                        <input type="text" data-field="colorNumber" value="${escapeHtml(it.colorNumber)}" placeholder="色号" class="w-full px-2 py-1 rounded-lg bg-mk-sand/30 border border-mk-sand/50 text-sm font-semibold">
+                      </div>
+                      <input type="text" data-field="colorName" value="${escapeHtml(it.colorName)}" placeholder="颜色名" class="w-full px-2 py-1 rounded-lg bg-white border border-mk-sand text-xs">
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
             </div>
 
             <!-- 手动格子采样 -->
@@ -1739,9 +1791,9 @@
           <h3 class="font-bold mb-3">📋 识别说明</h3>
           <ol class="text-sm text-mk-ink/80 space-y-2 list-decimal list-inside">
             <li>上传图纸。若图中有多个图案，请分别框选识别。</li>
-            <li>点击「自动框选图案」让程序推荐区域；也可直接在图上拖拽自定义。</li>
-            <li>点「检测格子」自动识别网格线并填入行列数；也可手动输入。</li>
-            <li>点击“开始识别”：程序按格子中心取色，自动避开网格线与色号文字。</li>
+            <li><b>图例模式（推荐复杂图纸）</b>：先框选图纸下方的色块图例，点「解析图例」生成色号清单并校对；再切换「智能识别/格子采样」框选图案、识别用量。</li>
+            <li>「智能识别」会自动框图并识别行列；「格子采样」需手动填格子数并点「检测格子」。</li>
+            <li>点击“开始识别”：程序按格子中心取色，自动避开网格线与色号文字；若已设图例，会优先按图例颜色映射色号。</li>
             <li>相同标准色号合并，弹窗中的“数量”即该色号的格子数。</li>
             <li>校对色号/数量后，确认扣减库存或存为配方。</li>
           </ol>
@@ -1765,6 +1817,7 @@
         tempDetectedVLines = [];
         tempDetectedHLines = [];
         tempDetectedFramePx = null;
+        tempLegendMap = [];
         renderRecognize(v);
         // 智能识别模式：上传即自动识别，免去手动点按
         if (state.settings.recognizeMode === 'auto') {
@@ -1778,10 +1831,17 @@
     $('#tol').oninput = (e) => { state.settings.sampleTolerance = +e.target.value; $('#tol-v').textContent = e.target.value; save(); };
     $('#scale').onchange = (e) => { state.settings.scaleFactor = Math.max(0.1, parseFloat(e.target.value) || 1); save(); };
     $('#mode').onchange = (e) => {
+      const oldMode = state.settings.recognizeMode;
       state.settings.recognizeMode = e.target.value;
       $('#grid-options').classList.toggle('hidden', e.target.value !== 'grid');
       $('#auto-options').classList.toggle('hidden', e.target.value !== 'auto');
-      $('#scale-wrap').classList.toggle('hidden', e.target.value === 'grid' || e.target.value === 'auto');
+      $('#legend-options').classList.toggle('hidden', e.target.value !== 'legend');
+      $('#scale-wrap').classList.toggle('hidden', e.target.value === 'grid' || e.target.value === 'auto' || e.target.value === 'legend');
+      // 从/到 图例模式切换时，当前选区含义不同（图例区 vs 图案区），清空避免混淆
+      if (oldMode === 'legend' || e.target.value === 'legend') {
+        tempCropRegion = null;
+        tempDetectedVLines = []; tempDetectedHLines = [];
+      }
       save();
       // 切到智能识别且已上传图片时，自动跑一次识别，免手动点
       if (e.target.value === 'auto' && tempImage) {
@@ -1922,9 +1982,36 @@
       tempDetectedFramePx = null;
       drawEditor();
     };
+    $('#parse-legend').onclick = () => {
+      if (!tempImage) return toast('请先上传图片', 'error');
+      if (!tempCropRegion) return toast('请先在图上框选图例区域', 'error');
+      const img = new Image();
+      img.onload = () => {
+        tempLegendMap = parseLegendRegion(img, tempCropRegion);
+        renderRecognize(v);
+        toast(`已解析 ${tempLegendMap.length} 个图例色`, tempLegendMap.length ? 'success' : 'warn');
+      };
+      img.src = tempImage;
+    };
+    $('#clear-legend').onclick = () => {
+      tempLegendMap = [];
+      renderRecognize(v);
+    };
+    // 图例清单编辑事件（事件委托）
+    const legendItems = $('#legend-items');
+    if (legendItems) legendItems.oninput = (e) => {
+      const item = e.target.closest('.legend-item');
+      if (!item) return;
+      const idx = +item.dataset.i;
+      const field = e.target.dataset.field;
+      if (tempLegendMap[idx] && field) tempLegendMap[idx][field] = e.target.value;
+    };
 
     $('#start').onclick = runRecognition;
     $('#auto-ignore-bg').onclick = () => autoIgnoreCorners(v);
+    if (state.settings.recognizeMode === 'legend' && tempLegendMap.length) {
+      // 重渲染后图例清单编辑框会重建，但值已存在；无需额外同步
+    }
     $$('.ig-del').forEach(btn => btn.onclick = (e) => {
       tempIgnoreColors.splice(+e.target.dataset.i, 1);
       renderRecognize(v);
@@ -1978,7 +2065,7 @@
             const merged = new Map();
             for (const bk of buckets) {
               if (filterBg && isGridBackgroundLike(bk.r, bk.g, bk.b)) continue;
-              const m = mapColorToStandard(bk.r, bk.g, bk.b);
+              const m = mapColorToStandard(bk.r, bk.g, bk.b, tempLegendMap);
               const key = m.colorNumber || `__unmatched_${bk.r}_${bk.g}_${bk.b}`;
               if (!merged.has(key)) {
                 merged.set(key, {
@@ -2002,7 +2089,7 @@
               .filter(bk => !filterBg || !isBackgroundLike(bk.r, bk.g, bk.b))
               .map(bk => {
                 const cnt = Math.max(1, Math.round(bk.count / sf));
-                const m = mapColorToStandard(bk.r, bk.g, bk.b);
+                const m = mapColorToStandard(bk.r, bk.g, bk.b, tempLegendMap);
                 return {
                   id: uid('r'),
                   sampleHex: rgbToHex(bk.r, bk.g, bk.b),
@@ -2024,6 +2111,57 @@
     };
     img.onerror = () => toast('图片加载失败', 'error');
     img.src = tempImage;
+  }
+
+  // 解析用户框选的图例区域：提取代表性颜色并尝试映射到标准色号
+  function parseLegendRegion(img, region) {
+    const MAX = 800;
+    const { w, h, ctx } = createAnalysisCanvas(img, MAX);
+    const data = ctx.getImageData(0, 0, w, h).data;
+    const x0 = Math.max(0, Math.round(region.x * w));
+    const y0 = Math.max(0, Math.round(region.y * h));
+    const x1 = Math.min(w, Math.round((region.x + region.w) * w));
+    const y1 = Math.min(h, Math.round((region.y + region.h) * h));
+    const tolerance = state.settings.sampleTolerance || 24;
+    const buckets = [];
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const idx = (y * w + x) * 4;
+        const a = data[idx + 3];
+        if (a < 128) continue;
+        const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+        // 跳过背景/网格线和用户忽略色
+        if (isGridBackgroundLike(r, g, b)) continue;
+        let ignored = false;
+        for (const ig of tempIgnoreColors) {
+          if (colorDist(r, g, b, ig.r, ig.g, ig.b) <= (ig.tolerance || 24)) { ignored = true; break; }
+        }
+        if (ignored) continue;
+        let hit = null;
+        for (const bk of buckets) {
+          if (colorDist(r, g, b, bk.r, bk.g, bk.b) <= tolerance) { hit = bk; break; }
+        }
+        if (hit) {
+          hit.r = Math.round((hit.r * hit.count + r) / (hit.count + 1));
+          hit.g = Math.round((hit.g * hit.count + g) / (hit.count + 1));
+          hit.b = Math.round((hit.b * hit.count + b) / (hit.count + 1));
+          hit.count++;
+        } else buckets.push({ r, g, b, count: 1 });
+      }
+    }
+    // 按像素数排序，过滤掉极小的噪声点
+    buckets.sort((a, b) => b.count - a.count);
+    const minCount = Math.max(3, Math.floor(((x1 - x0) * (y1 - y0)) * 0.0005));
+    const filtered = buckets.filter(bk => bk.count >= minCount).slice(0, 40);
+    return filtered.map(bk => {
+      const hex = rgbToHex(bk.r, bk.g, bk.b);
+      const std = mapColorToStandard(bk.r, bk.g, bk.b);
+      return {
+        r: bk.r, g: bk.g, b: bk.b, hex,
+        colorNumber: std.colorNumber || '',
+        colorName: std.colorName || ''
+      };
+    });
   }
 
   // 自动取图纸四角颜色加入忽略列表（通常四角是背景/空白）
