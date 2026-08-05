@@ -2498,6 +2498,7 @@
   let pPanning = false;        // 正在拖动画布（平移）
   let pSpacePan = false;       // 按住空格临时进入平移模式
   let pLastPanX = 0, pLastPanY = 0;
+  let pPanX = 0, pPanY = 0;    // 画布平移偏移（CSS transform translate，不依赖容器溢出，任意尺寸都能拖）
 
   function initPatternCells(cols, rows) {
     pCells = Array.from({ length: rows }, () => new Array(cols).fill(null));
@@ -2547,7 +2548,7 @@
   function renderPattern(v) {
     ensurePatternCells();
     if (!pColor && state.beads.length) pColor = state.beads[0].colorNumber;
-    pDrawing = false;
+    pDrawing = false; pPanX = 0; pPanY = 0;   // 重建画布视图时复位平移偏移
     const toolBtns = [
       ['pen', '🖌️ 画笔'], ['eraser', '🧽 橡皮'], ['fill', '🪣 填充'], ['picker', '💉 取色'], ['pan', '✋ 拖动']
     ].map(([t, l]) =>
@@ -2634,8 +2635,8 @@
                 <span class="text-xs text-mk-sub">${pMode === 'blank' ? '画笔/橡皮拖动涂色；选「✋ 拖动」或按住空格可平移画布' : '生成的图纸可继续微调（✋ 拖动 / 空格 平移画布）'}</span>
               </div>
             </div>
-            <p class="text-[11px] text-mk-sub mb-2">💡 电脑端鼠标滚轮在画布上可缩放；移动端双指捏合缩放。</p>
-            <div id="p-canvas-wrap" class="overflow-auto bg-mk-cream rounded-xl p-2" style="max-height: 75vh;">
+            <p class="text-[11px] text-mk-sub mb-2">💡 选「✋ 拖动」工具（或按住空格）可拖动画布；滚轮缩放；缩放只作用于画布，不影响下方用料清单。</p>
+            <div id="p-canvas-wrap" class="overflow-hidden bg-mk-cream rounded-xl p-2 relative" style="max-height: 75vh;touch-action:none;">
               <canvas id="p-canvas" class="rounded-md" style="image-rendering:pixelated;touch-action:none;"></canvas>
             </div>
           </section>
@@ -2711,7 +2712,7 @@
     $('#p-new').onclick = () => {
       let c = parseInt($('#p-cols').value, 10) || 20, r = parseInt($('#p-rows').value, 10) || 20;
       c = Math.min(150, Math.max(2, c)); r = Math.min(150, Math.max(2, r));
-      pCols = c; pRows = r; initPatternCells(c, r); pHighlight = null; pUndo = [];
+      pCols = c; pRows = r; initPatternCells(c, r); pHighlight = null; pUndo = []; pPanX = 0; pPanY = 0;
       renderPattern(v);
     };
     $('#p-clear').onclick = () => {
@@ -2838,6 +2839,13 @@
         }
       }
     }
+    patternApplyPan();   // 重绘后保持画布平移偏移
+  }
+  // 应用画布平移偏移（CSS transform，不依赖容器溢出，任意尺寸都能拖）
+  function patternApplyPan() {
+    const cv = $('#p-canvas'); if (!cv) return;
+    cv.style.transform = `translate(${pPanX}px, ${pPanY}px)`;
+    cv.style.transformOrigin = '0 0';
   }
   function patternAttachCanvas() {
     const cv = $('#p-canvas'); if (!cv) return;
@@ -2851,6 +2859,13 @@
           if (inField) return;                 // 输入框内保留原生撤销
           if (!$('#p-canvas')) return;
           e.preventDefault(); patternUndo();
+          return;
+        }
+        // 拦截浏览器整页缩放快捷键（Ctrl/Cmd + =/+/-/0），避免「用料清单跟着缩放」
+        if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+' || e.key === '-' || e.key === '0')) {
+          if (inField) return;
+          if (!$('#p-canvas')) return;
+          e.preventDefault();
           return;
         }
         if (e.key === ' ' && !inField) { pSpacePan = true; const c = $('#p-canvas'); if (c) c.style.cursor = 'grab'; }
@@ -2895,9 +2910,10 @@
     };
     cv.onmousemove = (e) => {
       if (pPanning && panMode()) {
-        wrap.scrollLeft -= (e.clientX - pLastPanX);
-        wrap.scrollTop  -= (e.clientY - pLastPanY);
+        pPanX += (e.clientX - pLastPanX);
+        pPanY += (e.clientY - pLastPanY);
         pLastPanX = e.clientX; pLastPanY = e.clientY;
+        patternApplyPan();
         return;
       }
       if (pDrawing && (pTool === 'pen' || pTool === 'eraser')) apply(getCell(e));
@@ -2914,9 +2930,10 @@
       if (e.touches.length >= 2) return;
       e.preventDefault();
       if (pPanning && panMode()) {
-        wrap.scrollLeft -= (e.touches[0].clientX - pLastPanX);
-        wrap.scrollTop  -= (e.touches[0].clientY - pLastPanY);
+        pPanX += (e.touches[0].clientX - pLastPanX);
+        pPanY += (e.touches[0].clientY - pLastPanY);
         pLastPanX = e.touches[0].clientX; pLastPanY = e.touches[0].clientY;
+        patternApplyPan();
         return;
       }
       if (pDrawing && (pTool === 'pen' || pTool === 'eraser')) apply(getCell(e.touches[0]));
@@ -2959,19 +2976,16 @@
   function patternSetZoom(next, anchor) {
     const z = Math.max(0.2, Math.min(6, next));
     const cv = $('#p-canvas'); const wrap = $('#p-canvas-wrap');
-    if (cv && wrap && anchor) {
-      // 记录锚点相对 wrap 的位置
+    if (cv && wrap && anchor && z !== pZoom) {
+      // 锚点相对画布布局坐标（transform 平移后），缩放后让该点仍停在光标下
       const wr = wrap.getBoundingClientRect();
-      const ax = anchor.anchorX - wr.left + wrap.scrollLeft;
-      const ay = anchor.anchorY - wr.top + wrap.scrollTop;
-      // 缩放后保持锚点在视口相同位置
-      const ratio = z / pZoom;
-      patternRenderZoomed(z);
-      wrap.scrollLeft = ax * ratio - (anchor.anchorX - wr.left);
-      wrap.scrollTop  = ay * ratio - (anchor.anchorY - wr.top);
-    } else {
-      patternRenderZoomed(z);
+      const localX = anchor.anchorX - wr.left - pPanX;
+      const localY = anchor.anchorY - wr.top - pPanY;
+      const factor = z / pZoom;                 // 新分辨率 / 旧分辨率
+      pPanX -= localX * (factor - 1);
+      pPanY -= localY * (factor - 1);
     }
+    patternRenderZoomed(z);   // 设置 pZoom、重绘画布（内部 patternApplyPan 应用新偏移）
   }
   function patternRenderZoomed(z) {
     pZoom = z;
