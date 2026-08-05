@@ -2497,6 +2497,7 @@
   let pUndoMax = 60;
   let pPanning = false;        // 正在拖动画布（平移）
   let pSpacePan = false;       // 按住空格临时进入平移模式
+  let pMiddlePan = false;      // 鼠标中键按住临时进入平移模式
   let pLastPanX = 0, pLastPanY = 0;
   let pPanX = 0, pPanY = 0;    // 画布平移偏移（CSS transform translate，不依赖容器溢出，任意尺寸都能拖）
 
@@ -2550,7 +2551,7 @@
     if (!pColor && state.beads.length) pColor = state.beads[0].colorNumber;
     pDrawing = false; pPanX = 0; pPanY = 0;   // 重建画布视图时复位平移偏移
     const toolBtns = [
-      ['pen', '🖌️ 画笔'], ['eraser', '🧽 橡皮'], ['fill', '🪣 填充'], ['picker', '💉 取色'], ['pan', '✋ 拖动']
+      ['pen', '🖌️ 画笔'], ['eraser', '🧽 橡皮'], ['fill', '🪣 填充'], ['picker', '💉 取色'], ['pan', '✋ 拖动画布']
     ].map(([t, l]) =>
       `<button class="ptool px-3 py-1.5 rounded-xl text-sm font-semibold ${pTool === t ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub'}" data-tool="${t}">${l}</button>`
     ).join('');
@@ -2635,7 +2636,7 @@
                 <span class="text-xs text-mk-sub">${pMode === 'blank' ? '画笔/橡皮拖动涂色；选「✋ 拖动」或按住空格可平移画布' : '生成的图纸可继续微调（✋ 拖动 / 空格 平移画布）'}</span>
               </div>
             </div>
-            <p class="text-[11px] text-mk-sub mb-2">💡 选「✋ 拖动」工具（或按住空格）可拖动画布；滚轮缩放；缩放只作用于画布，不影响下方用料清单。</p>
+            <p class="text-[11px] text-mk-sub mb-2">💡 选「✋ 拖动画布」工具，或按住 <b class="text-mk-ink">空格</b> / 鼠标 <b class="text-mk-ink">中键</b>，可平移画布；滚轮缩放；缩放只作用于画布，不影响下方用料清单。</p>
             <div id="p-canvas-wrap" class="overflow-hidden bg-mk-cream rounded-xl p-2 relative" style="max-height: 75vh;touch-action:none;">
               <canvas id="p-canvas" class="rounded-md" style="image-rendering:pixelated;touch-action:none;"></canvas>
             </div>
@@ -2851,7 +2852,7 @@
     const cv = $('#p-canvas'); if (!cv) return;
     const wrap = $('#p-canvas-wrap');
     if (!pInited) {
-      document.addEventListener('mouseup', () => { pDrawing = false; pPanning = false; const c = $('#p-canvas'); if (c) c.style.cursor = ''; });
+      document.addEventListener('mouseup', () => { pDrawing = false; pPanning = false; pMiddlePan = false; const c = $('#p-canvas'); if (c) c.style.cursor = ''; });
       document.addEventListener('keydown', (e) => {
         const t = e.target;
         const inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
@@ -2873,8 +2874,8 @@
       document.addEventListener('keyup', (e) => {
         if (e.key === ' ') { pSpacePan = false; const c = $('#p-canvas'); if (c) c.style.cursor = ''; }
       });
-      // 阻止整页被 Ctrl+滚轮 / 双指捏合放大（仅图纸页生效），避免「用料清单跟着缩放」
-      document.addEventListener('wheel', (e) => { if (e.ctrlKey && $('#p-canvas')) e.preventDefault(); }, { passive: false, capture: true });
+      // 阻止整页被 Ctrl/Cmd + 滚轮 / 双指捏合放大（仅图纸页生效），避免「用料清单跟着缩放」
+      document.addEventListener('wheel', (e) => { if ((e.ctrlKey || e.metaKey) && $('#p-canvas')) e.preventDefault(); }, { passive: false, capture: true });
       document.addEventListener('gesturestart', (e) => { if ($('#p-canvas')) e.preventDefault(); });
       pInited = true;
     }
@@ -2887,7 +2888,7 @@
       if (r < 0 || c < 0 || r >= pRows || c >= pCols) return null;
       return { r, c };
     };
-    const panMode = () => pTool === 'pan' || pSpacePan;
+    const panMode = () => pTool === 'pan' || pSpacePan || pMiddlePan;
     const apply = (cell) => {
       if (!cell) return;
       const { r, c } = cell;
@@ -2902,12 +2903,21 @@
     };
     // 单指 / 鼠标
     cv.onmousedown = (e) => {
+      if (e.button === 1) {                    // 鼠标中键 → 临时平移画布（任意工具下都能拖）
+        e.preventDefault();
+        pMiddlePan = true;
+        pPanning = true; pLastPanX = e.clientX; pLastPanY = e.clientY; cv.style.cursor = 'grabbing';
+        return;
+      }
       if (e.button !== 0) return;
       if (panMode()) { pPanning = true; pLastPanX = e.clientX; pLastPanY = e.clientY; cv.style.cursor = 'grabbing'; return; }
       pDrawing = true;
       if (pTool === 'pen' || pTool === 'eraser') patternPushUndo();   // 一次拖动 = 一步撤销
       apply(getCell(e));
     };
+    // 悬浮提示：在 pan / 空格 / 中键可平移时显示 grab 手型，让用户知道这里可以拖
+    cv.onmouseenter = () => { if (panMode()) cv.style.cursor = 'grab'; };
+    cv.onmouseleave = () => { cv.style.cursor = ''; };
     cv.onmousemove = (e) => {
       if (pPanning && panMode()) {
         pPanX += (e.clientX - pLastPanX);
