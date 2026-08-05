@@ -3013,10 +3013,13 @@
     };
     reader.readAsDataURL(file);
   }
-  // 像素网格降色：2× 过采样保清晰，直接匹配仓库色卡（不去背景）
+  // 像素网格降色：高过采样 + cell 内粗颜色直方图投票（把格内文字/网格线"少数票"稀释掉）
+  //   - 每格采 8×8=64 像素 → 主色占绝大多数票
+  //   - 每像素按 4-bit RGB 量化到 4096 桶，找最大桶取均 → 再 nearestOwnedColor 一次
+  //   - 适合源图已经是"带色号文字/网格线的拼豆图纸"（否则平均色会被黑色文字污染，错配到相邻色）
   function patternGenerateFromImage() {
     if (!pImage) return;
-    const S = 2;                                          // 2× 过采样：每个 cell 取 2×2 像素均值，细节更锐
+    const S = 8;
     const OW = pCols * S, OH = pRows * S;
     const off = document.createElement('canvas'); off.width = OW; off.height = OH;
     const octx = off.getContext('2d');
@@ -3029,12 +3032,36 @@
     for (let r = 0; r < pRows; r++) {
       const row = [];
       for (let c = 0; c < pCols; c++) {
-        let sr = 0, sg = 0, sb = 0, n = 0;
-        for (let yy = 0; yy < S; yy++) for (let xx = 0; xx < S; xx++) {
-          const px = ((r * S + yy) * OW + (c * S + xx)) * 4;
-          sr += data[px]; sg += data[px + 1]; sb += data[px + 2]; n++;
+        // cell 内做 4-bit RGB 直方图
+        const buckets = new Map(); // key = (qr<<8)|(qg<<4)|qb → {sr,sg,sb,n}
+        const baseY = r * S, baseX = c * S;
+        let totalN = 0;
+        for (let yy = 0; yy < S; yy++) {
+          const rowOff = (baseY + yy) * OW * 4;
+          for (let xx = 0; xx < S; xx++) {
+            const px = rowOff + (baseX + xx) * 4;
+            const dr = data[px], dg = data[px + 1], db = data[px + 2];
+            const qr = dr >> 4, qg = dg >> 4, qb = db >> 4;
+            const key = (qr << 8) | (qg << 4) | qb;
+            let b = buckets.get(key);
+            if (!b) { b = { sr: 0, sg: 0, sb: 0, n: 0 }; buckets.set(key, b); }
+            b.sr += dr; b.sg += dg; b.sb += db; b.n++; totalN++;
+          }
         }
-        sr /= n; sg /= n; sb /= n;
+        // 取最大桶作为"主色"（占绝大多数像素的就是格子色卡，文字/网格线是少数票）
+        let bestBucket = null, bestN = 0;
+        for (const b of buckets.values()) if (b.n > bestN) { bestN = b.n; bestBucket = b; }
+        // 如果最大桶超过 35% 像素 → 取它的均值（更鲁棒）；否则退回整 cell 均值
+        let sr, sg, sb;
+        if (bestBucket && bestN / totalN >= 0.35) {
+          sr = bestBucket.sr / bestBucket.n;
+          sg = bestBucket.sg / bestBucket.n;
+          sb = bestBucket.sb / bestBucket.n;
+        } else {
+          let tr = 0, tg = 0, tb = 0;
+          for (const b of buckets.values()) { tr += b.sr; tg += b.sg; tb += b.sb; }
+          sr = tr / totalN; sg = tg / totalN; sb = tb / totalN;
+        }
         row.push(nearestOwnedColor(sr, sg, sb));
       }
       cells.push(row);
