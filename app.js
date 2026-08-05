@@ -2551,7 +2551,7 @@
     if (!pColor && state.beads.length) pColor = state.beads[0].colorNumber;
     pDrawing = false; pPanX = 0; pPanY = 0;   // 重建画布视图时复位平移偏移
     const toolBtns = [
-      ['pen', '🖌️ 画笔'], ['eraser', '🧽 橡皮'], ['fill', '🪣 填充'], ['picker', '💉 取色'], ['pan', '✋ 拖动画布']
+      ['pen', '🖌️ 画笔'], ['eraser', '🧽 橡皮'], ['fill', '🪣 填充'], ['picker', '💉 取色']
     ].map(([t, l]) =>
       `<button class="ptool px-3 py-1.5 rounded-xl text-sm font-semibold ${pTool === t ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub'}" data-tool="${t}">${l}</button>`
     ).join('');
@@ -2633,7 +2633,8 @@
                   <button id="p-zoom-in" class="w-6 h-6 rounded-md hover:bg-mk-sand/40" title="放大">➕</button>
                   <button id="p-zoom-reset" class="w-6 h-6 rounded-md hover:bg-mk-sand/40" title="重置 100%">🔄</button>
                 </div>
-                <span class="text-xs text-mk-sub">${pMode === 'blank' ? '画笔/橡皮拖动涂色；选「✋ 拖动」或按住空格可平移画布' : '生成的图纸可继续微调（✋ 拖动 / 空格 平移画布）'}</span>
+                <button id="p-pan-toggle" class="text-xs px-2.5 py-1 rounded-lg ${pTool === 'pan' ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub border border-mk-sand'}" title="开启后可在画布上拖动平移（也可按住空格 / 鼠标中键）">✋ 拖动画布</button>
+                <span class="text-xs text-mk-sub">${pMode === 'blank' ? '画笔/橡皮拖动涂色；点「✋ 拖动画布」或按住空格可平移' : '点「✋ 拖动画布」或按住空格 / 中键，平移生成的图纸'}</span>
               </div>
             </div>
             <p class="text-[11px] text-mk-sub mb-2">💡 选「✋ 拖动画布」工具，或按住 <b class="text-mk-ink">空格</b> / 鼠标 <b class="text-mk-ink">中键</b>，可平移画布；滚轮缩放；缩放只作用于画布，不影响下方用料清单。</p>
@@ -2671,7 +2672,7 @@
       </div>`;
 
     // 模式切换
-    $$('.pmode-btn').forEach(b => b.onclick = () => { pMode = b.dataset.mode; renderPattern(v); });
+    $$('.pmode-btn').forEach(b => b.onclick = () => { pMode = b.dataset.mode; if (pMode === 'blank') pTool = 'pen'; renderPattern(v); });
     // 锁定纵横比 checkbox
     const lockBlank = $('#p-aspect-blank');
     const lockImage = $('#p-aspect-image');
@@ -2703,11 +2704,24 @@
     };
     bindLock($('#p-cols'),  $('#p-rows'),  'blank');
     bindLock($('#p-icols'), $('#p-irows'), 'image');
+    // 画布拖动切换（始终可见，不受空白/图片模式影响）
+    const panToggle = $('#p-pan-toggle');
+    const syncPanToggle = () => {
+      if (!panToggle) return;
+      const on = pTool === 'pan';
+      panToggle.classList.toggle('bg-mk-rose', on);
+      panToggle.classList.toggle('text-white', on);
+      panToggle.classList.toggle('bg-white/70', !on);
+      panToggle.classList.toggle('text-mk-sub', !on);
+      const cv = $('#p-canvas'); if (cv) cv.style.cursor = on ? 'grab' : '';
+    };
+    if (panToggle) panToggle.onclick = () => { pTool = (pTool === 'pan') ? 'pen' : 'pan'; syncPanToggle(); };
     // 工具切换
     $$('.ptool').forEach(b => b.onclick = () => {
       pTool = b.dataset.tool;
       $$('.ptool').forEach(x => x.classList.remove('bg-mk-rose', 'text-white'));
       b.classList.add('bg-mk-rose', 'text-white');
+      syncPanToggle();
     });
     // 新建画布
     $('#p-new').onclick = () => {
