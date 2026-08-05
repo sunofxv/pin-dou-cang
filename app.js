@@ -812,7 +812,7 @@
           <button id="wh-add" class="px-3 py-1.5 rounded-xl text-sm font-semibold bg-mk-rose text-white shadow-soft">+ 新增豆子</button>
         </div>
       </div>
-      <div class="mk-card rounded-2xl shadow-soft overflow-hidden">
+      <div class="mk-card rounded-2xl shadow-soft overflow-hidden hidden sm:block">
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead class="bg-mk-sand/40 text-mk-sub">
@@ -828,6 +828,9 @@
             </tbody>
           </table>
         </div>
+      </div>
+      <div class="sm:hidden grid grid-cols-1 gap-2">
+        ${list.length ? list.map(beadCard).join('') : `<p class="text-center text-mk-sub py-6">暂无数据</p>`}
       </div>`;
 
     $('#wh-add').onclick = openAddBead;
@@ -837,7 +840,7 @@
     $$('.bead-del').forEach(b => b.onclick = () => deleteBead(b.dataset.id));
     if (pendingWarehouseColor) {
       const target = pendingWarehouseColor; pendingWarehouseColor = null;
-      const row = $$('tr[data-num]').find(tr => tr.dataset.num === target);
+      const row = $$('[data-num]').find(tr => tr.dataset.num === target);
       if (row) {
         row.scrollIntoView({ block: 'center', behavior: 'smooth' });
         row.classList.add('ring-2', 'ring-mk-rose', 'bg-mk-rose/5');
@@ -861,6 +864,26 @@
         <button class="bead-del text-xs px-2 py-1 rounded-lg bg-rose-50 text-rose-400" data-id="${b.id}">删</button>
       </td>
     </tr>`;
+  }
+  // 移动端卡片布局（<sm 显示）
+  function beadCard(b) {
+    const low = isLow(b);
+    return `<div class="mk-card rounded-2xl p-3 flex items-center gap-3" data-num="${b.colorNumber}">
+      <span class="w-10 h-10 rounded-full swatch shrink-0" style="background:${b.hex}"></span>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="font-bold">${b.colorNumber}</span>
+          <span class="text-sm truncate">${escapeHtml(b.colorName)}</span>
+          ${low ? '<span class="px-2 py-0.5 rounded-full bg-rose-100 text-rose-600 text-xs font-bold shrink-0">补货</span>' : '<span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-600 text-xs shrink-0">正常</span>'}
+        </div>
+        <div class="text-xs text-mk-sub mt-0.5 truncate">${b.hex}${b.location ? ' · ' + escapeHtml(b.location) : ''} · 库存 <b class="${low ? 'text-rose-500' : ''}">${b.stock}</b> · 阈值 ${effThreshold(b)}</div>
+        <div class="flex gap-2 mt-2">
+          <button class="bead-adj text-xs px-2.5 py-1 rounded-lg bg-mk-mint text-mk-ink font-semibold" data-id="${b.id}">入库/消耗</button>
+          <button class="bead-edit text-xs px-2.5 py-1 rounded-lg bg-white/70 border border-mk-sand text-mk-sub" data-id="${b.id}">编辑</button>
+          <button class="bead-del text-xs px-2.5 py-1 rounded-lg bg-rose-50 text-rose-400" data-id="${b.id}">删</button>
+        </div>
+      </div>
+    </div>`;
   }
   function openAddBead(id) {
     const b = id ? state.beads.find(x => x.id === id) : null;
@@ -2470,7 +2493,7 @@
     v.innerHTML = `
       <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
         <h2 class="text-xl font-bold">🎨 拼豆图纸生成器</h2>
-        <span class="text-sm text-mk-sub">绘图 → 用料统计 → 消耗库存，一条龙</span>
+        <span class="hidden sm:inline text-sm text-mk-sub">绘图 → 用料统计 → 消耗库存，一条龙</span>
       </div>
 
       <div class="flex gap-2 mb-4 flex-wrap">
@@ -2526,7 +2549,7 @@
             <p class="text-[11px] text-mk-sub mb-2">点击选色，再在画布上涂色。</p>
             <input id="p-search" type="text" placeholder="搜索色号 / 名称" class="w-full px-3 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-sm mb-2">
             <div id="p-current" class="text-sm mb-2"></div>
-            <div id="p-swatches" class="grid gap-1.5 max-h-64 overflow-auto pr-1 ${pPaletteShowNumbers ? 'grid-cols-6' : 'grid-cols-8'}"></div>
+            <div id="p-swatches" class="grid gap-1.5 max-h-64 overflow-auto pr-1 ${pPaletteShowNumbers ? 'grid-cols-5 sm:grid-cols-6' : 'grid-cols-7 sm:grid-cols-8'}"></div>
           </section>
         </div>
 
@@ -2570,11 +2593,11 @@
               <input id="p-name" type="text" placeholder="留空则自动命名" value="${escapeHtml(pName)}" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand">
             </label>
             <div class="flex flex-wrap gap-2 mt-3">
-              <button id="p-png" class="px-3 py-2 rounded-xl bg-mk-mint text-mk-ink text-sm font-semibold">🖼️ 导出 PNG 预览图</button>
-              <button id="p-csv" class="px-3 py-2 rounded-xl bg-mk-sky text-mk-ink text-sm font-semibold">📄 导出用料 CSV</button>
-              <button id="p-copy" class="px-3 py-2 rounded-xl bg-mk-lav text-mk-ink text-sm font-semibold">📋 复制文本</button>
-              <button id="p-save" class="px-3 py-2 rounded-xl bg-mk-lemon text-mk-ink text-sm font-semibold">💾 保存到配方库</button>
-              <button id="p-consume" class="px-3 py-2 rounded-xl bg-mk-rose text-white text-sm font-semibold shadow-soft">✅ 进入确认面板 · 扣减库存</button>
+              <button id="p-png" class="flex-1 min-w-[40%] text-center px-3 py-2 rounded-xl bg-mk-mint text-mk-ink text-sm font-semibold">🖼️ 导出 PNG 预览图</button>
+              <button id="p-csv" class="flex-1 min-w-[40%] text-center px-3 py-2 rounded-xl bg-mk-sky text-mk-ink text-sm font-semibold">📄 导出用料 CSV</button>
+              <button id="p-copy" class="flex-1 min-w-[40%] text-center px-3 py-2 rounded-xl bg-mk-lav text-mk-ink text-sm font-semibold">📋 复制文本</button>
+              <button id="p-save" class="flex-1 min-w-[40%] text-center px-3 py-2 rounded-xl bg-mk-lemon text-mk-ink text-sm font-semibold">💾 保存到配方库</button>
+              <button id="p-consume" class="flex-1 min-w-[100%] px-3 py-2 rounded-xl bg-mk-rose text-white text-sm font-semibold shadow-soft">✅ 进入确认面板 · 扣减库存</button>
             </div>
           </section>
         </div>
@@ -2702,7 +2725,8 @@
     const cv = $('#p-canvas'); if (!cv) return;
     const cp = patternCellPx();
     cv.width = pCols * cp; cv.height = pRows * cp;
-    cv.style.maxWidth = 'none';   // 取消原 max-width:100%，让放大后的画布能撑出外层滚动区
+    // 桌面端取消 max-width 让放大的画布撑出外层滚动区；移动端限制为 100% 使画布自适应屏宽不溢出
+    cv.style.maxWidth = (window.innerWidth < 1024) ? '100%' : 'none';
     const ctx = cv.getContext('2d');
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
