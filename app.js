@@ -351,14 +351,15 @@
   function isLow(b) { return b.stock < effThreshold(b); }
 
   /* ===================== 4. 轻提示 Toast ===================== */
-  function toast(msg, type = 'info') {
+  function toast(msg, type = 'info', duration = 2300) {
     const colors = { info: 'bg-mk-ink', success: 'bg-emerald-500', error: 'bg-rose-400', warn: 'bg-amber-400' };
     const t = document.createElement('div');
-    t.className = `${colors[type] || colors.info} text-white text-sm px-4 py-2 rounded-full shadow-soft transition`;
+    t.className = `${colors[type] || colors.info} text-white text-sm px-4 py-2 rounded-full shadow-soft transition whitespace-pre-line max-w-[90vw] text-center`;
     t.textContent = msg;
     $('#toast-root').appendChild(t);
-    setTimeout(() => { t.style.opacity = '0'; t.style.transform = 'translateY(8px)'; }, 1800);
-    setTimeout(() => t.remove(), 2300);
+    const fade = Math.max(800, duration - 500);
+    setTimeout(() => { t.style.opacity = '0'; t.style.transform = 'translateY(8px);'; }, fade);
+    setTimeout(() => t.remove(), duration);
   }
 
   /* ===================== 5. 模态框系统 ===================== */
@@ -716,8 +717,11 @@
 
   /* ===================== 11. 仪表盘 ===================== */
   let restockPortions = {}; // 补货清单：色号 → 份数（默认 1，可改）
+  let restockItems = null;  // 当前清单中的色号数组（可删/可增）
+  let restockPerQty = 1000; // 每份多少颗
   function renderDashboard(v) {
     const low = state.beads.filter(isLow);
+    if (!restockItems) restockItems = low.map(b => b.colorNumber);
     const totalStock = state.beads.reduce((s, b) => s + b.stock, 0);
     const recent = state.logs.slice(0, 6);
 
@@ -741,18 +745,22 @@
         <section class="mk-card rounded-2xl shadow-soft p-5">
           <div class="flex items-center justify-between mb-3">
             <h3 class="font-bold">🚨 低库存预警（低于补货阈值）</h3>
-            ${low.length ? '<button id="gen-restock" type="button" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-mk-lav/70 text-mk-ink hover:bg-mk-lav/90">📋 生成补货清单</button>' : ''}
+            ${restockItems && restockItems.length ? '<button id="gen-restock" type="button" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-mk-lav/70 text-mk-ink hover:bg-mk-lav/90">📋 生成补货清单</button>' : ''}
           </div>
           ${low.length ? `<div class="space-y-2">${low.map(b => lowRow(b)).join('')}</div>`
             : '<p class="text-mk-sub text-sm">暂无预警，库存充足 ✨</p>'}
-          ${low.length ? (() => {
-            const cum = []; let run = 0;
-            low.forEach(b => { run += (restockPortions[b.colorNumber] ?? 1); cum.push(run); });
+          ${restockItems && restockItems.length ? (() => {
+            const totalP = restockItems.reduce((s, num) => s + (restockPortions[num] ?? 1), 0);
+            const totalG = totalP * restockPerQty;
             return `
           <div id="restock-panel" class="hidden mt-4 pt-4 border-t border-mk-sand/60">
-            <div class="flex items-center justify-between mb-2">
+            <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
               <div class="text-xs font-semibold text-mk-sub">补货清单（份数默认 1，可修改）</div>
-              <button id="copy-restock" type="button" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600">📄 复制清单</button>
+              <div class="flex items-center gap-2">
+                <label class="text-xs text-mk-sub flex items-center gap-1">每份 <input id="restock-per-qty" type="number" min="1" step="1" value="${restockPerQty}" class="w-20 px-2 py-1 rounded-lg bg-white border border-mk-sand text-xs text-right"> 颗</label>
+                <button id="copy-restock" type="button" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600">📄 复制</button>
+                <button id="restock-in" type="button" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-sky-500 text-white hover:bg-sky-600">➕ 一键入库</button>
+              </div>
             </div>
             <div class="overflow-x-auto">
               <table class="w-full text-sm">
@@ -760,28 +768,40 @@
                   <tr class="text-mk-sub text-xs border-b border-mk-sand">
                     <th class="px-2 py-1 text-left">色号</th>
                     <th class="px-2 py-1 text-right">份数</th>
-                    <th class="px-2 py-1 text-right">总份数</th>
+                    <th class="px-2 py-1 text-center">操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  ${low.map((b, i) => `
+                  ${restockItems.map(num => {
+                    const b = beadByNumber(num);
+                    if (!b) return `<tr class="border-b border-mk-sand/40"><td colspan="3" class="px-2 py-1 text-xs text-rose-500">色号 ${escapeHtml(num)} 不存在</td></tr>`;
+                    return `
                     <tr class="border-b border-mk-sand/40">
-                      <td class="px-2 py-1"><span class="inline-flex items-center gap-1.5"><span class="w-4 h-4 rounded-full swatch" style="background:${b.hex}"></span>${b.colorNumber}${b.colorName ? ' ' + escapeHtml(b.colorName) : ''}</span></td>
+                      <td class="px-2 py-1"><span class="inline-flex items-center gap-1.5"><span class="w-4 h-4 rounded-full swatch" style="background:${b.hex}"></span>${b.colorNumber}</span></td>
                       <td class="px-2 py-1 text-right">
                         <input type="number" min="1" step="1" value="${restockPortions[b.colorNumber] ?? 1}" data-num="${escapeHtml(b.colorNumber)}" class="restock-qty w-16 px-2 py-1 rounded-lg bg-white border border-mk-sand text-sm text-right">
                       </td>
-                      <td class="px-2 py-1 text-right text-mk-sub restock-cum" data-idx="${i}">${cum[i]}</td>
-                    </tr>`).join('')}
+                      <td class="px-2 py-1 text-center">
+                        <button type="button" class="restock-del text-rose-400 hover:text-rose-600 text-xs font-semibold" data-num="${escapeHtml(b.colorNumber)}">🗑️</button>
+                      </td>
+                    </tr>`;
+                  }).join('')}
                 </tbody>
                 <tfoot>
-                  <tr class="font-bold">
-                    <td class="px-2 py-1 text-right" colspan="2">合计</td>
-                    <td class="px-2 py-1 text-right text-rose-500" id="restock-total">${run}</td>
+                  <tr class="font-bold text-xs">
+                    <td class="px-2 py-1 text-right" colspan="2">
+                      总份数 <span id="restock-total-p" class="text-rose-500">${totalP}</span> · 总颗数 <span id="restock-total-g" class="text-rose-500">${totalG}</span>
+                    </td>
+                    <td></td>
                   </tr>
                 </tfoot>
               </table>
             </div>
-            <p class="text-[11px] text-mk-sub mt-2">💡 份数 = 该色号要补的「份」数（默认 1 份），可手动修改；总份数 = 累计份数（最后一行即总份数）。点「复制清单」可整体复制为文本（含色号、份数、总份数）。</p>
+            <div class="mt-3 flex items-center gap-2">
+              <input id="add-restock-num" type="text" placeholder="输入色号（如 A2）" class="flex-1 px-2 py-1.5 rounded-lg bg-white border border-mk-sand text-sm">
+              <button id="add-restock" type="button" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-white border border-mk-sand text-mk-ink hover:bg-mk-sand/50">➕ 新增色号</button>
+            </div>
+            <p class="text-[11px] text-mk-sub mt-2">💡 份数 = 该色号要补的「份」数（默认 1 份）。每份默认 1000 颗，可在左上角修改。点「一键入库」会按 份数×每份颗数 自动给对应色号加库存并记录。</p>
           </div>`;
           })() : ''}
         </section>
@@ -837,17 +857,42 @@
       let val = parseInt(inp.value, 10);
       if (!val || val < 1) val = 1;
       restockPortions[num] = val;
-      let run = 0;
-      $$('.restock-cum', v).forEach(td => {
-        const i = parseInt(td.dataset.idx, 10);
-        run += (restockPortions[low[i].colorNumber] ?? 1);
-        td.textContent = run;
-      });
-      const t = $('#restock-total');
-      if (t) t.textContent = run;
+      updateRestockTotals();
     });
+    $$('.restock-del', v).forEach(btn => btn.onclick = () => {
+      const num = btn.dataset.num;
+      restockItems = restockItems.filter(n => n !== num);
+      delete restockPortions[num];
+      renderDashboard(v);
+    });
+    const addBtn = $('#add-restock');
+    const addInput = $('#add-restock-num');
+    if (addBtn && addInput) {
+      const doAdd = () => {
+        const raw = addInput.value.trim().toUpperCase();
+        if (!raw) return;
+        if (restockItems.includes(raw)) return toast('色号已在清单中', 'warn');
+        const b = beadByNumber(raw);
+        if (!b) return toast('色号 ' + raw + ' 不存在', 'error');
+        restockItems.push(raw);
+        restockPortions[raw] = 1;
+        renderDashboard(v);
+        toast('已添加 ' + raw, 'success');
+      };
+      addBtn.onclick = doAdd;
+      addInput.onkeydown = e => { if (e.key === 'Enter') doAdd(); };
+    }
+    const perInput = $('#restock-per-qty');
+    if (perInput) perInput.oninput = () => {
+      let val = parseInt(perInput.value, 10);
+      if (!val || val < 1) val = 1;
+      restockPerQty = val;
+      updateRestockTotals();
+    };
+    const ri = $('#restock-in');
+    if (ri) ri.onclick = () => restockInOneClick();
     const cr = $('#copy-restock');
-    if (cr) cr.onclick = () => copyRestockList(low);
+    if (cr) cr.onclick = () => copyRestockList();
     const homeLogin = $('#home-login'); if (homeLogin) homeLogin.onclick = () => doAuth('login', $('#home-email').value, $('#home-pass').value);
     const homeSignup = $('#home-signup'); if (homeSignup) homeSignup.onclick = () => doAuth('signup', $('#home-email').value, $('#home-pass').value);
     const homeSyncnow = $('#home-syncnow'); if (homeSyncnow) homeSyncnow.onclick = () => syncPull();
@@ -3081,13 +3126,14 @@
             </div>
             ${pImage ? `
               <div id="p-img-wrap" class="mt-3 relative inline-block w-full">
-                <img id="p-img-preview" src="${pImage.src}" class="w-full rounded-xl border border-mk-sand block" />
+                <img id="p-img-preview" src="${pImage.src}" class="w-full rounded-xl border border-mk-sand block cursor-zoom-in" title="点击放大预览与剪裁" />
                 <div id="p-img-mask" class="absolute inset-0 rounded-xl overflow-hidden ${pImageCrop ? '' : 'hidden'}"></div>
               </div>` : `
               <div id="p-img-wrap" class="mt-3 relative inline-block w-full hidden">
                 <img id="p-img-preview" class="w-full rounded-xl border border-mk-sand block" />
                 <div id="p-img-mask" class="absolute inset-0 rounded-xl overflow-hidden hidden"></div>
               </div>`}
+            ${pImage ? `<div class="flex items-center justify-between mt-2 text-[11px] text-mk-sub"><span>📌 浅色区=识别的图案</span><button id="p-img-zoom" class="px-2 py-0.5 rounded-lg bg-mk-rose text-white font-semibold" title="在大窗口里预览并剪裁（操作更方便）">🔍 点图放大</button></div>` : ''}
             <div class="flex flex-wrap gap-2 mt-2 ${pImage ? '' : 'hidden'}" id="p-crop-bar">
               <button id="p-crop-toggle" class="text-xs px-2.5 py-1.5 rounded-xl ${pImageCropMode ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub border border-mk-sand'}" title="${pImageCropMode ? '保存当前选区并退出编辑' : '进入剪裁编辑模式（4 角 + 4 边 + 内部拖动）'}">${pImageCropMode ? '✓ 完成剪裁' : '✂️ 剪裁'}</button>
               <button id="p-crop-reset" class="text-xs px-2.5 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" title="选区重置为整张图">↺ 重置选区</button>
@@ -3309,7 +3355,25 @@
       patternPushUndo();
       patternGenerateFromImage();
       renderPattern(v);
+      // 反馈生成情况：多少格匹配到色、多少格空（剪裁区小于目标网格时空格会很多）
+      let filled = 0, empty = 0;
+      for (let rr = 0; rr < pCells.length; rr++) for (let cc = 0; cc < pCells[rr].length; cc++) {
+        if (pCells[rr][cc]) filled++; else empty++;
+      }
+      const total = pCols * pRows;
+      if (filled === 0) {
+        toast(`⚠️ 没匹配到任何色卡（共 ${total} 格全空）\n请检查：① 画布色卡是否含图中颜色 ② 目标网格列/行是否远大于剪裁区`, 'warn', 6000);
+      } else if (empty / total > 0.5) {
+        toast(`⚠️ 已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格\n空格过多，建议把目标网格调小到接近剪裁区比例`, 'warn', 6000);
+      } else {
+        toast(`✅ 已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格`, 'success');
+      }
     };
+    // 点图放大弹窗（更宽敞的剪裁空间）
+    const imgZoom = $('#p-img-zoom');
+    const imgPreview = $('#p-img-preview');
+    if (imgZoom) imgZoom.onclick = openImageZoomModal;
+    if (imgPreview) imgPreview.onclick = openImageZoomModal;
     // 色板搜索
     $('#p-search').oninput = patternRenderPalette;
     // 色号显隐
@@ -3891,6 +3955,87 @@
     reader.readAsDataURL(file);
   }
 
+  // 在大窗口里预览图片 + 剪裁（不受左侧卡片宽度限制，操作更方便）
+  function openImageZoomModal() {
+    if (!pImage) return;
+    const wrapW = Math.max(640, Math.min(window.innerWidth - 80, 1400));
+    const ratio = (pImage.naturalHeight || 1) / (pImage.naturalWidth || 1);
+    const imgH = Math.round(wrapW * ratio);
+    // 进入 modal 时自动开启剪裁编辑模式（关闭大图后退出）
+    const wasMode = pImageCropMode; pImageCropMode = true;
+    openModal('🔍 放大预览与剪裁', `
+      <div class="flex flex-col items-center">
+        <div id="zoom-img-wrap" class="relative bg-mk-cream rounded-xl border border-mk-sand overflow-hidden" style="width:${wrapW}px;max-width:100%;">
+          <img id="zoom-img" src="${pImage.src}" class="block w-full" style="height:${imgH}px;object-fit:contain;" />
+          <div id="zoom-img-mask" class="absolute inset-0"></div>
+        </div>
+        <div class="flex flex-wrap items-center justify-center gap-2 mt-3 text-xs">
+          <button id="zoom-crop-mode" class="px-3 py-1.5 rounded-xl ${pImageCropMode ? 'bg-mk-rose text-white' : 'bg-white/70 border border-mk-sand text-mk-sub'}" title="切换编辑模式（可拖 8 手柄 + 内部移动）">${pImageCropMode ? '✓ 完成剪裁' : '✂️ 继续剪裁'}</button>
+          <button id="zoom-crop-reset" class="px-3 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" title="选区重置为整张图">↺ 重置选区</button>
+          <button id="zoom-crop-clear" class="px-3 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" title="清除剪裁（识别整张图）">✕ 不剪裁</button>
+          <span class="text-mk-sub">💡 拖 4 角/4 边缩放，拖中间移动选区；点「✓ 完成剪裁」保存</span>
+        </div>
+      </div>
+    `, () => {
+      // 关闭时：把 modal 里的 crop 状态写回 pImageCrop / pImageCropMode，刷新主视图
+      pImageCropMode = false;
+      renderImageCropMask();
+      const v = $('#view'); if (v) renderPattern(v);
+    });
+    // 把现有选区映射到 modal 大图上
+    renderZoomCropMask();
+    // 关闭时还原之前的 crop 模式
+    const closeBtn = document.querySelector('#modal-root button[onclick*="closeModal"]');
+    if (closeBtn) {
+      const orig = closeBtn.getAttribute('onclick');
+      closeBtn.setAttribute('onclick', `${orig};(${wasMode ? 'pImageCropMode=true;' : ''})`);
+    }
+  }
+  // 在大图 modal 里画选区（与主视图共用 pImageCrop 状态）
+  function renderZoomCropMask() {
+    const mask = $('#zoom-img-mask'); if (!mask || !pImage || !pImageCrop) return;
+    const W = pImage.naturalWidth, H = pImage.naturalHeight;
+    const c = pImageCrop;
+    const min = Math.max(W, H) * 0.02;
+    c.w = Math.max(min, Math.min(c.w, W - c.x));
+    c.h = Math.max(min, Math.min(c.h, H - c.y));
+    c.x = Math.max(0, Math.min(c.x, W - c.w));
+    c.y = Math.max(0, Math.min(c.y, H - c.h));
+    const HANDLE = Math.max(10, Math.min(W, H) * 0.018);
+    const stroke = Math.max(2, Math.min(W, H) * 0.004);
+    const path = `M0,0 L${W},0 L${W},${H} L0,${H} Z M${c.x},${c.y} L${c.x + c.w},${c.y} L${c.x + c.w},${c.y + c.h} L${c.x},${c.y + c.h} Z`;
+    const interactive = pImageCropMode ? `
+      <rect class="zoom-crop-move" x="${c.x}" y="${c.y}" width="${c.w}" height="${c.h}" fill="transparent" pointer-events="all" style="cursor:move" />
+      <rect class="zoom-crop-h" data-handle="nw" x="${c.x - HANDLE / 2}" y="${c.y - HANDLE / 2}" width="${HANDLE}" height="${HANDLE}" fill="#fff" stroke="#D6285A" stroke-width="${stroke}" pointer-events="all" style="cursor:nwse-resize" />
+      <rect class="zoom-crop-h" data-handle="ne" x="${c.x + c.w - HANDLE / 2}" y="${c.y - HANDLE / 2}" width="${HANDLE}" height="${HANDLE}" fill="#fff" stroke="#D6285A" stroke-width="${stroke}" pointer-events="all" style="cursor:nesw-resize" />
+      <rect class="zoom-crop-h" data-handle="sw" x="${c.x - HANDLE / 2}" y="${c.y + c.h - HANDLE / 2}" width="${HANDLE}" height="${HANDLE}" fill="#fff" stroke="#D6285A" stroke-width="${stroke}" pointer-events="all" style="cursor:nesw-resize" />
+      <rect class="zoom-crop-h" data-handle="se" x="${c.x + c.w - HANDLE / 2}" y="${c.y + c.h - HANDLE / 2}" width="${HANDLE}" height="${HANDLE}" fill="#fff" stroke="#D6285A" stroke-width="${stroke}" pointer-events="all" style="cursor:nwse-resize" />
+      <rect class="zoom-crop-h" data-handle="n"  x="${c.x + c.w / 2 - HANDLE / 2}" y="${c.y - HANDLE / 2}" width="${HANDLE}" height="${HANDLE}" fill="#fff" stroke="#D6285A" stroke-width="${stroke}" pointer-events="all" style="cursor:ns-resize" />
+      <rect class="zoom-crop-h" data-handle="s"  x="${c.x + c.w / 2 - HANDLE / 2}" y="${c.y + c.h - HANDLE / 2}" width="${HANDLE}" height="${HANDLE}" fill="#fff" stroke="#D6285A" stroke-width="${stroke}" pointer-events="all" style="cursor:ns-resize" />
+      <rect class="zoom-crop-h" data-handle="w"  x="${c.x - HANDLE / 2}" y="${c.y + c.h / 2 - HANDLE / 2}" width="${HANDLE}" height="${HANDLE}" fill="#fff" stroke="#D6285A" stroke-width="${stroke}" pointer-events="all" style="cursor:ew-resize" />
+      <rect class="zoom-crop-h" data-handle="e"  x="${c.x + c.w - HANDLE / 2}" y="${c.y + c.h / 2 - HANDLE / 2}" width="${HANDLE}" height="${HANDLE}" fill="#fff" stroke="#D6285A" stroke-width="${stroke}" pointer-events="all" style="cursor:ew-resize" />
+    ` : '';
+    mask.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="w-full h-full block">
+      <path d="${path}" fill="#0009" fill-rule="evenodd" pointer-events="none" />
+      <rect x="${c.x}" y="${c.y}" width="${c.w}" height="${c.h}" fill="none" stroke="#fff" stroke-width="${stroke}" pointer-events="none" />
+      ${interactive}
+    </svg>`;
+    // 绑定 8 手柄 + 内部移动（document 级监听）
+    if (pImageCropMode) {
+      const handleMousedown = (e, handle) => {
+        e.preventDefault(); e.stopPropagation();
+        const svg = $('#zoom-img-mask svg'); if (!svg) return;
+        const scale = svg.clientWidth / (pImage.naturalWidth || 1);
+        pImageCropDrag = { handle, startCrop: { ...pImageCrop }, startX: e.clientX, startY: e.clientY, scale };
+      };
+      $$('.zoom-crop-h').forEach(h => h.onmousedown = (e) => handleMousedown(e, h.dataset.handle));
+      $$('.zoom-crop-move').forEach(m => m.onmousedown = (e) => handleMousedown(e, 'move'));
+    }
+    // 绑定三个 modal 内按钮
+    const modeBtn = $('#zoom-crop-mode'); if (modeBtn) modeBtn.onclick = () => { pImageCropMode = !pImageCropMode; renderZoomCropMask(); };
+    const resetBtn = $('#zoom-crop-reset'); if (resetBtn) resetBtn.onclick = () => { pImageCrop = { x: 0, y: 0, w: pImage.naturalWidth, h: pImage.naturalHeight }; renderZoomCropMask(); renderImageCropMask(); };
+    const clearBtn = $('#zoom-crop-clear'); if (clearBtn) clearBtn.onclick = () => { pImageCrop = null; pImageCropMode = false; renderZoomCropMask(); renderImageCropMask(); };
+  }
   // 按当前 pImageCrop / pImageCropMode 渲染 SVG 选区层；剪裁编辑模式下绑定 8 手柄 + 内部移动
   function renderImageCropMask() {
     const mask = $('#p-img-mask'); if (!mask) return;
@@ -3986,6 +4131,8 @@
     }
     pImageCrop = { x, y, w, h };
     renderImageCropMask();
+    // 若放大 modal 开着，同步刷新 modal 里的选区
+    if ($('#zoom-img-mask')) renderZoomCropMask();
   }
   // 像素网格降色：高过采样 + cell 内粗颜色直方图投票（把格内文字/网格线"少数票"稀释掉）
   //   - 每格采 8×8=64 像素 → 主色占绝大多数票
