@@ -410,7 +410,8 @@
   function generateDefaultAvatarSvg(letter) {
     const l = escapeHtml(letter || '我');
     const bg = '#f3d2c1'; // 与主题搭的柔和桃色
-    return `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><circle cx="32" cy="32" r="32" fill="${bg}"/><text x="32" y="38" font-size="28" font-family="sans-serif" fill="#8b5cf6" text-anchor="middle" dominant-baseline="middle">${l}</text></svg>`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><circle cx="32" cy="32" r="32" fill="${bg}"/><text x="32" y="38" font-size="28" font-family="sans-serif" fill="#8b5cf6" text-anchor="middle" dominant-baseline="middle">${l}</text></svg>`;
+    return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
   }
   function renderAvatarImg(cls = 'w-8 h-8 rounded-full object-cover bg-white shadow-soft') {
     const url = getAvatarUrl() || generateDefaultAvatarSvg(getAvatarLetter());
