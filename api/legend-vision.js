@@ -54,9 +54,12 @@ module.exports = async (req, res) => {
 
     if (!upstream.ok) {
       const txt = await upstream.text();
+      let detail = txt.slice(0, 600);
+      // 智谱通常返回 JSON：{ error: { message: '...' } }，提取可读消息
+      try { const d = JSON.parse(txt); if (d.error && d.error.message) detail = d.error.message; } catch (_) {}
       res.statusCode = upstream.status;
       res.setHeader('Content-Type', 'application/json');
-      return res.end(JSON.stringify({ error: '智谱 API 错误 ' + upstream.status, detail: txt.slice(0, 600) }));
+      return res.end(JSON.stringify({ error: '智谱 API 错误 ' + upstream.status, detail }));
     }
 
     const data = await upstream.json();

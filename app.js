@@ -841,7 +841,13 @@
       });
       if (!res.ok) {
         let msg = '代理服务返回 ' + res.status;
-        try { const e = await res.json(); if (e && e.error) msg = e.error; } catch (_) {}
+        try {
+          const e = await res.json();
+          if (e && e.error) {
+            msg = e.error;
+            if (e.detail) msg += '：' + e.detail.slice(0, 240);
+          }
+        } catch (_) {}
         throw new Error(msg);
       }
       const j = await res.json();
@@ -910,7 +916,8 @@
     const c = document.createElement('canvas');
     c.width = cw; c.height = ch;
     c.getContext('2d').drawImage(canvas, x0, y0, cw, ch, 0, 0, cw, ch);
-    return c.toDataURL('image/png');
+    // 输出 JPEG 减小 base64 体积，避免 PNG 无压缩导致 body 过大/智谱 400
+    return c.toDataURL('image/jpeg', 0.9);
   }
   // 异步加载图片为 HTMLImageElement
   function loadImage(src) {
@@ -924,6 +931,7 @@
   // 用视觉大模型识别图例：裁剪图例区 → 调 VLM 读色 → 映射成标准色号清单
   async function aiParseLegend(img, region, baseUrl) {
     const dataUrl = cropRegionToDataURL(img, region);
+    if (!dataUrl || dataUrl.length < 500) throw new Error('裁剪出的图例区为空/过小，请重新框选图例区域');
     const raw = await callLegendVisionAPI(dataUrl, state.settings.apiKey, state.settings.model, baseUrl);
     const out = [];
     for (const c of raw) {
