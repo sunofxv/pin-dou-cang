@@ -1039,14 +1039,6 @@
     const recent = state.logs.slice(0, 6);
 
     v.innerHTML = `
-      <section class="mk-card rounded-2xl shadow-soft p-5 mb-5 ${currentUser ? '' : 'ring-2 ring-mk-lav'}">
-        <div class="flex items-center justify-between mb-2">
-          <h3 class="font-bold">☁️ 账户与云端同步</h3>
-          ${currentUser ? '' : '<span class="text-xs text-mk-sub">登录后即可跨设备同步数据</span>'}
-        </div>
-        ${accountSyncInner('home')}
-      </section>
-
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
         ${statCard('色号种类', state.beads.length, '🌈', 'from-mk-pink to-mk-rose', 'text-mk-ink', 'warehouse')}
         ${statCard('当前总库存', totalStock, '📦', 'from-mk-sky to-mk-mint', 'text-mk-ink', 'warehouse')}
@@ -1234,10 +1226,6 @@
     if (ri) ri.onclick = e => { e.stopPropagation(); restockInOneClick(); };
     const cr = $('#copy-restock');
     if (cr) cr.onclick = e => { e.stopPropagation(); copyRestockList(); };
-    wireAuthForm('home');
-    const homeSyncnow = $('#home-syncnow'); if (homeSyncnow) homeSyncnow.onclick = () => syncPull();
-    const homeLogout = $('#home-logout'); if (homeLogout) homeLogout.onclick = () => doLogout();
-    wireAccountToggle('home', v);
   }
   function statCard(label, val, icon, grad, valColor = 'text-mk-ink', action = '') {
     const actionAttr = action ? ` data-action="${action}"` : '';
