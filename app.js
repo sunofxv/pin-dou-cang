@@ -3554,21 +3554,26 @@
       const total = pCols * pRows;
       const beadCount = (state.beads && state.beads.length) || 0;
       const detected = pLastDetectedColors || 0;
+      // 当前剪裁区比例（用于提示「把网格调到接近这个比例」）
+      const cropW = pImageCrop ? pImageCrop.w : (pImage ? pImage.naturalWidth : 1);
+      const cropH = pImageCrop ? pImageCrop.h : (pImage ? pImage.naturalHeight : 1);
+      const cropRatio = (cropW / cropH).toFixed(2);
       if (filled === 0) {
-        // 三条针对性建议：色卡少/网格过大/裁剪区过小
+        // 针对性建议：色卡少 / 网格过大 / 裁剪区过大 / 内容区过小
         const tips = [];
         if (beadCount < 5) tips.push(`① 色卡仅 ${beadCount} 种 — 至少加 5~10 种基础色`);
         if (detected > beadCount * 2 && beadCount < 20) tips.push(`② 图中检测到 ${detected} 种主色, 但色卡只有 ${beadCount} 种 — 建议导入完整 MARD 221 色`);
-        tips.push(`③ 把目标网格减小到接近剪裁区（剪裁区越接近 ${c === r ? c + '格' : '宽高比'}, 单元格像素越多, 识别越准)`);
+        if (detected === 1) tips.push(`③ 仅识别出 1 种主色 — 大部分区域被识别为白底, 把网格列/行调小（如 40×25）或点「✂️ 剪裁」框出内容区`);
+        else tips.push(`③ 目标网格 ${pCols}×${pRows}（比例 ${(pCols/pRows).toFixed(2)}:1）过大, 建议调到剪裁区比例 ${cropRatio}:1 — 每格像素越多, 识别越准`);
         if (!pImageCrop || (pImageCrop.x === 0 && pImageCrop.y === 0 && pImageCrop.w >= (pImage.naturalWidth - 1) && pImageCrop.h >= (pImage.naturalHeight - 1))) {
           tips.push(`④ 当前未剪裁, 整张图含大量白底 — 点「✂️ 剪裁」框出内容区`);
         }
-        toast(`⚠️ 没匹配到任何色卡（共 ${total} 格全空）\n图检测到 ${detected} 种主色 / 你的色卡 ${beadCount} 种\n${tips.join('\n')}`, 'warn', 9000);
+        toast(`⚠️ 没匹配到任何色卡（共 ${total} 格全空）\n图检测到 ${detected} 种主色 / 你的色卡 ${beadCount} 种\n${tips.join('\n')}`, 'warn', 12000);
       } else if (empty / total > 0.5) {
         const tips2 = [`已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格`];
         if (detected > beadCount * 2 && beadCount < 20) tips2.push(`图检测到 ${detected} 种主色, 但色卡只有 ${beadCount} 种`);
-        tips2.push(`空格过多, 建议把目标网格调小到接近剪裁区比例`);
-        toast(`⚠️ ${tips2.join('\n')}`, 'warn', 7000);
+        tips2.push(`空格过多, 建议把目标网格 ${pCols}×${pRows} 调到接近剪裁区比例 ${cropRatio}:1`);
+        toast(`⚠️ ${tips2.join('\n')}`, 'warn', 8000);
       } else {
         toast(`✅ 已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格（图中检测到 ${detected} 种主色）`, 'success');
       }
@@ -4168,24 +4173,25 @@
     const naturalW = pImage.naturalWidth || 1440;
     const naturalH = pImage.naturalHeight || 886;
     const ar = naturalH / naturalW;
+    // 上限降低以确保下方工具栏不被遮挡（之前 maxH=800 在小窗口里会把工具栏顶出可视区）
     const maxW = Math.max(320, Math.min(window.innerWidth - 100, 1400, naturalW));
-    const maxH = Math.max(240, Math.min(window.innerHeight * 0.75, 800, naturalH));
+    const maxH = Math.max(240, Math.min(window.innerHeight * 0.62, 640, naturalH));
     let wrapW, wrapH;
     if (maxW * ar <= maxH) { wrapW = maxW; wrapH = Math.round(maxW * ar); }
     else { wrapH = maxH; wrapW = Math.round(maxH / ar); }
     const cropInfoText = pImageCrop ? ((pImageCrop.w | 0) + ' × ' + (pImageCrop.h | 0)) : '未设置';
     openModal('🔍 放大预览与剪裁', `
       <div class="flex flex-col items-center">
-        <div id="zoom-img-wrap" class="relative bg-mk-cream rounded-xl border border-mk-sand overflow-hidden" style="width:${wrapW}px;height:${wrapH}px;">
-          <img id="zoom-img" src="${pImage.src}" class="absolute inset-0 block w-full h-full" style="object-fit:contain;" />
-          <div id="zoom-img-mask" class="absolute inset-0"></div>
-        </div>
-        <div class="flex flex-wrap items-center justify-center gap-2 mt-3 text-xs">
+        <div class="flex flex-wrap items-center justify-center gap-2 mb-3 text-xs w-full">
           <button id="zoom-crop-mode" class="px-3 py-1.5 rounded-xl ${pImageCropMode ? 'bg-mk-rose text-white' : 'bg-white/70 border border-mk-sand text-mk-sub'}" title="切换编辑模式（可拖 8 手柄 + 内部移动）">${pImageCropMode ? '✓ 完成剪裁' : '✂️ 继续剪裁'}</button>
           <button id="zoom-crop-reset" class="px-3 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" title="选区重置为整张图">↺ 重置选区</button>
           <button id="zoom-crop-clear" class="px-3 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" title="清除剪裁（识别整张图）">✕ 不剪裁</button>
           <span id="zoom-crop-info" class="text-mk-sub bg-white/70 px-2 py-1 rounded-lg border border-mk-sand">📐 选区: <span id="zoom-crop-info-text">${cropInfoText}</span></span>
-          <span class="text-mk-sub">💡 拖 4 角/4 边缩放，拖中间移动选区；点「✓ 完成剪裁」保存</span>
+          <span class="text-mk-sub">💡 拖 4 角/4 边缩放，拖中间移动选区</span>
+        </div>
+        <div id="zoom-img-wrap" class="relative bg-mk-cream rounded-xl border border-mk-sand overflow-hidden" style="width:${wrapW}px;height:${wrapH}px;">
+          <img id="zoom-img" src="${pImage.src}" class="absolute inset-0 block w-full h-full" style="object-fit:contain;" />
+          <div id="zoom-img-mask" class="absolute inset-0"></div>
         </div>
       </div>
     `, { wide: true, width: Math.min(window.innerWidth - 40, wrapW + 80) }, () => {

@@ -86,8 +86,8 @@
 
   <!-- 模态框根节点 -->
   <div id="modal-root"></div>
-  <!-- 轻提示根节点 -->
-  <div id="toast-root" class="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-2 items-center"></div>
+  <!-- 轻提示根节点 (放顶部以避免多行提示被底部截断) -->
+  <div id="toast-root" class="fixed top-5 left-1/2 -translate-x-1/2 z-50 flex flex-col gap-2 items-center pointer-events-none max-h-[80vh] overflow-y-auto"></div>
 
   <!-- Supabase JS（用于云端同步；未配置时应用自动降级为 localStorage） -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
