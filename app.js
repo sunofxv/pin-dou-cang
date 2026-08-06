@@ -806,6 +806,7 @@
   let restockPortions = {}; // 补货清单：色号 → 份数（默认 1，可改）
   let restockItems = null;  // 当前清单中的色号数组（可删/可增）
   let restockPerQty = 1000; // 每份多少颗
+  let restockOpen = false;  // 补货清单面板是否展开（重绘时保持）
   function renderDashboard(v) {
     const low = state.beads.filter(isLow);
     if (!restockItems) restockItems = low.map(b => b.colorNumber);
@@ -849,7 +850,7 @@
         const totalP = restockItems.reduce((s, num) => s + (restockPortions[num] ?? 1), 0);
         const totalG = totalP * restockPerQty;
         return `
-      <section id="restock-panel" class="mk-card rounded-2xl shadow-soft p-5 mt-4 hidden">
+      <section id="restock-panel" class="mk-card rounded-2xl shadow-soft p-5 mt-4 ${restockOpen ? '' : 'hidden'}">
         <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
           <h3 class="font-bold">📋 补货清单</h3>
           <div class="flex items-center gap-2">
@@ -952,8 +953,9 @@
     });
     const gr = $('#gen-restock');
     if (gr) gr.onclick = () => {
-      const p = $('#restock-panel');
-      if (p) p.classList.toggle('hidden');
+      restockOpen = !restockOpen;
+      renderDashboard(v);
+      if (restockOpen) { const inp = $('#add-restock-num'); if (inp) inp.focus(); }
     };
     $$('.restock-qty', v).forEach(inp => inp.oninput = () => {
       const num = inp.dataset.num;
