@@ -116,7 +116,7 @@
       // 用户个人资料（昵称/头像），随 state 同步到云端
       profile: { nickname: '', avatar: '' },
       settings: {
-        enableVision: false, apiKey: '', model: 'glm-4v-flash', visionBaseUrl: '',
+        enableVision: true, apiKey: '', model: 'glm-4v-flash', visionBaseUrl: '',
         sampleTolerance: 48, scaleFactor: 1,
         // 识别模式：'auto' = 智能识别（自动框图+自动行列，最省事）；'grid' = 手动格子数；'pixel' = 像素聚类
         recognizeMode: 'auto',
@@ -2235,7 +2235,7 @@
               </div>
               ${(() => {
                 const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
-                const aiReady = !!(state.settings.enableVision && (state.settings.apiKey || viaProxy));
+                const aiReady = viaProxy || !!(state.settings.enableVision && state.settings.apiKey);
                 return `<button id="ai-parse-legend" type="button" ${aiReady ? '' : 'disabled title="请先到「设置 → 云端视觉AI」启用（默认走内置云端代理）"'} class="w-full px-3 py-2 rounded-xl text-sm font-semibold ${aiReady ? 'bg-gradient-to-r from-violet-400 to-sky-400 text-white hover:opacity-90' : 'bg-gray-100 text-gray-400 cursor-not-allowed'} ${tempLegendMap.length ? 'hidden' : ''}">🤖 AI识别图例（云端视觉自动读色号）</button>${aiReady ? '' : '<p class="text-[10px] text-center text-mk-sub mt-1">到「设置 → 云端视觉AI」启用即可使用（默认走内置代理，无需填 Key）</p>'}`;
               })()}
               <div id="legend-list" class="${tempLegendMap.length ? '' : 'hidden'}">
@@ -2308,7 +2308,7 @@
                 ${tempIgnoreColors.map((c, i) => `<span class="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-mk-sand text-xs"><span class="w-4 h-4 rounded-full swatch" style="background:${c.hex}"></span>${c.hex}<button class="ig-del text-rose-400 ml-1 leading-none" data-i="${i}">×</button></span>`).join('')}
               </div>
             </div>
-            ${(() => { const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0; return (state.settings.enableVision && (state.settings.apiKey || viaProxy)) ? `<label class="flex items-center gap-2 text-sm bg-mk-lav/40 rounded-xl px-3 py-2"><input id="use-vision" type="checkbox"> 使用云端视觉 AI（内置代理 / OpenAI Vision）直接识别</label>` : ''; })()}
+            ${(() => { const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0; return (viaProxy || (state.settings.enableVision && state.settings.apiKey)) ? `<label class="flex items-center gap-2 text-sm bg-mk-lav/40 rounded-xl px-3 py-2"><input id="use-vision" type="checkbox"> 使用云端视觉 AI（内置代理 / OpenAI Vision）直接识别</label>` : ''; })()}
           </div>
 
           <button id="start" class="mt-4 w-full py-2.5 rounded-xl bg-mk-rose text-white font-bold shadow-soft disabled:opacity-40" ${tempImage ? '' : 'disabled'}>🔍 开始识别</button>
@@ -2534,7 +2534,7 @@
     const aiLegendBtn = $('#ai-parse-legend');
     if (aiLegendBtn) aiLegendBtn.onclick = async () => {
       const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
-      if (!state.settings.enableVision || !(state.settings.apiKey || viaProxy)) return toast('请先到「设置 → 云端视觉AI」启用（默认走内置代理，无需填 Key）', 'warn', 4000);
+      if (!viaProxy && !(state.settings.enableVision && state.settings.apiKey)) return toast('当前无法使用云端视觉：请使用内置代理（API 地址留空）或先在设置填写 API Key 与端点', 'warn', 4000);
       if (!tempImage) return toast('请先上传图片', 'error');
       if (!tempCropRegion) return toast('请先在图上框选图例区域', 'error');
       const baseUrl = state.settings.visionBaseUrl || '';
@@ -2638,7 +2638,7 @@
     img.onload = async () => {
       try {
         const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
-        const useVision = state.settings.enableVision && (state.settings.apiKey || viaProxy) && $('#use-vision') && $('#use-vision').checked;
+        const useVision = (viaProxy || (state.settings.enableVision && state.settings.apiKey)) && $('#use-vision') && $('#use-vision').checked;
         if (useVision) {
           recognitionResult = await callVisionAPI(tempImage, state.settings.apiKey, state.settings.model, state.settings.visionBaseUrl);
         } else {
