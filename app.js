@@ -116,7 +116,7 @@
       // 用户个人资料（昵称/头像），随 state 同步到云端
       profile: { nickname: '', avatar: '' },
       settings: {
-        enableVision: true, apiKey: '', model: 'glm-4v-flash', visionBaseUrl: '',
+        enableVision: false, apiKey: '', model: 'glm-4v-flash', visionBaseUrl: '',
         sampleTolerance: 48, scaleFactor: 1,
         // 识别模式：'auto' = 智能识别（自动框图+自动行列，最省事）；'grid' = 手动格子数；'pixel' = 像素聚类
         recognizeMode: 'auto',
@@ -3211,18 +3211,6 @@
           </div>
         </section>
 
-        <!-- 视觉 AI 开关 -->
-        <section class="mk-card rounded-2xl shadow-soft p-5">
-          <h3 class="font-bold mb-3">🤖 云端视觉 AI（可选）</h3>
-          <label class="flex items-center gap-2 text-sm mb-3">
-            <input id="vision-on" type="checkbox" ${state.settings.enableVision ? 'checked' : ''}> 启用 OpenAI Vision 直接识别图纸
-          </label>
-          <label class="text-sm block mb-2">API Key<input id="vision-key" type="password" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${state.settings.apiKey}"></label>
-          <label class="text-sm block mb-2">模型<input id="vision-model" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${state.settings.model}"></label>
-          <label class="text-sm block mb-3">API 地址（留空=走内置云端代理 /api/legend-vision；填兼容端点则走直连，需同时填 Key）<input id="vision-baseurl" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${state.settings.visionBaseUrl || ''}" placeholder="/api/legend-vision（内置代理）"></label>
-          <p class="text-xs text-mk-sub">默认已启用并走<b>内置云端代理</b>（Vercel 函数转发智谱，Key 存在服务端环境变量，前端无需填 Key、也不会暴露）。图纸识别页「图例识别」模式会出现「🤖 AI识别图例」按钮；「开始识别」也可勾选“使用云端视觉AI”。若你有自己的 Key 想直连，在「API 地址」填兼容端点（如 https://api.openai.com/v1/chat/completions）并填 Key 即可；留空则走内置代理。</p>
-        </section>
-
         <!-- 补货阈值设置 -->
         <section class="mk-card rounded-2xl shadow-soft p-5">
           <h3 class="font-bold mb-3">📦 补货阈值设置</h3>
@@ -3263,10 +3251,6 @@
     $$('.map-del').forEach(b => b.onclick = () => {
       state.mappings = state.mappings.filter(m => m.id !== b.dataset.id); save(); renderSettings(v); toast('已删除映射', 'success');
     });
-    $('#vision-on').onchange = e => { state.settings.enableVision = e.target.checked; save(); };
-    $('#vision-key').onchange = e => { state.settings.apiKey = e.target.value; save(); };
-    $('#vision-model').onchange = e => { state.settings.model = e.target.value; save(); };
-    $('#vision-baseurl').onchange = e => { state.settings.visionBaseUrl = (e.target.value || '').trim(); save(); };
     $('#replenish-thr').onchange = e => {
       const val = parseInt(e.target.value, 10);
       state.settings.replenishThreshold = (isNaN(val) || val < 0) ? 0 : val;
