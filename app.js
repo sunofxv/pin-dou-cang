@@ -2225,7 +2225,7 @@
 
             <!-- 图例识别：框选图例 → 解析颜色 → 生成色号清单 → 框选图案 → 统计用量 -->
             <div id="legend-options" class="${state.settings.recognizeMode === 'legend' ? '' : 'hidden'} space-y-2">
-              <p class="text-[11px] text-mk-sub"><b>第一步</b>：在图上拖拽框选<b>图例区域</b>（通常是图纸底部的色块条），点「解析图例」或「🤖 AI识别图例」生成色号清单（AI 更准确，需先在设置配置 API Key）。<br><b>第二步</b>：再拖拽框选<b>图案区域</b>（不含图例），点「计算整图用量」统计每个色号需要多少颗。</p>
+              <p class="text-[11px] text-mk-sub"><b>第一步</b>：在图上拖拽框选<b>图例区域</b>（通常是图纸底部的色块条），点「解析图例」或「🤖 AI识别图例」生成色号清单（AI 走内置云端代理自动读色号，零配置更准）。<br><b>第二步</b>：再拖拽框选<b>图案区域</b>（不含图例），点「计算整图用量」统计每个色号需要多少颗。</p>
               <div class="flex items-center justify-between text-sm bg-white/60 rounded-xl px-3 py-2">
                 <span>图例列数（色块个数）</span>
                 <span class="flex items-center gap-2">
