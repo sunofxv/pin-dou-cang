@@ -4169,28 +4169,34 @@
     if (!pImage) return;
     // 进入 modal 时自动开启剪裁编辑模式（关闭大图后退出）
     const wasMode = pImageCropMode; pImageCropMode = true;
-    // 关键: 预计算 wrap 尺寸（按 natural 比例 + 视口上限），不依赖运行时 getBoundingClientRect 时机
+    // 关键修复: 之前图片 object-fit:contain + SVG preserveAspectRatio="none" → 图片按比例居中
+    // 显示（含 padding 留白），SVG 强制拉伸到 wrap 尺寸。两者显示比例不一致，用户拖到图片
+    // 中"X 点"时,实际 SVG 坐标算出的原图像素 ≠ 用户视觉位置 → 选区跟视觉框位置错位.
+    // 现在 wrap 尺寸 = 图片 contain 后的实际显示尺寸（与原图比例一致），img 强制填满，SVG 也
+    // 按 xMidYMid meet 填满,两者比例完全一致,选区位置 = 用户视觉位置.
     const naturalW = pImage.naturalWidth || 1440;
     const naturalH = pImage.naturalHeight || 886;
-    const ar = naturalH / naturalW;
-    // 上限降低以确保下方工具栏不被遮挡（之前 maxH=800 在小窗口里会把工具栏顶出可视区）
+    const naturalAR = naturalW / naturalH;
     const maxW = Math.max(320, Math.min(window.innerWidth - 100, 1400, naturalW));
     const maxH = Math.max(240, Math.min(window.innerHeight * 0.62, 640, naturalH));
+    // 按原图比例取"能放进 (maxW, maxH) 的最大矩形"
     let wrapW, wrapH;
-    if (maxW * ar <= maxH) { wrapW = maxW; wrapH = Math.round(maxW * ar); }
-    else { wrapH = maxH; wrapW = Math.round(maxH / ar); }
+    if (naturalAR >= maxW / maxH) { wrapW = maxW; wrapH = Math.round(maxW / naturalAR); }
+    else { wrapH = maxH; wrapW = Math.round(maxH * naturalAR); }
+    // 此时 wrapW:H = naturalW:H，img 和 SVG 都填满 wrap（object-fit:fill + xMidYMid meet），
+    // 任意点 (x,y) → 原图坐标 = (x * naturalW / wrapW, y * naturalH / wrapH) 线性一致.
     const cropInfoText = pImageCrop ? ((pImageCrop.w | 0) + ' × ' + (pImageCrop.h | 0)) : '未设置';
     openModal('🔍 放大预览与剪裁', `
       <div class="flex flex-col items-center">
         <div class="flex flex-wrap items-center justify-center gap-2 mb-3 text-xs w-full">
           <button id="zoom-crop-mode" class="px-3 py-1.5 rounded-xl ${pImageCropMode ? 'bg-mk-rose text-white' : 'bg-white/70 border border-mk-sand text-mk-sub'}" title="切换编辑模式（可拖 8 手柄 + 内部移动）">${pImageCropMode ? '✓ 完成剪裁' : '✂️ 继续剪裁'}</button>
-          <button id="zoom-crop-reset" class="px-3 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" title="选区重置为整张图">↺ 重置选区</button>
+          <button id="zoom-crop-reset" class="px-3 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" title="选区重置为整张图\">↺ 重置选区</button>
           <button id="zoom-crop-clear" class="px-3 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" title="清除剪裁（识别整张图）">✕ 不剪裁</button>
           <span id="zoom-crop-info" class="text-mk-sub bg-white/70 px-2 py-1 rounded-lg border border-mk-sand">📐 选区: <span id="zoom-crop-info-text">${cropInfoText}</span></span>
           <span class="text-mk-sub">💡 拖 4 角/4 边缩放，拖中间移动选区</span>
         </div>
         <div id="zoom-img-wrap" class="relative bg-mk-cream rounded-xl border border-mk-sand overflow-hidden" style="width:${wrapW}px;height:${wrapH}px;">
-          <img id="zoom-img" src="${pImage.src}" class="absolute inset-0 block w-full h-full" style="object-fit:contain;" />
+          <img id="zoom-img" src="${pImage.src}" class="absolute inset-0 block w-full h-full" style="object-fit:fill;" />
           <div id="zoom-img-mask" class="absolute inset-0"></div>
         </div>
       </div>
@@ -4228,7 +4234,7 @@
       <rect class="zoom-crop-h" data-handle="w"  x="${c.x - HANDLE / 2}" y="${c.y + c.h / 2 - HANDLE / 2}" width="${HANDLE}" height="${HANDLE}" fill="#fff" stroke="#D6285A" stroke-width="${stroke}" pointer-events="all" style="cursor:ew-resize" />
       <rect class="zoom-crop-h" data-handle="e"  x="${c.x + c.w - HANDLE / 2}" y="${c.y + c.h / 2 - HANDLE / 2}" width="${HANDLE}" height="${HANDLE}" fill="#fff" stroke="#D6285A" stroke-width="${stroke}" pointer-events="all" style="cursor:ew-resize" />
     ` : '';
-    mask.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="w-full h-full block">
+    mask.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" class="w-full h-full block">
       <path d="${path}" fill="#0009" fill-rule="evenodd" pointer-events="none" />
       <rect x="${c.x}" y="${c.y}" width="${c.w}" height="${c.h}" fill="none" stroke="#fff" stroke-width="${stroke}" pointer-events="none" />
       ${interactive}
@@ -4459,22 +4465,36 @@
           const ar = b.sr / b.n, ag = b.sg / b.n, ab = b.sb / b.n;
           return ar > 232 && ag > 232 && ab > 232;
         }
+        // 黑文字/网格线判定: 在白底 cell 中, 黑色是 MARD221 图纸的色号文字或网格线 (不是真实黑色拼豆).
+        // 真实黑色拼豆(H16)应是 cell 主色 (≥50% 像素), 走 else 分支; 此处只在白底格中排除小黑点.
+        function isBlackish(b) {
+          const ar = b.sr / b.n, ag = b.sg / b.n, ab = b.sb / b.n;
+          return ar < 70 && ag < 70 && ab < 70;
+        }
         let totalN = 0;
         for (const b of buckets.values()) totalN += b.n;
         let chosen = null;
         if (isWhiteish(best)) {
-          // 找最强非白桶 — 不再卡 6% 硬阈值，改用「≥3 像素 或 ≥2% 总数」双门槛，
-          // 再加「≥2 像素」底线避免单像素 AA 把整格错配成色块（典型问题：细线 1px 字符边/小图标）
+          // 找最强非白桶 — 排除黑色噪点 (MARD221 类图纸的黑文字/网格线)
+          // 关键修复: 旧版选"非白桶"会选到黑色文字 (n > 彩色 n) → 整图变黑色
           let bestNonWhite = null;
           for (const b of sorted) {
-            if (!isWhiteish(b) && (!bestNonWhite || b.n > bestNonWhite.n)) bestNonWhite = b;
+            if (isWhiteish(b) || isBlackish(b)) continue;
+            if (!bestNonWhite || b.n > bestNonWhite.n) bestNonWhite = b;
           }
-          if (!bestNonWhite) continue;       // 真正·纯白背景 → 空 cell
+          if (!bestNonWhite) {
+            // 兜底: cell 全是白+黑 (没彩色) — 走「黑底」分支用黑色, 避免整格被误判为空
+            // (用户没导入黑色色卡时仍会显示空, 但已尽力)
+            for (const b of sorted) {
+              if (!bestNonWhite || b.n > bestNonWhite.n) bestNonWhite = b;
+            }
+            if (!bestNonWhite) continue;
+          }
           const isStrong = bestNonWhite.n >= 3 || bestNonWhite.n >= totalN * 0.02;
           if (!isStrong && bestNonWhite.n < 2) continue;  // 极弱信号（单像素 AA）→ 当噪点
           chosen = bestNonWhite;             // 标签格/细线主导色块 → 用此色
         } else {
-          chosen = best;           // 彩色格 → 主色即代表色
+          chosen = best;           // 彩色格/黑底格 → 主色即代表色
         }
         rowRgb[c] = [chosen.sr / chosen.n, chosen.sg / chosen.n, chosen.sb / chosen.n];
       }
