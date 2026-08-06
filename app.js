@@ -114,7 +114,7 @@
       // 自定义色号映射覆盖表（可选）：识别时优先于内置 221 色卡匹配
       mappings: [],
       settings: {
-        enableVision: false, apiKey: '', model: 'gpt-4o-mini',
+        enableVision: false, apiKey: '', model: 'gpt-4o-mini', visionBaseUrl: '',
         sampleTolerance: 48, scaleFactor: 1,
         // 识别模式：'auto' = 智能识别（自动框图+自动行列，最省事）；'grid' = 手动格子数；'pixel' = 像素聚类
         recognizeMode: 'auto',
@@ -344,6 +344,12 @@
     return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
   function beadByNumber(num) { return state.beads.find(b => b.colorNumber === num); }
+  // 按色号/编号精确匹配（忽略大小写与首尾空格），用于 AI 读到的图例印字
+  function beadByCode(code) {
+    if (!code) return null;
+    const c = String(code).trim().toLowerCase();
+    return state.beads.find(b => String(b.colorNumber || '').trim().toLowerCase() === c) || null;
+  }
   // 有效补货阈值：单色单独设置且 >0 时优先，否则使用全局默认（设置里的 replenishThreshold）
   function effThreshold(b) {
     return (b.threshold && b.threshold > 0) ? b.threshold : (state.settings.replenishThreshold || 0);
@@ -915,16 +921,47 @@
       <span class="text-sm text-rose-500 font-bold">${b.stock} / 阈值 ${effThreshold(b)}${(b.threshold && b.threshold > 0) ? '' : ' <span class="text-[10px]">默认</span>'}</span>
     </button>`;
   }
-  function copyRestockList(low) {
-    if (!low || !low.length) return toast('暂无低库存，无需补货', 'warn');
-    const lines = ['补货清单（' + low.length + ' 色）', '色号\t份数'];
-    let total = 0;
-    low.forEach(b => {
-      const q = restockPortions[b.colorNumber] ?? 1;
-      total += q;
-      lines.push(b.colorNumber + (b.colorName ? ' ' + b.colorName : '') + '\t' + q);
+  function updateRestockTotals() {
+    const totalP = restockItems.reduce((s, num) => s + (restockPortions[num] ?? 1), 0);
+    const totalG = totalP * restockPerQty;
+    const pEl = $('#restock-total-p');
+    if (pEl) pEl.textContent = totalP;
+    const gEl = $('#restock-total-g');
+    if (gEl) gEl.textContent = totalG;
+  }
+  function restockInOneClick() {
+    if (!restockItems || !restockItems.length) return toast('清单为空，无法入库', 'warn');
+    let totalQty = 0;
+    const n = restockItems.length;
+    restockItems.forEach(num => {
+      const b = beadByNumber(num);
+      if (!b) return;
+      const portions = restockPortions[num] ?? 1;
+      const qty = portions * restockPerQty;
+      b.stock += qty;
+      addLog('入库', b, qty, '补货清单一键入库（' + portions + '份 × ' + restockPerQty + '颗）');
+      totalQty += qty;
     });
-    lines.push('总份数\t' + total);
+    save();
+    const msg = '已入库 ' + n + ' 色，共 ' + totalQty + ' 颗';
+    restockItems = null;
+    renderDashboard(v);
+    toast(msg, 'success');
+  }
+  function copyRestockList() {
+    if (!restockItems || !restockItems.length) return toast('清单为空，没有可复制的补货内容', 'warn');
+    const lines = ['补货清单（每份 ' + restockPerQty + ' 颗）', '色号\t份数\t颗数'];
+    let totalP = 0, totalG = 0;
+    restockItems.forEach(num => {
+      const b = beadByNumber(num);
+      if (!b) return;
+      const p = restockPortions[num] ?? 1;
+      const g = p * restockPerQty;
+      totalP += p;
+      totalG += g;
+      lines.push(b.colorNumber + '\t' + p + '\t' + g);
+    });
+    lines.push('总份数\t' + totalP + '\t总颗数\t' + totalG);
     const text = lines.join('\n');
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(() => toast('已复制补货清单', 'success'), () => copyTextFallback(text));
