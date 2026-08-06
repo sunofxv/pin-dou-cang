@@ -650,24 +650,39 @@
   /* ===================== 8. 云端视觉 AI（可选 VLM 路径） ===================== */
   // 若用户在“设置”开启 OpenAI Vision 并填了 Key，可走 VLM 直接产出结构化 JSON。
   // 与像素聚类路径共享同一套“弹窗校对”流程。
-  async function callVisionAPI(dataUrl, apiKey, model) {
-    const prompt = `这是一张拼豆(Perler/Hama)图纸。请识别图中每一种颜色对应的像素(豆子)数量，并尽量映射为拼豆标准色号。
-只返回一个 JSON 对象，形如 {"items":[{"colorNumber":"色号或空串","colorName":"颜色名","hex":"#RRGGBB","count":数量}]}，不要输出任何其他文字。`;
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+  // 通用 VLM 调用：向 OpenAI 兼容接口发送“文本 + 图片”，返回解析后的 JSON 对象。
+  // baseUrl 缺省走 OpenAI；可填任意 OpenAI 兼容端点（如 DeepSeek / 通义千问等），提升国内可用性。
+  async function callVLM(dataUrl, apiKey, model, prompt, baseUrl) {
+    const url = (baseUrl && baseUrl.trim()) || 'https://api.openai.com/v1/chat/completions';
+    const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
       body: JSON.stringify({
         model: model || 'gpt-4o-mini',
-        response_format: { type: 'json_object' },
         messages: [{ role: 'user', content: [
           { type: 'text', text: prompt },
           { type: 'image_url', image_url: { url: dataUrl } }
         ] }]
       })
     });
-    if (!res.ok) throw new Error('Vision API ' + res.status);
+    if (!res.ok) {
+      let detail = '';
+      try { const e = await res.json(); detail = (e.error && e.error.message) || JSON.stringify(e); } catch (_) {}
+      throw new Error('Vision API ' + res.status + (detail ? '：' + detail : ''));
+    }
     const j = await res.json();
-    const parsed = JSON.parse(j.choices[0].message.content);
+    const content = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '{}';
+    // 鲁棒解析：优先整体解析；失败则截取首个 {…} 块（兼容模型多嘴/带 Markdown 的情况）
+    try { return JSON.parse(content); } catch (_) {
+      const s = content.indexOf('{'), e = content.lastIndexOf('}');
+      if (s >= 0 && e > s) return JSON.parse(content.slice(s, e + 1));
+      throw new Error('无法解析 AI 返回内容：' + content.slice(0, 200));
+    }
+  }
+  async function callVisionAPI(dataUrl, apiKey, model, baseUrl) {
+    const prompt = `这是一张拼豆(Perler/Hama)图纸。请识别图中每一种颜色对应的像素(豆子)数量，并尽量映射为拼豆标准色号。
+只返回一个 JSON 对象，形如 {"items":[{"colorNumber":"色号或空串","colorName":"颜色名","hex":"#RRGGBB","count":数量}]}，不要输出任何其他文字。`;
+    const parsed = await callVLM(dataUrl, apiKey, model, prompt, baseUrl);
     return (parsed.items || []).map(it => ({
       r: hexToRgb(it.hex || '#000000')[0],
       g: hexToRgb(it.hex || '#000000')[1],
@@ -679,6 +694,69 @@
       matched: !!it.colorNumber,
       matchedBy: it.colorNumber ? 'VLM' : ''
     }));
+  }
+  // 让视觉模型识别“图例区域”中的颜色色块：返回每个色块的 hex 与印的色号 code。
+  async function callLegendVisionAPI(dataUrl, apiKey, model, baseUrl) {
+    const prompt = `这是一张拼豆(Perler/Hama)图纸的「颜色图例」区域，里面是一排颜色色块，每个色块通常印有该颜色的色号/字母编号。
+请从左到右、从上到下，逐一列出图例中每一个不同的颜色色块。
+请严格只返回一个 JSON 对象，不要包含任何额外文字或 Markdown 代码块，格式如下：
+{"colors":[{"hex":"#RRGGBB","code":"色块上印的色号/编号/字母，若看不清或没有则留空字符串"}]}
+其中 hex 是该色块的主体颜色（不要取文字或边框的颜色），code 是色块上印刷的编号或字母。`;
+    const parsed = await callVLM(dataUrl, apiKey, model, prompt, baseUrl);
+    const colors = Array.isArray(parsed.colors) ? parsed.colors : [];
+    return colors
+      .map(c => ({ hex: (c.hex || '').trim(), code: (c.code || '').trim() }))
+      .filter(c => /^#?[0-9a-fA-F]{6}$/.test(c.hex) || /^#[0-9a-fA-F]{3}$/.test(c.hex));
+  }
+  // 将归一化区域裁剪为独立图片 dataURL（用于把图例区域单独发给视觉模型）
+  function cropRegionToDataURL(img, region) {
+    const { canvas, w, h } = createAnalysisCanvas(img, 1200);
+    const x0 = Math.max(0, Math.round(region.x * w));
+    const y0 = Math.max(0, Math.round(region.y * h));
+    const x1 = Math.min(w, Math.round((region.x + region.w) * w));
+    const y1 = Math.min(h, Math.round((region.y + region.h) * h));
+    const cw = Math.max(1, x1 - x0), ch = Math.max(1, y1 - y0);
+    const c = document.createElement('canvas');
+    c.width = cw; c.height = ch;
+    c.getContext('2d').drawImage(canvas, x0, y0, cw, ch, 0, 0, cw, ch);
+    return c.toDataURL('image/png');
+  }
+  // 异步加载图片为 HTMLImageElement
+  function loadImage(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('图片加载失败'));
+      img.src = src;
+    });
+  }
+  // 用视觉大模型识别图例：裁剪图例区 → 调 VLM 读色 → 映射成标准色号清单
+  async function aiParseLegend(img, region, baseUrl) {
+    const dataUrl = cropRegionToDataURL(img, region);
+    const raw = await callLegendVisionAPI(dataUrl, state.settings.apiKey, state.settings.model, baseUrl);
+    const out = [];
+    for (const c of raw) {
+      let hex = (c.hex || '').trim();
+      if (hex && !hex.startsWith('#')) hex = '#' + hex;
+      const rgb = hexToRgb(hex);
+      if (!rgb || rgb.some(v => isNaN(v))) continue;
+      const [r, g, b] = rgb;
+      let colorNumber = '', colorName = '';
+      // 若 AI 读到了色块上印的编号，优先按编号精确匹配自有色卡
+      if (c.code) {
+        const bead = beadByCode(c.code);
+        if (bead) { colorNumber = bead.colorNumber; colorName = bead.colorName; }
+      }
+      // 否则按色块主体颜色就近匹配标准色卡
+      if (!colorNumber) {
+        const m = mapColorToStandard(r, g, b);
+        colorNumber = m.colorNumber || '';
+        colorName = m.colorName || '';
+      }
+      out.push({ r, g, b, hex: rgbToHex(r, g, b), colorNumber, colorName, count: 0 });
+    }
+    out.estimatedCols = out.length;
+    return out;
   }
 
   /* ===================== 9. 操作日志 ===================== */
@@ -1895,7 +1973,7 @@
 
             <!-- 图例识别：框选图例 → 解析颜色 → 生成色号清单 → 框选图案 → 统计用量 -->
             <div id="legend-options" class="${state.settings.recognizeMode === 'legend' ? '' : 'hidden'} space-y-2">
-              <p class="text-[11px] text-mk-sub"><b>第一步</b>：在图上拖拽框选<b>图例区域</b>（通常是图纸底部的色块条），点「解析图例」生成色号清单。<br><b>第二步</b>：再拖拽框选<b>图案区域</b>（不含图例），点「计算整图用量」统计每个色号需要多少颗。</p>
+              <p class="text-[11px] text-mk-sub"><b>第一步</b>：在图上拖拽框选<b>图例区域</b>（通常是图纸底部的色块条），点「解析图例」或「🤖 AI识别图例」生成色号清单（AI 更准确，需先在设置配置 API Key）。<br><b>第二步</b>：再拖拽框选<b>图案区域</b>（不含图例），点「计算整图用量」统计每个色号需要多少颗。</p>
               <div class="flex items-center justify-between text-sm bg-white/60 rounded-xl px-3 py-2">
                 <span>图例列数（色块个数）</span>
                 <span class="flex items-center gap-2">
@@ -1903,6 +1981,9 @@
                   <button id="parse-legend" type="button" class="px-3 py-1.5 rounded-lg bg-mk-lav/70 text-mk-ink text-xs font-semibold hover:bg-mk-lav/90">🎨 解析图例</button>
                 </span>
               </div>
+              ${state.settings.enableVision && state.settings.apiKey
+                ? `<button id="ai-parse-legend" type="button" class="w-full px-3 py-2 rounded-xl bg-gradient-to-r from-violet-400 to-sky-400 text-white text-sm font-semibold hover:opacity-90 ${tempLegendMap.length ? 'hidden' : ''}">🤖 AI识别图例（云端视觉自动读色号）</button>`
+                : `<p class="text-[11px] text-mk-sub">想用 AI 自动识别图例色号？到「设置 → 云端视觉 AI」启用并填入 API Key（API 地址可填兼容端点）即可。</p>`}
               <div id="legend-list" class="${tempLegendMap.length ? '' : 'hidden'}">
                 <div class="flex items-center justify-between mb-1">
                   <div class="text-xs text-mk-sub">已解析色号清单${tempLegendMap.some(x => x.count > 0) ? '（含数量）' : ''}（色号/名称可点击编辑）：</div>
@@ -1986,7 +2067,7 @@
           <h3 class="font-bold mb-3">📋 识别说明</h3>
           <ol class="text-sm text-mk-ink/80 space-y-2 list-decimal list-inside">
             <li>上传图纸。若图中有多个图案，请分别框选识别。</li>
-            <li><b>图例模式（推荐复杂图纸）</b>：先框选图纸下方的色块图例，点「解析图例」生成色号清单并校对；再切换「智能识别/格子采样」框选图案、识别用量。</li>
+            <li><b>图例模式（推荐复杂图纸）</b>：先框选图纸下方的色块图例，点「解析图例」或「🤖 AI识别图例」生成色号清单并校对（AI 可读取色块印的色号，更准）；再切换「智能识别/格子采样」框选图案、识别用量。</li>
             <li>「智能识别」会自动框图并识别行列；「格子采样」需手动填格子数并点「检测格子」。</li>
             <li>点击“开始识别”：程序按格子中心取色，自动避开网格线与色号文字；若已设图例，会优先按图例颜色映射色号。</li>
             <li>相同标准色号合并，弹窗中的“数量”即该色号的格子数。</li>
@@ -2197,6 +2278,33 @@
       };
       img.src = tempImage;
     };
+    // AI 识别图例：把框选的图例区域裁剪后发给视觉大模型，自动读出色块颜色与印的色号
+    const aiLegendBtn = $('#ai-parse-legend');
+    if (aiLegendBtn) aiLegendBtn.onclick = async () => {
+      if (!tempImage) return toast('请先上传图片', 'error');
+      if (!tempCropRegion) return toast('请先在图上框选图例区域', 'error');
+      const baseUrl = state.settings.visionBaseUrl || '';
+      aiLegendBtn.disabled = true;
+      const oldText = aiLegendBtn.textContent;
+      aiLegendBtn.textContent = '⏳ AI识别中…';
+      try {
+        const img = await loadImage(tempImage);
+        tempLegendMap = await aiParseLegend(img, tempCropRegion, baseUrl);
+        tempLegendRegion = tempCropRegion;   // 锁定图例区，图案区留给第二步框选
+        tempCropRegion = null;
+        tempDetectedVLines = []; tempDetectedHLines = [];
+        const colsInput = $('#legend-cols');
+        if (colsInput && !colsInput.value) colsInput.value = tempLegendMap.estimatedCols || '';
+        drawEditor();
+        renderRecognize(v);
+        toast(`AI 已识别 ${tempLegendMap.length} 个图例色，请再框选图案区域后点「计算整图用量」`, tempLegendMap.length ? 'success' : 'warn');
+      } catch (err) {
+        console.error(err);
+        toast('AI 识别失败：' + (err.message || err), 'error');
+      } finally {
+        aiLegendBtn.disabled = false; aiLegendBtn.textContent = oldText;
+      }
+    };
     $('#clear-legend').onclick = () => {
       tempLegendMap = [];
       tempLegendRegion = null;
@@ -2277,7 +2385,7 @@
       try {
         const useVision = state.settings.enableVision && state.settings.apiKey && $('#use-vision') && $('#use-vision').checked;
         if (useVision) {
-          recognitionResult = await callVisionAPI(tempImage, state.settings.apiKey, state.settings.model);
+          recognitionResult = await callVisionAPI(tempImage, state.settings.apiKey, state.settings.model, state.settings.visionBaseUrl);
         } else {
           const sf = state.settings.scaleFactor || 1;
           const filterBg = $('#filter-bg') && $('#filter-bg').checked;
@@ -2837,8 +2945,9 @@
             <input id="vision-on" type="checkbox" ${state.settings.enableVision ? 'checked' : ''}> 启用 OpenAI Vision 直接识别图纸
           </label>
           <label class="text-sm block mb-2">API Key<input id="vision-key" type="password" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${state.settings.apiKey}"></label>
-          <label class="text-sm block mb-3">模型<input id="vision-model" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${state.settings.model}"></label>
-          <p class="text-xs text-mk-sub">启用后，图纸识别页会出现“使用云端视觉AI”选项，上传后调用 VLM 输出结构化 JSON。</p>
+          <label class="text-sm block mb-2">模型<input id="vision-model" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${state.settings.model}"></label>
+          <label class="text-sm block mb-3">API 地址（留空=OpenAI，可填兼容端点如 https://api.deepseek.com/v1/chat/completions）<input id="vision-baseurl" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${state.settings.visionBaseUrl || ''}" placeholder="https://api.openai.com/v1/chat/completions"></label>
+          <p class="text-xs text-mk-sub">启用后，图纸识别页的「图例识别」模式会出现「🤖 AI识别图例」按钮，可让视觉模型自动读取图例色块的颜色与印的色号（比像素解析更准）；同时「开始识别」也可勾选“使用云端视觉AI”。API 地址留空走 OpenAI，可填兼容端点以提升国内可用性（如 DeepSeek / 通义千问等，需其模型支持视觉）。</p>
         </section>
 
         <!-- 补货阈值设置 -->
@@ -2885,6 +2994,7 @@
     $('#vision-on').onchange = e => { state.settings.enableVision = e.target.checked; save(); };
     $('#vision-key').onchange = e => { state.settings.apiKey = e.target.value; save(); };
     $('#vision-model').onchange = e => { state.settings.model = e.target.value; save(); };
+    $('#vision-baseurl').onchange = e => { state.settings.visionBaseUrl = (e.target.value || '').trim(); save(); };
     $('#replenish-thr').onchange = e => {
       const val = parseInt(e.target.value, 10);
       state.settings.replenishThreshold = (isNaN(val) || val < 0) ? 0 : val;
