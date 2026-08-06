@@ -3157,6 +3157,7 @@
   let pZoom = 1;                  // 画布缩放倍数（1=原始 / 通过滚轮/按钮/双指调整，0.2–6）
   let pImgAspect = null;      // 已上传参考图的宽高比（naturalWidth / naturalHeight），用于锁定纵横比
   let pAspectLock = true;     // 设置列/行时是否锁定纵横比（空白 1:1、图片按原图比例）
+  let pLastDetectedColors = 0; // 上次识别时图中检测到的非白主色数 (5-bit 量化后去重), 给 toast 用
   let pImageCrop = null;      // 剪裁区域：{x,y,w,h} 原图像素坐标；null = 不剪裁（整图）
   let pImageCropMode = false; // 是否处于剪裁编辑模式（可拖拽选区）
   let pImageCropDrag = null;  // {handle, startCrop, startX, startY, scale} 拖拽状态
@@ -3532,6 +3533,13 @@
     }
     $('#p-generate').onclick = () => {
       if (!pImage) return toast('请先上传参考图', 'warn');
+      // 色卡不足时的软提示：≥5 色才"出图", <5 色只建议先补色卡再生成
+      if (!state.beads || !state.beads.length) {
+        return toast('⚠️ 拼豆色卡为空\n请先到「色卡管理」添加一些色卡（黑色、白色、肉色等基础配色），再识别图纸', 'warn', 6000);
+      }
+      if (state.beads.length < 5) {
+        toast(`💡 当前只有 ${state.beads.length} 种色卡, 识别效果会非常粗糙（所有非白格都会映射到同一色号）\n建议先到「色卡管理」导入更多色号 (MARD 221 标准色), 或点下方「继续生成」强行预览`, 'info', 6000);
+      }
       let c = parseInt($('#p-icols').value, 10) || 30, r = parseInt($('#p-irows').value, 10) || 30;
       c = Math.min(150, Math.max(2, c)); r = Math.min(150, Math.max(2, r));
       pCols = c; pRows = r; pHighlight = null;
@@ -3544,12 +3552,25 @@
         if (pCells[rr][cc]) filled++; else empty++;
       }
       const total = pCols * pRows;
+      const beadCount = (state.beads && state.beads.length) || 0;
+      const detected = pLastDetectedColors || 0;
       if (filled === 0) {
-        toast(`⚠️ 没匹配到任何色卡（共 ${total} 格全空）\n请检查：① 画布色卡是否含图中颜色 ② 目标网格列/行是否远大于剪裁区`, 'warn', 6000);
+        // 三条针对性建议：色卡少/网格过大/裁剪区过小
+        const tips = [];
+        if (beadCount < 5) tips.push(`① 色卡仅 ${beadCount} 种 — 至少加 5~10 种基础色`);
+        if (detected > beadCount * 2 && beadCount < 20) tips.push(`② 图中检测到 ${detected} 种主色, 但色卡只有 ${beadCount} 种 — 建议导入完整 MARD 221 色`);
+        tips.push(`③ 把目标网格减小到接近剪裁区（剪裁区越接近 ${c === r ? c + '格' : '宽高比'}, 单元格像素越多, 识别越准)`);
+        if (!pImageCrop || (pImageCrop.x === 0 && pImageCrop.y === 0 && pImageCrop.w >= (pImage.naturalWidth - 1) && pImageCrop.h >= (pImage.naturalHeight - 1))) {
+          tips.push(`④ 当前未剪裁, 整张图含大量白底 — 点「✂️ 剪裁」框出内容区`);
+        }
+        toast(`⚠️ 没匹配到任何色卡（共 ${total} 格全空）\n图检测到 ${detected} 种主色 / 你的色卡 ${beadCount} 种\n${tips.join('\n')}`, 'warn', 9000);
       } else if (empty / total > 0.5) {
-        toast(`⚠️ 已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格\n空格过多，建议把目标网格调小到接近剪裁区比例`, 'warn', 6000);
+        const tips2 = [`已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格`];
+        if (detected > beadCount * 2 && beadCount < 20) tips2.push(`图检测到 ${detected} 种主色, 但色卡只有 ${beadCount} 种`);
+        tips2.push(`空格过多, 建议把目标网格调小到接近剪裁区比例`);
+        toast(`⚠️ ${tips2.join('\n')}`, 'warn', 7000);
       } else {
-        toast(`✅ 已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格`, 'success');
+        toast(`✅ 已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格（图中检测到 ${detected} 种主色）`, 'success');
       }
     };
     // 点图放大弹窗（更宽敞的剪裁空间）
@@ -4355,10 +4376,11 @@
     const fullW = pImage.naturalWidth || pImage.width;
     const fullH = pImage.naturalHeight || pImage.height;
     if (!fullW || !fullH) return;
-    // 关键诊断：色卡为空时任何 cell 都会落到 null，每行空 → 全图空 — 必须先拦
+    // 色卡为空检查已移至点击处（patternGenerateFromImage 调用前）— 这里不再重复提示,
+    // 但仍兜底防空指针, 以防外部直接调用
     if (!state.beads || !state.beads.length) {
-      toast('⚠️ 拼豆色卡为空\n请先到「色卡管理」添加一些色卡（黑色、白色、肉色等基础配色），再识别图纸', 'warn', 6000);
       pCells = Array.from({ length: pRows }, () => new Array(pCols).fill(null));
+      pLastDetectedColors = 0;
       return;
     }
     // 按用户剪裁区域取像素；若未设剪裁或选区=整图，则退化为整图
@@ -4376,14 +4398,16 @@
     tctx.drawImage(pImage, sx, sy, sw, sh, 0, 0, W, H);
     const data = tctx.getImageData(0, 0, W, H).data;
 
-    // 噪点像素判定: 只过滤“浅灰文字抗锯齿光晕”(低饱和 + 中高亮度)。
-    // 关键: 不再过滤纯黑 —— 纯黑可能是真实黑色拼豆(H16 描边)，
-    //       要保留给下方“多数投票”判断，否则黑色描边整圈被当噪点丢弃。
+    // 噪点像素判定: 只过滤“白色上的极浅光晕”(极低饱和 + 极高亮度)。
+    // 关键修复: 之前 sat<0.06, lum 0.62-0.96 把设备银边/iPad 边框/真浅灰全当噪点丢了 →
+    //          整格被误判为「白底」→ 6% 阈值过严 → 全图 null. 改为只过滤 lum>0.88 的极浅像素,
+    //          真浅银(180~220) 仍能保留并进入最近色匹配.
+    //       不再过滤纯黑 —— 纯黑可能是真实黑色拼豆(H16 描边)，要保留给下方“多数投票”判断。
     function isNoise(r, g, b) {
       const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
       const sat = mx === 0 ? 0 : (mx - mn) / mx;
       const lum = (mx + mn) / 2;
-      if (sat < 0.06 && lum > 0.62 && lum < 0.96) return true;  // 浅灰光晕
+      if (sat < 0.04 && lum > 0.88 && lum < 0.99) return true;  // 仅过滤"近白"的极浅灰
       return false;
     }
 
@@ -4433,12 +4457,16 @@
         for (const b of buckets.values()) totalN += b.n;
         let chosen = null;
         if (isWhiteish(best)) {
-          // 找显著非白桶(≥6% 总像素) → 标签格(白底印色块)，用色块色；
-          // 否则整格都是白 → 纯白背景，该格无拼豆 (null)
+          // 找最强非白桶 — 不再卡 6% 硬阈值，改用「≥3 像素 或 ≥2% 总数」双门槛，
+          // 再加「≥2 像素」底线避免单像素 AA 把整格错配成色块（典型问题：细线 1px 字符边/小图标）
+          let bestNonWhite = null;
           for (const b of sorted) {
-            if (!isWhiteish(b) && b.n >= totalN * 0.06) { chosen = b; break; }
+            if (!isWhiteish(b) && (!bestNonWhite || b.n > bestNonWhite.n)) bestNonWhite = b;
           }
-          if (!chosen) continue;   // 纯白背景 → 空 cell
+          if (!bestNonWhite) continue;       // 真正·纯白背景 → 空 cell
+          const isStrong = bestNonWhite.n >= 3 || bestNonWhite.n >= totalN * 0.02;
+          if (!isStrong && bestNonWhite.n < 2) continue;  // 极弱信号（单像素 AA）→ 当噪点
+          chosen = bestNonWhite;             // 标签格/细线主导色块 → 用此色
         } else {
           chosen = best;           // 彩色格 → 主色即代表色
         }
@@ -4455,16 +4483,19 @@
       return rgbToLab(br, bg, bb);
     });
     const paletteMap = new Map();  // 5-bit 量化 key → 色号
+    const detectedKeys = new Set();
     for (const rowRgb of tmp_cells) {
       for (const rgb of rowRgb) {
         if (!rgb) continue;
         const qk = ((rgb[0] >> 3) << 10) | ((rgb[1] >> 3) << 5) | (rgb[2] >> 3);
+        detectedKeys.add(qk);
         if (!paletteMap.has(qk)) {
           // 用感知色差(CIELAB ΔE)选最近色卡: 红/橙/黄/棕 等相近色不再张冠李戴
           paletteMap.set(qk, nearestOwnedColorLab(rgb[0], rgb[1], rgb[2], beadLabs));
         }
       }
     }
+    pLastDetectedColors = detectedKeys.size;   // 给 toast 反馈用：图中实际检测到几种主色
 
     // === 第三遍: 每个 cell 用其量化色查全局调色板 → 色号 ===
     // 同色量化 → 同色号，保证整图风格统一；不同色(即便 RGB 接近)也按真实色差分流。
