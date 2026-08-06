@@ -2929,6 +2929,9 @@
   let pZoom = 1;                  // 画布缩放倍数（1=原始 / 通过滚轮/按钮/双指调整，0.2–6）
   let pImgAspect = null;      // 已上传参考图的宽高比（naturalWidth / naturalHeight），用于锁定纵横比
   let pAspectLock = true;     // 设置列/行时是否锁定纵横比（空白 1:1、图片按原图比例）
+  let pImageCrop = null;      // 剪裁区域：{x,y,w,h} 原图像素坐标；null = 不剪裁（整图）
+  let pImageCropMode = false; // 是否处于剪裁编辑模式（可拖拽选区）
+  let pImageCropDrag = null;  // {handle, startCrop, startX, startY, scale} 拖拽状态
   let pDrawing = false;
   let pInited = false;
   let pHighlight = null;      // 当前在图纸上高亮的色号（点击用料清单项触发，再次点击取消）
@@ -3076,7 +3079,21 @@
               点击或拖拽图片到此处<br>（PNG / JPG）
               <input id="p-file" type="file" accept="image/*" class="hidden">
             </div>
-            ${pImage ? `<img id="p-img-preview" src="${pImage.src}" class="mt-3 w-full rounded-xl border border-mk-sand">` : `<img id="p-img-preview" class="hidden mt-3 w-full rounded-xl border border-mk-sand">`}
+            ${pImage ? `
+              <div id="p-img-wrap" class="mt-3 relative inline-block w-full">
+                <img id="p-img-preview" src="${pImage.src}" class="w-full rounded-xl border border-mk-sand block" />
+                <div id="p-img-mask" class="absolute inset-0 rounded-xl overflow-hidden ${pImageCrop ? '' : 'hidden'}"></div>
+              </div>` : `
+              <div id="p-img-wrap" class="mt-3 relative inline-block w-full hidden">
+                <img id="p-img-preview" class="w-full rounded-xl border border-mk-sand block" />
+                <div id="p-img-mask" class="absolute inset-0 rounded-xl overflow-hidden hidden"></div>
+              </div>`}
+            <div class="flex flex-wrap gap-2 mt-2 ${pImage ? '' : 'hidden'}" id="p-crop-bar">
+              <button id="p-crop-toggle" class="text-xs px-2.5 py-1.5 rounded-xl ${pImageCropMode ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub border border-mk-sand'}" title="${pImageCropMode ? '保存当前选区并退出编辑' : '进入剪裁编辑模式（4 角 + 4 边 + 内部拖动）'}">${pImageCropMode ? '✓ 完成剪裁' : '✂️ 剪裁'}</button>
+              <button id="p-crop-reset" class="text-xs px-2.5 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" title="选区重置为整张图">↺ 重置选区</button>
+              <button id="p-crop-clear" class="text-xs px-2.5 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-mk-sub ${pImageCrop ? '' : 'hidden'}" title="清除剪裁（识别整张图）">✕ 不剪裁</button>
+              <span class="text-[11px] text-mk-sub self-center">${pImageCropMode ? '💡 拖 4 角/4 边缩放，拖中间移动' : (pImageCrop ? '📌 已剪裁（深色区不识别）' : '📌 默认识别整张图')}</span>
+            </div>
             <h3 class="font-bold mb-2 mt-4">🎯 目标网格</h3>
             <div class="flex flex-wrap gap-2 mb-2">
               <button class="preset-board px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-white/70 text-mk-sub border border-mk-sand" data-preset="29">标准 29</button>
@@ -3230,6 +3247,30 @@
     // 分组背景主题选择弹窗
     const gridThemeBtn = $('#p-grid-theme');
     if (gridThemeBtn) gridThemeBtn.onclick = openGridThemePicker;
+    // 图片剪裁：进入/完成编辑、重置、清除
+    const cropToggle = $('#p-crop-toggle');
+    if (cropToggle) cropToggle.onclick = () => {
+      if (!pImage) return toast('请先上传参考图', 'warn');
+      pImageCropMode = !pImageCropMode;
+      if (!pImageCrop) pImageCrop = { x: 0, y: 0, w: pImage.naturalWidth, h: pImage.naturalHeight };
+      renderImageCropMask();
+      renderPattern(v);
+    };
+    const cropReset = $('#p-crop-reset');
+    if (cropReset) cropReset.onclick = () => {
+      if (!pImage) return;
+      pImageCrop = { x: 0, y: 0, w: pImage.naturalWidth, h: pImage.naturalHeight };
+      pImageCropMode = true;        // 重置后留在编辑模式方便继续调
+      renderImageCropMask();
+      renderPattern(v);
+    };
+    const cropClear = $('#p-crop-clear');
+    if (cropClear) cropClear.onclick = () => {
+      pImageCrop = null;
+      pImageCropMode = false;
+      renderImageCropMask();
+      renderPattern(v);
+    };
     // 工具切换
     $$('.ptool').forEach(b => b.onclick = () => {
       pTool = b.dataset.tool;
@@ -3306,6 +3347,7 @@
     patternRenderCurrentColor();
     patternRenderBOM();
     patternAttachCanvas();
+    renderImageCropMask();   // wrap 被 v.innerHTML 重置后，重新画 SVG 选区
   }
 
   function patternCellPx() {
@@ -3394,7 +3436,7 @@
     const cv = $('#p-canvas'); if (!cv) return;
     const wrap = $('#p-canvas-wrap');
     if (!pInited) {
-      document.addEventListener('mouseup', () => { pDrawing = false; pPanning = false; pMiddlePan = false; const c = $('#p-canvas'); if (c) c.style.cursor = ''; });
+      document.addEventListener('mouseup', () => { pDrawing = false; pPanning = false; pMiddlePan = false; pImageCropDrag = null; const c = $('#p-canvas'); if (c) c.style.cursor = ''; });
       document.addEventListener('keydown', (e) => {
         const t = e.target;
         const inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
@@ -3429,6 +3471,8 @@
       document.addEventListener('wheel', blockZoom, { passive: false, capture: true });
       window.addEventListener('gesturestart', blockZoom, { passive: false });
       document.addEventListener('gesturestart', blockZoom, { passive: false });
+      // 剪裁拖拽过程：mousemove 在手柄启动后更新选区
+      document.addEventListener('mousemove', (e) => { if (pImageCropDrag) applyCropDrag(e); });
       pInited = true;
     }
     const getCell = (e) => {
@@ -3832,8 +3876,12 @@
         if (img.naturalWidth && img.naturalHeight) {
           pImgAspect = img.naturalWidth / img.naturalHeight;
         }
+        // 默认选区 = 整张图（用户可再点「✂️ 剪裁」调整）
+        pImageCrop = { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
+        pImageCropMode = false;
         const pr = $('#p-img-preview');
         if (pr) { pr.src = img.src; pr.classList.remove('hidden'); }
+        renderImageCropMask();
         // 同步刷新图片模式 checkbox 提示文案（强制 re-render 让 pImgAspect 后的文案显示出来）
         toast('图片已加载' + (pImgAspect ? `（原图 ${img.naturalWidth}×${img.naturalHeight}，比例 ${pImgAspect.toFixed(2)}:1）` : '') + '，设置网格后点「生成拼豆图纸」', 'success');
       };
@@ -3842,20 +3890,125 @@
     };
     reader.readAsDataURL(file);
   }
+
+  // 按当前 pImageCrop / pImageCropMode 渲染 SVG 选区层；剪裁编辑模式下绑定 8 手柄 + 内部移动
+  function renderImageCropMask() {
+    const mask = $('#p-img-mask'); if (!mask) return;
+    const img = $('#p-img-preview');
+    const W = pImage && img ? (pImage.naturalWidth || img.naturalWidth) : 0;
+    const H = pImage && img ? (pImage.naturalHeight || img.naturalHeight) : 0;
+    if (!pImage || !W || !H || !pImageCrop) { mask.innerHTML = ''; mask.classList.add('hidden'); return; }
+    mask.classList.remove('hidden');
+    const c = pImageCrop;
+    const min = Math.max(W, H) * 0.02;   // 选区最小边长（保持基本可识别）
+    c.w = Math.max(min, Math.min(c.w, W - c.x));
+    c.h = Math.max(min, Math.min(c.h, H - c.y));
+    c.x = Math.max(0, Math.min(c.x, W - c.w));
+    c.y = Math.max(0, Math.min(c.y, H - c.h));
+    const cx = c.x, cy = c.y, cw = c.w, ch = c.h;
+    // 手柄半径按原图比例缩放；SVG 自身会被拉伸到 wrap 尺寸
+    const HANDLE = Math.max(6, Math.min(W, H) * 0.018);
+    const stroke = Math.max(2, Math.min(W, H) * 0.004);
+    // 4 边外区域暗色 + 选区边框（剪裁模式下还画 8 手柄 + 内部移动区）
+    const path = `M0,0 L${W},0 L${W},${H} L0,${H} Z M${cx},${cy} L${cx + cw},${cy} L${cx + cw},${cy + ch} L${cx},${cy + ch} Z`;
+    const interactive = pImageCropMode ? `
+      <rect class="p-crop-move" x="${cx}" y="${cy}" width="${cw}" height="${ch}" fill="transparent" pointer-events="all" style="cursor:move" />
+      <rect class="p-crop-h" data-handle="nw" x="${cx - HANDLE / 2}" y="${cy - HANDLE / 2}" width="${HANDLE}" height="${HANDLE}" fill="#fff" stroke="#D6285A" stroke-width="${stroke}" pointer-events="all" style="cursor:nwse-resize" />
+      <rect class="p-crop-h" data-handle="ne" x="${cx + cw - HANDLE / 2}" y="${cy - HANDLE / 2}" width="${HANDLE}" height="${HANDLE}" fill="#fff" stroke="#D6285A" stroke-width="${stroke}" pointer-events="all" style="cursor:nesw-resize" />
+      <rect class="p-crop-h" data-handle="sw" x="${cx - HANDLE / 2}" y="${cy + ch - HANDLE / 2}" width="${HANDLE}" height="${HANDLE}" fill="#fff" stroke="#D6285A" stroke-width="${stroke}" pointer-events="all" style="cursor:nesw-resize" />
+      <rect class="p-crop-h" data-handle="se" x="${cx + cw - HANDLE / 2}" y="${cy + ch - HANDLE / 2}" width="${HANDLE}" height="${HANDLE}" fill="#fff" stroke="#D6285A" stroke-width="${stroke}" pointer-events="all" style="cursor:nwse-resize" />
+      <rect class="p-crop-h" data-handle="n"  x="${cx + cw / 2 - HANDLE / 2}" y="${cy - HANDLE / 2}" width="${HANDLE}" height="${HANDLE}" fill="#fff" stroke="#D6285A" stroke-width="${stroke}" pointer-events="all" style="cursor:ns-resize" />
+      <rect class="p-crop-h" data-handle="s"  x="${cx + cw / 2 - HANDLE / 2}" y="${cy + ch - HANDLE / 2}" width="${HANDLE}" height="${HANDLE}" fill="#fff" stroke="#D6285A" stroke-width="${stroke}" pointer-events="all" style="cursor:ns-resize" />
+      <rect class="p-crop-h" data-handle="w"  x="${cx - HANDLE / 2}" y="${cy + ch / 2 - HANDLE / 2}" width="${HANDLE}" height="${HANDLE}" fill="#fff" stroke="#D6285A" stroke-width="${stroke}" pointer-events="all" style="cursor:ew-resize" />
+      <rect class="p-crop-h" data-handle="e"  x="${cx + cw - HANDLE / 2}" y="${cy + ch / 2 - HANDLE / 2}" width="${HANDLE}" height="${HANDLE}" fill="#fff" stroke="#D6285A" stroke-width="${stroke}" pointer-events="all" style="cursor:ew-resize" />
+    ` : '';
+    mask.innerHTML = `
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="w-full h-full block">
+        <path d="${path}" fill="#0009" fill-rule="evenodd" pointer-events="none" />
+        <rect x="${cx}" y="${cy}" width="${cw}" height="${ch}" fill="none" stroke="#fff" stroke-width="${stroke}" pointer-events="none" />
+        ${interactive}
+      </svg>`;
+    if (pImageCropMode) bindCropHandleEvents();
+  }
+  // 绑 8 手柄 + 内部移动的 mousedown（拖拽过程用 document 级监听，避免鼠标离开 svg 丢事件）
+  function bindCropHandleEvents() {
+    $$('.p-crop-h').forEach(h => h.onmousedown = (e) => startCropDrag(e, h.dataset.handle));
+    $$('.p-crop-move').forEach(m => m.onmousedown = (e) => startCropDrag(e, 'move'));
+  }
+  function startCropDrag(e, handle) {
+    e.preventDefault(); e.stopPropagation();
+    const svg = $('#p-img-mask svg'); if (!svg) return;
+    const scale = svg.clientWidth / (pImage.naturalWidth || 1);   // CSS 像素 → 原图像素比例
+    pImageCropDrag = { handle, startCrop: { ...pImageCrop }, startX: e.clientX, startY: e.clientY, scale };
+  }
+  // 根据 handle 调整 pImageCrop（保证选区在 [0,W]×[0,H] 内，最小 2% 边）
+  function applyCropDrag(e) {
+    if (!pImageCropDrag || !pImageCrop) return;
+    const W = pImage.naturalWidth, H = pImage.naturalHeight;
+    const min = Math.max(W, H) * 0.02;
+    const dx = (e.clientX - pImageCropDrag.startX) / pImageCropDrag.scale;
+    const dy = (e.clientY - pImageCropDrag.startY) / pImageCropDrag.scale;
+    const c0 = pImageCropDrag.startCrop;
+    let x = c0.x, y = c0.y, w = c0.w, h = c0.h;
+    const h_ = pImageCropDrag.handle;
+    const setMax = (v, max) => Math.max(min, Math.min(v, max));
+    if (h_ === 'move') {
+      x = Math.max(0, Math.min(c0.x + dx, W - c0.w));
+      y = Math.max(0, Math.min(c0.y + dy, H - c0.h));
+    } else if (h_ === 'nw') {
+      const nx = Math.max(0, Math.min(c0.x + dx, c0.x + c0.w - min));
+      const ny = Math.max(0, Math.min(c0.y + dy, c0.y + c0.h - min));
+      w = (c0.x + c0.w) - nx; h = (c0.y + c0.h) - ny; x = nx; y = ny;
+    } else if (h_ === 'ne') {
+      const ny = Math.max(0, Math.min(c0.y + dy, c0.y + c0.h - min));
+      const nw = setMax(c0.w + dx, W - c0.x);
+      w = nw; h = (c0.y + c0.h) - ny; x = c0.x; y = ny;
+    } else if (h_ === 'sw') {
+      const nx = Math.max(0, Math.min(c0.x + dx, c0.x + c0.w - min));
+      const nh = setMax(c0.h + dy, H - c0.y);
+      w = (c0.x + c0.w) - nx; h = nh; x = nx; y = c0.y;
+    } else if (h_ === 'se') {
+      w = setMax(c0.w + dx, W - c0.x);
+      h = setMax(c0.h + dy, H - c0.y);
+      x = c0.x; y = c0.y;
+    } else if (h_ === 'n') {
+      const ny = Math.max(0, Math.min(c0.y + dy, c0.y + c0.h - min));
+      h = (c0.y + c0.h) - ny; y = ny; x = c0.x; w = c0.w;
+    } else if (h_ === 's') {
+      h = setMax(c0.h + dy, H - c0.y);
+      y = c0.y; x = c0.x; w = c0.w;
+    } else if (h_ === 'w') {
+      const nx = Math.max(0, Math.min(c0.x + dx, c0.x + c0.w - min));
+      w = (c0.x + c0.w) - nx; x = nx; y = c0.y; h = c0.h;
+    } else if (h_ === 'e') {
+      w = setMax(c0.w + dx, W - c0.x);
+      x = c0.x; y = c0.y; h = c0.h;
+    }
+    pImageCrop = { x, y, w, h };
+    renderImageCropMask();
+  }
   // 像素网格降色：高过采样 + cell 内粗颜色直方图投票（把格内文字/网格线"少数票"稀释掉）
   //   - 每格采 8×8=64 像素 → 主色占绝大多数票
   //   - 每像素按 4-bit RGB 量化到 4096 桶，找最大桶取均 → 再 nearestOwnedColor 一次
   //   - 适合源图已经是"带色号文字/网格线的拼豆图纸"（否则平均色会被黑色文字污染，错配到相邻色）
   function patternGenerateFromImage() {
     if (!pImage) return;
-    const W = pImage.naturalWidth || pImage.width;
-    const H = pImage.naturalHeight || pImage.height;
-    if (!W || !H) return;
+    const fullW = pImage.naturalWidth || pImage.width;
+    const fullH = pImage.naturalHeight || pImage.height;
+    if (!fullW || !fullH) return;
+    // 按用户剪裁区域取像素；若未设剪裁或选区=整图，则退化为整图
+    let sx = 0, sy = 0, sw = fullW, sh = fullH;
+    if (pImageCrop && (pImageCrop.x > 0 || pImageCrop.y > 0 || pImageCrop.w < fullW || pImageCrop.h < fullH)) {
+      sx = pImageCrop.x; sy = pImageCrop.y; sw = pImageCrop.w; sh = pImageCrop.h;
+      sw = Math.max(2, Math.min(sw, fullW - sx));
+      sh = Math.max(2, Math.min(sh, fullH - sy));
+    }
+    const W = sw, H = sh;
     // 直接取原图像素 — 不缩放,避免 Canvas 重新采样时把网格线/文字/相邻格颜色混合进每个像素
     const tmp = document.createElement('canvas');
     tmp.width = W; tmp.height = H;
     const tctx = tmp.getContext('2d');
-    tctx.drawImage(pImage, 0, 0);
+    tctx.drawImage(pImage, sx, sy, sw, sh, 0, 0, W, H);
     const data = tctx.getImageData(0, 0, W, H).data;
 
     // 噪点像素判定: 只过滤“浅灰文字抗锯齿光晕”(低饱和 + 中高亮度)。
@@ -4183,4 +4336,9 @@
   }
   renderNav();
   switchView('dashboard');
+  // 把弹窗相关函数暴露到 window，让 inline onclick（如 `onclick="closeModal()"`）能正常执行
+  // （整个 app.js 是 IIFE 闭包，原来在闭包内的函数外部访问不到）
+  window.closeModal = closeModal;
+  window.openModal = openModal;
+  window.setModalFoot = setModalFoot;
 })();
