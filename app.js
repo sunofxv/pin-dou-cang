@@ -3879,9 +3879,9 @@
         // 默认选区 = 整张图（用户可再点「✂️ 剪裁」调整）
         pImageCrop = { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
         pImageCropMode = false;
-        const pr = $('#p-img-preview');
-        if (pr) { pr.src = img.src; pr.classList.remove('hidden'); }
-        renderImageCropMask();
+        // 重渲染整个图纸页：让 #p-img-wrap 切到"pImage 真"分支、移除 hidden；并在末尾 renderImageCropMask 重画选区层
+        const v = $('#view');
+        if (v) renderPattern(v);
         // 同步刷新图片模式 checkbox 提示文案（强制 re-render 让 pImgAspect 后的文案显示出来）
         toast('图片已加载' + (pImgAspect ? `（原图 ${img.naturalWidth}×${img.naturalHeight}，比例 ${pImgAspect.toFixed(2)}:1）` : '') + '，设置网格后点「生成拼豆图纸」', 'success');
       };
