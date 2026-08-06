@@ -715,6 +715,7 @@
   }
 
   /* ===================== 11. 仪表盘 ===================== */
+  let restockPortions = {}; // 补货清单：色号 → 份数（默认 1，可改）
   function renderDashboard(v) {
     const low = state.beads.filter(isLow);
     const totalStock = state.beads.reduce((s, b) => s + b.stock, 0);
@@ -738,9 +739,51 @@
 
       <div class="grid md:grid-cols-2 gap-4">
         <section class="mk-card rounded-2xl shadow-soft p-5">
-          <h3 class="font-bold mb-3">🚨 低库存预警（低于补货阈值）</h3>
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="font-bold">🚨 低库存预警（低于补货阈值）</h3>
+            ${low.length ? '<button id="gen-restock" type="button" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-mk-lav/70 text-mk-ink hover:bg-mk-lav/90">📋 生成补货清单</button>' : ''}
+          </div>
           ${low.length ? `<div class="space-y-2">${low.map(b => lowRow(b)).join('')}</div>`
             : '<p class="text-mk-sub text-sm">暂无预警，库存充足 ✨</p>'}
+          ${low.length ? (() => {
+            const cum = []; let run = 0;
+            low.forEach(b => { run += (restockPortions[b.colorNumber] ?? 1); cum.push(run); });
+            return `
+          <div id="restock-panel" class="hidden mt-4 pt-4 border-t border-mk-sand/60">
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-xs font-semibold text-mk-sub">补货清单（份数默认 1，可修改）</div>
+              <button id="copy-restock" type="button" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600">📄 复制清单</button>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead>
+                  <tr class="text-mk-sub text-xs border-b border-mk-sand">
+                    <th class="px-2 py-1 text-left">色号</th>
+                    <th class="px-2 py-1 text-right">份数</th>
+                    <th class="px-2 py-1 text-right">总份数</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${low.map((b, i) => `
+                    <tr class="border-b border-mk-sand/40">
+                      <td class="px-2 py-1"><span class="inline-flex items-center gap-1.5"><span class="w-4 h-4 rounded-full swatch" style="background:${b.hex}"></span>${b.colorNumber}${b.colorName ? ' ' + escapeHtml(b.colorName) : ''}</span></td>
+                      <td class="px-2 py-1 text-right">
+                        <input type="number" min="1" step="1" value="${restockPortions[b.colorNumber] ?? 1}" data-num="${escapeHtml(b.colorNumber)}" class="restock-qty w-16 px-2 py-1 rounded-lg bg-white border border-mk-sand text-sm text-right">
+                      </td>
+                      <td class="px-2 py-1 text-right text-mk-sub restock-cum" data-idx="${i}">${cum[i]}</td>
+                    </tr>`).join('')}
+                </tbody>
+                <tfoot>
+                  <tr class="font-bold">
+                    <td class="px-2 py-1 text-right" colspan="2">合计</td>
+                    <td class="px-2 py-1 text-right text-rose-500" id="restock-total">${run}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+            <p class="text-[11px] text-mk-sub mt-2">💡 份数 = 该色号要补的「份」数（默认 1 份），可手动修改；总份数 = 累计份数（最后一行即总份数）。点「复制清单」可整体复制为文本（含色号、份数、总份数）。</p>
+          </div>`;
+          })() : ''}
         </section>
 
         <section class="mk-card rounded-2xl shadow-soft p-5">
@@ -784,6 +827,27 @@
       pendingWarehouseColor = btn.dataset.num;
       switchView('warehouse');
     });
+    const gr = $('#gen-restock');
+    if (gr) gr.onclick = () => {
+      const p = $('#restock-panel');
+      if (p) p.classList.toggle('hidden');
+    };
+    $$('.restock-qty', v).forEach(inp => inp.oninput = () => {
+      const num = inp.dataset.num;
+      let val = parseInt(inp.value, 10);
+      if (!val || val < 1) val = 1;
+      restockPortions[num] = val;
+      let run = 0;
+      $$('.restock-cum', v).forEach(td => {
+        const i = parseInt(td.dataset.idx, 10);
+        run += (restockPortions[low[i].colorNumber] ?? 1);
+        td.textContent = run;
+      });
+      const t = $('#restock-total');
+      if (t) t.textContent = run;
+    });
+    const cr = $('#copy-restock');
+    if (cr) cr.onclick = () => copyRestockList(low);
     const homeLogin = $('#home-login'); if (homeLogin) homeLogin.onclick = () => doAuth('login', $('#home-email').value, $('#home-pass').value);
     const homeSignup = $('#home-signup'); if (homeSignup) homeSignup.onclick = () => doAuth('signup', $('#home-email').value, $('#home-pass').value);
     const homeSyncnow = $('#home-syncnow'); if (homeSyncnow) homeSyncnow.onclick = () => syncPull();
@@ -805,6 +869,21 @@
       </div>
       <span class="text-sm text-rose-500 font-bold">${b.stock} / 阈值 ${effThreshold(b)}${(b.threshold && b.threshold > 0) ? '' : ' <span class="text-[10px]">默认</span>'}</span>
     </button>`;
+  }
+  function copyRestockList(low) {
+    if (!low || !low.length) return toast('暂无低库存，无需补货', 'warn');
+    const lines = ['补货清单（' + low.length + ' 色）', '色号\t份数'];
+    let total = 0;
+    low.forEach(b => {
+      const q = restockPortions[b.colorNumber] ?? 1;
+      total += q;
+      lines.push(b.colorNumber + (b.colorName ? ' ' + b.colorName : '') + '\t' + q);
+    });
+    lines.push('总份数\t' + total);
+    const text = lines.join('\n');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => toast('已复制补货清单', 'success'), () => copyTextFallback(text));
+    } else copyTextFallback(text);
   }
   function logRow(l) {
     const color = { 入库: 'text-emerald-600', 出库: 'text-rose-500', 消耗: 'text-rose-500', 图纸消耗: 'text-amber-600', 配方扣减: 'text-purple-600' }[l.type] || 'text-mk-ink';
@@ -1635,20 +1714,33 @@
           ctx.beginPath(); ctx.moveTo(tempCropRegion.x * dw, y); ctx.lineTo((tempCropRegion.x + tempCropRegion.w) * dw, y); ctx.stroke();
         });
       }
-      // 当前选中框
-      if (tempCropRegion) {
-        ctx.strokeStyle = state.settings.recognizeMode === 'legend' ? '#8b5cf6' : '#10b981';
-        ctx.lineWidth = 2;
-        ctx.setLineDash(state.settings.recognizeMode === 'legend' ? [6, 3] : []);
-        ctx.strokeRect(tempCropRegion.x * dw, tempCropRegion.y * dh, tempCropRegion.w * dw, tempCropRegion.h * dh);
-        ctx.setLineDash([]);
-        if (state.settings.recognizeMode === 'legend') {
+      // 图例模式：图例区(紫)与图案区(绿)分别绘制
+      if (state.settings.recognizeMode === 'legend') {
+        if (tempLegendRegion) {
+          ctx.strokeStyle = '#8b5cf6';
+          ctx.lineWidth = 2; ctx.setLineDash([6, 3]);
+          ctx.strokeRect(tempLegendRegion.x * dw, tempLegendRegion.y * dh, tempLegendRegion.w * dw, tempLegendRegion.h * dh);
+          ctx.setLineDash([]);
           ctx.fillStyle = 'rgba(139,92,246,0.12)';
-          ctx.fillRect(tempCropRegion.x * dw, tempCropRegion.y * dh, tempCropRegion.w * dw, tempCropRegion.h * dh);
+          ctx.fillRect(tempLegendRegion.x * dw, tempLegendRegion.y * dh, tempLegendRegion.w * dw, tempLegendRegion.h * dh);
           ctx.fillStyle = '#8b5cf6';
           ctx.font = 'bold 12px sans-serif';
-          ctx.fillText('图例区域', (tempCropRegion.x * dw) + 4, (tempCropRegion.y * dh) + 14);
+          ctx.fillText('图例区域', (tempLegendRegion.x * dw) + 4, (tempLegendRegion.y * dh) + 14);
         }
+        if (tempCropRegion) {
+          ctx.strokeStyle = '#10b981';
+          ctx.lineWidth = 2; ctx.setLineDash([]);
+          ctx.strokeRect(tempCropRegion.x * dw, tempCropRegion.y * dh, tempCropRegion.w * dw, tempCropRegion.h * dh);
+          ctx.fillStyle = 'rgba(16,185,129,0.12)';
+          ctx.fillRect(tempCropRegion.x * dw, tempCropRegion.y * dh, tempCropRegion.w * dw, tempCropRegion.h * dh);
+          ctx.fillStyle = '#10b981';
+          ctx.font = 'bold 12px sans-serif';
+          ctx.fillText('图案区域', (tempCropRegion.x * dw) + 4, (tempCropRegion.y * dh) + 14);
+        }
+      } else if (tempCropRegion) {
+        ctx.strokeStyle = '#10b981';
+        ctx.lineWidth = 2; ctx.setLineDash([]);
+        ctx.strokeRect(tempCropRegion.x * dw, tempCropRegion.y * dh, tempCropRegion.w * dw, tempCropRegion.h * dh);
       }
     };
     img.src = tempImage;
@@ -1719,9 +1811,9 @@
               </label>
             </div>
 
-            <!-- 图例识别：框选图例 → 解析颜色 → 生成色号清单 -->
+            <!-- 图例识别：框选图例 → 解析颜色 → 生成色号清单 → 框选图案 → 统计用量 -->
             <div id="legend-options" class="${state.settings.recognizeMode === 'legend' ? '' : 'hidden'} space-y-2">
-              <p class="text-[11px] text-mk-sub">先在图上<b>拖拽框选图例区域</b>（通常是图纸底部的色块条），再点「解析图例」。程序会自动估算色块列数；若不准，可手动修改列数后重新解析。</p>
+              <p class="text-[11px] text-mk-sub"><b>第一步</b>：在图上拖拽框选<b>图例区域</b>（通常是图纸底部的色块条），点「解析图例」生成色号清单。<br><b>第二步</b>：再拖拽框选<b>图案区域</b>（不含图例），点「计算整图用量」统计每个色号需要多少颗。</p>
               <div class="flex items-center justify-between text-sm bg-white/60 rounded-xl px-3 py-2">
                 <span>图例列数（色块个数）</span>
                 <span class="flex items-center gap-2">
@@ -1731,10 +1823,10 @@
               </div>
               <div id="legend-list" class="${tempLegendMap.length ? '' : 'hidden'}">
                 <div class="flex items-center justify-between mb-1">
-                  <div class="text-xs text-mk-sub">已解析色号清单（点击可编辑）：</div>
+                  <div class="text-xs text-mk-sub">已解析色号清单${tempLegendMap.some(x => x.count > 0) ? '（含数量）' : ''}（色号/名称可点击编辑）：</div>
                   <button id="clear-legend" type="button" class="text-xs text-rose-400 hover:underline">清空图例</button>
                 </div>
-                <div id="legend-items" class="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-48 overflow-auto pr-1">
+                <div id="legend-items" class="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-52 overflow-auto pr-1">
                   ${tempLegendMap.map((it, i) => `
                     <div class="legend-item p-2 rounded-xl bg-white border border-mk-sand" data-i="${i}">
                       <div class="flex items-center gap-2 mb-1.5">
@@ -1742,10 +1834,24 @@
                         <input type="text" data-field="colorNumber" value="${escapeHtml(it.colorNumber)}" placeholder="色号" class="w-full px-2 py-1 rounded-lg bg-mk-sand/30 border border-mk-sand/50 text-sm font-semibold">
                       </div>
                       <input type="text" data-field="colorName" value="${escapeHtml(it.colorName)}" placeholder="颜色名" class="w-full px-2 py-1 rounded-lg bg-white border border-mk-sand text-xs">
+                      <div class="mt-1.5 flex items-center gap-1">
+                        <span class="text-[11px] text-mk-sub">数量</span>
+                        <input type="number" min="0" data-field="count" value="${it.count || 0}" class="w-16 px-1.5 py-1 rounded-lg bg-white border border-mk-sand text-xs">
+                        <span class="text-[11px] text-mk-sub">颗</span>
+                      </div>
                     </div>
                   `).join('')}
                 </div>
+                ${tempLegendMap.some(x => x.count > 0) ? `
+                  <div class="mt-2 flex items-center justify-between text-sm bg-mk-lav/30 rounded-xl px-3 py-2">
+                    <span>共 <b class="text-mk-ink">${tempLegendMap.filter(x => x.count > 0).length}</b> 色 · <b class="text-mk-ink">${tempLegendMap.reduce((s, x) => s + (+x.count || 0), 0)}</b> 颗</span>
+                    <span class="flex gap-2">
+                      <button id="legend-save" type="button" class="px-2.5 py-1 rounded-lg bg-mk-lav text-mk-ink text-xs font-semibold hover:bg-mk-lav/80">存为配方</button>
+                      <button id="legend-deduct" type="button" class="px-2.5 py-1 rounded-lg bg-mk-rose text-white text-xs font-semibold hover:opacity-90">扣减库存</button>
+                    </span>
+                  </div>` : ''}
               </div>
+              <button id="legend-usage" type="button" class="w-full px-3 py-2 rounded-xl bg-mk-mint/70 text-mk-ink text-sm font-semibold hover:bg-mk-mint/90 ${tempLegendMap.length ? '' : 'hidden'}">📊 计算整图用量（先框选图案区域）</button>
             </div>
 
             <!-- 手动格子采样 -->
@@ -1999,9 +2105,13 @@
       const img = new Image();
       img.onload = () => {
         tempLegendMap = parseLegendRegion(img, tempCropRegion, { cols });
+        tempLegendRegion = tempCropRegion;   // 锁定图例区，图案区留给第二步框选
+        tempCropRegion = null;
+        tempDetectedVLines = []; tempDetectedHLines = [];
         if (colsInput && (!cols || cols <= 0)) colsInput.value = tempLegendMap.estimatedCols || '';
+        drawEditor();
         renderRecognize(v);
-        toast(`已解析 ${tempLegendMap.length} 个图例色（估算列数 ${tempLegendMap.estimatedCols || 0}）`, tempLegendMap.length ? 'success' : 'warn');
+        toast(`已解析 ${tempLegendMap.length} 个图例色，请再框选图案区域后点「计算整图用量」`, tempLegendMap.length ? 'success' : 'warn');
       };
       img.src = tempImage;
     };
@@ -2017,10 +2127,53 @@
       if (!item) return;
       const idx = +item.dataset.i;
       const field = e.target.dataset.field;
-      if (tempLegendMap[idx] && field) tempLegendMap[idx][field] = e.target.value;
+      if (tempLegendMap[idx] && field) {
+        tempLegendMap[idx][field] = (field === 'count') ? Math.max(0, parseInt(e.target.value, 10) || 0) : e.target.value;
+      }
     };
 
     $('#start').onclick = runRecognition;
+
+    // 图例模式：统计整图用量 / 存配方 / 扣减库存
+    const legendUsageBtn = $('#legend-usage');
+    if (legendUsageBtn) legendUsageBtn.onclick = () => {
+      if (!tempImage) return toast('请先上传图片', 'error');
+      if (!tempLegendMap.length) return toast('请先解析图例', 'error');
+      const img = new Image();
+      img.onload = () => {
+        const res = computeLegendUsage(img);
+        if (res.error) { toast(res.error, 'warn'); return; }
+        renderRecognize(v);
+        toast(`已统计 ${res.matched} 个色号，共 ${res.total} 颗`, 'success');
+      };
+      img.src = tempImage;
+    };
+    const legendSaveBtn = $('#legend-save');
+    if (legendSaveBtn) legendSaveBtn.onclick = () => {
+      const items = tempLegendMap.filter(x => x.colorNumber && x.count > 0).map(x => ({ colorNumber: x.colorNumber, colorName: x.colorName, hex: x.hex, qty: x.count }));
+      if (!items.length) return toast('没有带数量的色号可保存', 'warn');
+      const def = '图例图纸 ' + fmtTime(Date.now());
+      const name = (window.prompt('配方名称', def) || '').trim() || def;
+      state.recipes.unshift({ id: uid('rc'), name, createdAt: Date.now(), items });
+      save();
+      toast('已保存到配方库', 'success');
+      switchView('recipes');
+    };
+    const legendDeductBtn = $('#legend-deduct');
+    if (legendDeductBtn) legendDeductBtn.onclick = () => {
+      let ok = 0, skip = 0;
+      tempLegendMap.filter(x => x.colorNumber && x.count > 0).forEach(x => {
+        const bead = beadByNumber(x.colorNumber);
+        if (!bead) { skip++; return; }
+        bead.stock = Math.max(0, bead.stock - x.count);
+        addLog('图纸消耗', bead, -x.count, '图例识别扣减');
+        ok++;
+      });
+      save();
+      switchView('dashboard');
+      toast(`已扣减 ${ok} 种颜色${skip ? `，跳过 ${skip} 种未匹配` : ''}`, 'success');
+    };
+
     $('#auto-ignore-bg').onclick = () => autoIgnoreCorners(v);
     if (state.settings.recognizeMode === 'legend' && tempLegendMap.length) {
       // 重渲染后图例清单编辑框会重建，但值已存在；无需额外同步
@@ -2124,6 +2277,74 @@
     };
     img.onerror = () => toast('图片加载失败', 'error');
     img.src = tempImage;
+  }
+
+  // 图例模式：用图例色卡统计图案区域每个色号的用量（数量=格子数）
+  function computeLegendUsage(img) {
+    const pattern = tempCropRegion || { x: 0, y: 0, w: 1, h: 1 };
+    const det = detectGridLines(img, pattern);
+    let vLines = det.vLines, hLines = det.hLines;
+    if (vLines.length < 2 || hLines.length < 2) {
+      const cols = state.settings.gridCols, rows = state.settings.gridRows;
+      if (!cols || !rows || cols < 1 || rows < 1) {
+        return { error: '未检测到清晰网格线。请切换到「格子采样」或「智能识别」模式框选图案区域并确认格子数后再统计。' };
+      }
+      vLines = []; hLines = [];
+      for (let i = 0; i <= cols; i++) vLines.push(i / cols);
+      for (let i = 0; i <= rows; i++) hLines.push(i / rows);
+    }
+    const { w, h, ctx } = createAnalysisCanvas(img, 1500);
+    const data = ctx.getImageData(0, 0, w, h).data;
+    const frac = 0.5;
+    const acc = new Map();
+    for (let yi = 0; yi < hLines.length - 1; yi++) {
+      for (let xi = 0; xi < vLines.length - 1; xi++) {
+        const lx = Math.round(vLines[xi] * w), rx = Math.round(vLines[xi + 1] * w);
+        const ty = Math.round(hLines[yi] * h), by = Math.round(hLines[yi + 1] * h);
+        if (lx >= rx || ty >= by) continue;
+        const cxN = (vLines[xi] + vLines[xi + 1]) / 2, cyN = (hLines[yi] + hLines[yi + 1]) / 2;
+        if (tempCropRegion) {
+          const r = tempCropRegion;
+          if (cxN < r.x || cxN > r.x + r.w || cyN < r.y || cyN > r.y + r.h) continue;
+        }
+        if (tempLegendRegion) {
+          const lr = tempLegendRegion;
+          if (cxN >= lr.x && cxN <= lr.x + lr.w && cyN >= lr.y && cyN <= lr.y + lr.h) continue;
+        }
+        const cw = rx - lx, ch = by - ty;
+        const iw = Math.max(1, Math.round(cw * frac)), ih = Math.max(1, Math.round(ch * frac));
+        const sx = lx + ((cw - iw) >> 1), sy = ty + ((ch - ih) >> 1);
+        const freq = new Map();
+        for (let py = sy; py < sy + ih; py++) {
+          for (let px = sx; px < sx + iw; px++) {
+            const idx = (py * w + px) * 4;
+            const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+            if ((r + g + b) / 3 > 236) continue;
+            const key = ((r & 0xF8) << 16) | ((g & 0xF8) << 8) | (b & 0xF8);
+            freq.set(key, (freq.get(key) || 0) + 1);
+          }
+        }
+        if (!freq.size) continue;
+        let bestK = 0, bestC = 0;
+        for (const [k, c] of freq) { if (c > bestC) { bestC = c; bestK = k; } }
+        const r = (bestK >> 16) & 0xFF, g = (bestK >> 8) & 0xFF, b = bestK & 0xFF;
+        let ignored = false;
+        for (const ig of tempIgnoreColors) { if (colorDist(r, g, b, ig.r, ig.g, ig.b) <= (ig.tolerance || 24)) { ignored = true; break; } }
+        if (ignored || isGridBackgroundLike(r, g, b)) continue;
+        const m = mapColorToStandard(r, g, b, tempLegendMap);
+        if (!m.colorNumber || m.matchedBy !== '图例') continue;
+        const key = m.colorNumber;
+        if (!acc.has(key)) acc.set(key, { colorNumber: m.colorNumber, colorName: m.colorName, hex: m.hex, qty: 0 });
+        acc.get(key).qty += 1;
+      }
+    }
+    tempLegendMap.forEach(it => { it.count = 0; });
+    let total = 0;
+    acc.forEach(a => {
+      const it = tempLegendMap.find(x => x.colorNumber === a.colorNumber);
+      if (it) { it.count = a.qty; total += a.qty; }
+    });
+    return { total, matched: acc.size };
   }
 
   // 解析用户框选的图例区域：自动估算列数，按列采样色块中心颜色，再映射到标准色号
