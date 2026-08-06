@@ -815,6 +815,20 @@
   // 与像素聚类路径共享同一套“弹窗校对”流程。
   // 通用 VLM 调用：向 OpenAI 兼容接口发送“文本 + 图片”，返回解析后的 JSON 对象。
   // baseUrl 缺省走 OpenAI；可填任意 OpenAI 兼容端点（如 DeepSeek / 通义千问等），提升国内可用性。
+  // 鲁棒解析 AI 返回：先整体解析，失败再分别尝试截取 [..] / {..} 块
+  // （兼容模型多嘴、带 Markdown 代码块、或返回纯数组的情况）
+  function extractJsonContent(content) {
+    if (typeof content !== 'string') content = String(content || '{}');
+    try { return JSON.parse(content); } catch (_) {}
+    const trySlice = (open, close) => {
+      const s = content.indexOf(open), e = content.lastIndexOf(close);
+      if (s >= 0 && e > s) { try { return JSON.parse(content.slice(s, e + 1)); } catch (_) {} }
+      return undefined;
+    };
+    const arr = trySlice('[', ']'); if (arr !== undefined) return arr;
+    const obj = trySlice('{', '}'); if (obj !== undefined) return obj;
+    throw new Error('无法解析 AI 返回内容：' + content.slice(0, 200));
+  }
   async function callVLM(dataUrl, apiKey, model, prompt, baseUrl) {
     // 代理模式：visionBaseUrl 为空或指向同源 /api/* 时，前端不带 Key，
     // 由 Vercel Serverless 函数（api/legend-vision.js）用服务端环境变量里的智谱 Key 转发。
@@ -832,11 +846,7 @@
       }
       const j = await res.json();
       const content = (j && j.content) || '{}';
-      try { return JSON.parse(content); } catch (_) {
-        const s = content.indexOf('{'), e = content.lastIndexOf('}');
-        if (s >= 0 && e > s) return JSON.parse(content.slice(s, e + 1));
-        throw new Error('无法解析 AI 返回内容：' + content.slice(0, 200));
-      }
+      return extractJsonContent(content);
     }
     // 直连（用户自填 Key + OpenAI 兼容端点，如本地/自托管）
     const url = baseUrl.trim();
@@ -858,11 +868,7 @@
     }
     const j = await res.json();
     const content = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '{}';
-    try { return JSON.parse(content); } catch (_) {
-      const s = content.indexOf('{'), e = content.lastIndexOf('}');
-      if (s >= 0 && e > s) return JSON.parse(content.slice(s, e + 1));
-      throw new Error('无法解析 AI 返回内容：' + content.slice(0, 200));
-    }
+    return extractJsonContent(content);
   }
   async function callVisionAPI(dataUrl, apiKey, model, baseUrl) {
     const prompt = `这是一张拼豆(Perler/Hama)图纸。请识别图中每一种颜色对应的像素(豆子)数量，并尽量映射为拼豆标准色号。
@@ -888,7 +894,7 @@
 {"colors":[{"hex":"#RRGGBB","code":"色块上印的色号/编号/字母，若看不清或没有则留空字符串"}]}
 其中 hex 是该色块的主体颜色（不要取文字或边框的颜色），code 是色块上印刷的编号或字母。`;
     const parsed = await callVLM(dataUrl, apiKey, model, prompt, baseUrl);
-    const colors = Array.isArray(parsed.colors) ? parsed.colors : [];
+    const colors = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.colors) ? parsed.colors : []);
     return colors
       .map(c => ({ hex: (c.hex || '').trim(), code: (c.code || '').trim() }))
       .filter(c => /^#?[0-9a-fA-F]{6}$/.test(c.hex) || /^#[0-9a-fA-F]{3}$/.test(c.hex));
