@@ -116,7 +116,7 @@
       // 用户个人资料（昵称/头像），随 state 同步到云端
       profile: { nickname: '', avatar: '' },
       settings: {
-        enableVision: false, apiKey: '', model: 'gpt-4o-mini', visionBaseUrl: '',
+        enableVision: true, apiKey: '', model: 'glm-4v-flash', visionBaseUrl: '',
         sampleTolerance: 48, scaleFactor: 1,
         // 识别模式：'auto' = 智能识别（自动框图+自动行列，最省事）；'grid' = 手动格子数；'pixel' = 像素聚类
         recognizeMode: 'auto',
@@ -815,7 +815,30 @@
   // 通用 VLM 调用：向 OpenAI 兼容接口发送“文本 + 图片”，返回解析后的 JSON 对象。
   // baseUrl 缺省走 OpenAI；可填任意 OpenAI 兼容端点（如 DeepSeek / 通义千问等），提升国内可用性。
   async function callVLM(dataUrl, apiKey, model, prompt, baseUrl) {
-    const url = (baseUrl && baseUrl.trim()) || 'https://api.openai.com/v1/chat/completions';
+    // 代理模式：visionBaseUrl 为空或指向同源 /api/* 时，前端不带 Key，
+    // 由 Vercel Serverless 函数（api/legend-vision.js）用服务端环境变量里的智谱 Key 转发。
+    const viaProxy = !baseUrl || !baseUrl.trim() || baseUrl.trim().indexOf('/api/') === 0;
+    if (viaProxy) {
+      const res = await fetch('/api/legend-vision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: dataUrl, model: model || 'glm-4v-flash', prompt })
+      });
+      if (!res.ok) {
+        let msg = '代理服务返回 ' + res.status;
+        try { const e = await res.json(); if (e && e.error) msg = e.error; } catch (_) {}
+        throw new Error(msg);
+      }
+      const j = await res.json();
+      const content = (j && j.content) || '{}';
+      try { return JSON.parse(content); } catch (_) {
+        const s = content.indexOf('{'), e = content.lastIndexOf('}');
+        if (s >= 0 && e > s) return JSON.parse(content.slice(s, e + 1));
+        throw new Error('无法解析 AI 返回内容：' + content.slice(0, 200));
+      }
+    }
+    // 直连（用户自填 Key + OpenAI 兼容端点，如本地/自托管）
+    const url = baseUrl.trim();
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
@@ -834,7 +857,6 @@
     }
     const j = await res.json();
     const content = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '{}';
-    // 鲁棒解析：优先整体解析；失败则截取首个 {…} 块（兼容模型多嘴/带 Markdown 的情况）
     try { return JSON.parse(content); } catch (_) {
       const s = content.indexOf('{'), e = content.lastIndexOf('}');
       if (s >= 0 && e > s) return JSON.parse(content.slice(s, e + 1));
@@ -2217,8 +2239,9 @@
                 </span>
               </div>
               ${(() => {
-                const aiReady = !!(state.settings.enableVision && state.settings.apiKey);
-                return `<button id="ai-parse-legend" type="button" ${aiReady ? '' : 'disabled title="请先到「设置 → 云端视觉AI」启用并填写 API Key"'} class="w-full px-3 py-2 rounded-xl text-sm font-semibold ${aiReady ? 'bg-gradient-to-r from-violet-400 to-sky-400 text-white hover:opacity-90' : 'bg-gray-100 text-gray-400 cursor-not-allowed'} ${tempLegendMap.length ? 'hidden' : ''}">🤖 AI识别图例（云端视觉自动读色号）</button>${aiReady ? '' : '<p class="text-[10px] text-center text-mk-sub mt-1">未配置 API Key：到「设置 → 云端视觉AI」启用并填写 Key 后即可使用</p>'}`;
+                const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
+                const aiReady = !!(state.settings.enableVision && (state.settings.apiKey || viaProxy));
+                return `<button id="ai-parse-legend" type="button" ${aiReady ? '' : 'disabled title="请先到「设置 → 云端视觉AI」启用（默认走内置云端代理）"'} class="w-full px-3 py-2 rounded-xl text-sm font-semibold ${aiReady ? 'bg-gradient-to-r from-violet-400 to-sky-400 text-white hover:opacity-90' : 'bg-gray-100 text-gray-400 cursor-not-allowed'} ${tempLegendMap.length ? 'hidden' : ''}">🤖 AI识别图例（云端视觉自动读色号）</button>${aiReady ? '' : '<p class="text-[10px] text-center text-mk-sub mt-1">到「设置 → 云端视觉AI」启用即可使用（默认走内置代理，无需填 Key）</p>'}`;
               })()}
               <div id="legend-list" class="${tempLegendMap.length ? '' : 'hidden'}">
                 <div class="flex items-center justify-between mb-1">
@@ -2290,9 +2313,7 @@
                 ${tempIgnoreColors.map((c, i) => `<span class="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-mk-sand text-xs"><span class="w-4 h-4 rounded-full swatch" style="background:${c.hex}"></span>${c.hex}<button class="ig-del text-rose-400 ml-1 leading-none" data-i="${i}">×</button></span>`).join('')}
               </div>
             </div>
-            ${state.settings.enableVision && state.settings.apiKey
-              ? `<label class="flex items-center gap-2 text-sm bg-mk-lav/40 rounded-xl px-3 py-2"><input id="use-vision" type="checkbox"> 使用云端视觉 AI（OpenAI Vision）直接识别</label>`
-              : ''}
+            ${(() => { const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0; return (state.settings.enableVision && (state.settings.apiKey || viaProxy)) ? `<label class="flex items-center gap-2 text-sm bg-mk-lav/40 rounded-xl px-3 py-2"><input id="use-vision" type="checkbox"> 使用云端视觉 AI（内置代理 / OpenAI Vision）直接识别</label>` : ''; })()}
           </div>
 
           <button id="start" class="mt-4 w-full py-2.5 rounded-xl bg-mk-rose text-white font-bold shadow-soft disabled:opacity-40" ${tempImage ? '' : 'disabled'}>🔍 开始识别</button>
@@ -2517,7 +2538,8 @@
     // AI 识别图例：把框选的图例区域裁剪后发给视觉大模型，自动读出色块颜色与印的色号
     const aiLegendBtn = $('#ai-parse-legend');
     if (aiLegendBtn) aiLegendBtn.onclick = async () => {
-      if (!state.settings.enableVision || !state.settings.apiKey) return toast('请先到「设置 → 云端视觉AI」启用并填写 API Key', 'warn', 4000);
+      const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
+      if (!state.settings.enableVision || !(state.settings.apiKey || viaProxy)) return toast('请先到「设置 → 云端视觉AI」启用（默认走内置代理，无需填 Key）', 'warn', 4000);
       if (!tempImage) return toast('请先上传图片', 'error');
       if (!tempCropRegion) return toast('请先在图上框选图例区域', 'error');
       const baseUrl = state.settings.visionBaseUrl || '';
@@ -2620,7 +2642,8 @@
     const img = new Image();
     img.onload = async () => {
       try {
-        const useVision = state.settings.enableVision && state.settings.apiKey && $('#use-vision') && $('#use-vision').checked;
+        const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
+        const useVision = state.settings.enableVision && (state.settings.apiKey || viaProxy) && $('#use-vision') && $('#use-vision').checked;
         if (useVision) {
           recognitionResult = await callVisionAPI(tempImage, state.settings.apiKey, state.settings.model, state.settings.visionBaseUrl);
         } else {
@@ -3207,8 +3230,8 @@
           </label>
           <label class="text-sm block mb-2">API Key<input id="vision-key" type="password" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${state.settings.apiKey}"></label>
           <label class="text-sm block mb-2">模型<input id="vision-model" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${state.settings.model}"></label>
-          <label class="text-sm block mb-3">API 地址（留空=OpenAI，可填兼容端点如 https://api.deepseek.com/v1/chat/completions）<input id="vision-baseurl" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${state.settings.visionBaseUrl || ''}" placeholder="https://api.openai.com/v1/chat/completions"></label>
-          <p class="text-xs text-mk-sub">启用后，图纸识别页的「图例识别」模式会出现「🤖 AI识别图例」按钮，可让视觉模型自动读取图例色块的颜色与印的色号（比像素解析更准）；同时「开始识别」也可勾选“使用云端视觉AI”。API 地址留空走 OpenAI，可填兼容端点以提升国内可用性（如 DeepSeek / 通义千问等，需其模型支持视觉）。</p>
+          <label class="text-sm block mb-3">API 地址（留空=走内置云端代理 /api/legend-vision；填兼容端点则走直连，需同时填 Key）<input id="vision-baseurl" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${state.settings.visionBaseUrl || ''}" placeholder="/api/legend-vision（内置代理）"></label>
+          <p class="text-xs text-mk-sub">默认已启用并走<b>内置云端代理</b>（Vercel 函数转发智谱，Key 存在服务端环境变量，前端无需填 Key、也不会暴露）。图纸识别页「图例识别」模式会出现「🤖 AI识别图例」按钮；「开始识别」也可勾选“使用云端视觉AI”。若你有自己的 Key 想直连，在「API 地址」填兼容端点（如 https://api.openai.com/v1/chat/completions）并填 Key 即可；留空则走内置代理。</p>
         </section>
 
         <!-- 补货阈值设置 -->
