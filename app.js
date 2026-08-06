@@ -113,6 +113,8 @@
       recipes: [],
       // 自定义色号映射覆盖表（可选）：识别时优先于内置 221 色卡匹配
       mappings: [],
+      // 用户个人资料（昵称/头像），随 state 同步到云端
+      profile: { nickname: '', avatar: '' },
       settings: {
         enableVision: false, apiKey: '', model: 'gpt-4o-mini', visionBaseUrl: '',
         sampleTolerance: 48, scaleFactor: 1,
@@ -167,6 +169,8 @@
   let currentUser = null;   // 当前登录用户（supabase.auth.user）
   let lastSyncAt = null;    // 上次成功同步时间
   let syncTimer = null;     // 防抖计时器
+  let pendingSignupAvatar = ''; // 注册时临时头像（data URL）
+  let settingsAvatarTemp = '';  // 设置页临时头像（data URL）
 
   // 上传本地 state 到云端（upsert，按 user_id 唯一）
   async function syncPush() {
@@ -208,7 +212,8 @@
     else if (currentView === 'settings') renderSettings($('#view'));
   }
   // 登录 / 注册
-  async function doAuth(mode, emailVal, passVal) {
+  // opts: { nickname, avatar } 仅用于注册时初始化个人资料
+  async function doAuth(mode, emailVal, passVal, opts = {}) {
     if (!supabase) return toast('云端同步未配置', 'error');
     const email = (emailVal || '').trim();
     const pass = passVal || '';
@@ -231,8 +236,15 @@
       }
       currentUser = (data.session && data.session.user) || data.user || null;
       if (!currentUser) return toast('登录异常，未获取到用户', 'error');
+      // 注册时初始化个人资料
+      if (mode === 'signup') {
+        state.profile.nickname = (opts.nickname || '').trim();
+        state.profile.avatar = (opts.avatar || '').trim();
+        save();
+      }
       toast('已登录', 'success');
       await syncPull();
+      renderHeaderUser();
       if (currentView === 'dashboard') renderDashboard($('#view'));
       else renderSettings($('#view'));
     } catch (e) {
@@ -243,10 +255,71 @@
   async function doLogout() {
     await supabase.auth.signOut();
     currentUser = null;
+    pendingSignupAvatar = '';
+    settingsAvatarTemp = '';
     toast('已退出登录（本机数据已保留）', 'success');
+    renderHeaderUser();
     if (currentView === 'dashboard') renderDashboard($('#view'));
     else renderSettings($('#view'));
   }
+
+  // 修改密码：发送邮箱验证（密码重置邮件）
+  async function sendPasswordResetEmail() {
+    if (!supabase || !currentUser) return toast('未登录，无法修改密码', 'error');
+    const email = currentUser.email;
+    if (!email) return toast('当前账号没有邮箱', 'error');
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined
+      });
+      if (error) return toast('发送失败：' + error.message, 'error');
+      toast('验证邮件已发送，请查收后点击邮件链接设置新密码', 'success');
+      closeModal();
+    } catch (e) {
+      toast('发送异常：' + (e && e.message ? e.message : String(e)), 'error');
+    }
+  }
+  function openChangePasswordModal() {
+    if (!currentUser) return toast('请先登录', 'warn');
+    const email = escapeHtml(currentUser.email || '');
+    openModal('🔒 修改密码', `
+      <div class="space-y-3 text-sm">
+        <p>修改密码需要进行邮箱验证。</p>
+        <p class="text-mk-sub">我们将向 <b>${email}</b> 发送一封密码重置邮件。点击邮件中的链接后，即可在此设置新密码。</p>
+        <div class="bg-mk-sand/30 rounded-xl p-3 text-xs text-mk-sub">如果你没有收到邮件，请检查垃圾箱；部分邮箱服务商可能会有延迟。</div>
+      </div>`);
+    setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="closeModal()">取消</button>
+      <button id="send-reset-email" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold shadow-soft">发送验证邮件</button>`);
+    $('#send-reset-email').onclick = sendPasswordResetEmail;
+  }
+  // 从密码重置邮件回调后，打开设置新密码弹窗
+  function openPasswordResetModal() {
+    openModal('🔑 设置新密码', `
+      <div class="space-y-3">
+        <label class="text-sm block">新密码（至少 6 位）<input id="reset-new-pass" type="password" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand"></label>
+        <label class="text-sm block">确认新密码<input id="reset-confirm-pass" type="password" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand"></label>
+        <p id="reset-pass-error" class="text-xs text-rose-500 hidden"></p>
+      </div>`);
+    setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="closeModal()">取消</button>
+      <button id="reset-pass-save" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold shadow-soft">保存新密码</button>`);
+    const errEl = $('#reset-pass-error');
+    $('#reset-pass-save').onclick = async () => {
+      const p1 = ($('#reset-new-pass') || {}).value || '';
+      const p2 = ($('#reset-confirm-pass') || {}).value || '';
+      if (p1.length < 6) { errEl.textContent = '密码至少 6 位'; errEl.classList.remove('hidden'); return; }
+      if (p1 !== p2) { errEl.textContent = '两次输入的密码不一致'; errEl.classList.remove('hidden'); return; }
+      try {
+        const { error } = await supabase.auth.updateUser({ password: p1 });
+        if (error) { errEl.textContent = '设置失败：' + error.message; errEl.classList.remove('hidden'); return; }
+        closeModal();
+        toast('密码已更新，请用新密码重新登录', 'success');
+      } catch (e) {
+        errEl.textContent = '设置异常：' + (e && e.message ? e.message : String(e));
+        errEl.classList.remove('hidden');
+      }
+    };
+  }
+
   // “账户与同步”卡片内容（按登录态渲染）。prefix 区分设置页(acc)与首页(home)的多个实例，避免 id 冲突。
   function accountSyncInner(prefix) {
     const p = prefix || 'acc';
@@ -263,12 +336,22 @@
         </div>
         <p class="text-xs text-mk-sub mt-2">数据已在本地与云端双向同步（每次保存后自动上传，登录/启动时拉取）。换设备登录同一账号即可恢复全部数据。</p>`;
     }
+    const avatarPreview = pendingSignupAvatar || generateDefaultAvatarSvg('我');
     return `
       <button id="${p}-toggle" class="inline-flex items-center gap-1 px-4 py-2 rounded-xl bg-mk-lav text-mk-ink font-semibold">登录 / 注册 <span class="${p}-chevron">▾</span></button>
       <div id="${p}-form" class="hidden mt-3">
         <div class="grid sm:grid-cols-2 gap-3 max-w-md">
           <label class="text-sm">邮箱<input id="${p}-email" type="email" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="you@example.com"></label>
           <label class="text-sm">密码（至少 6 位）<input id="${p}-pass" type="password" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="••••••"></label>
+        </div>
+        <div class="grid sm:grid-cols-2 gap-3 max-w-md mt-3">
+          <label class="text-sm">昵称（注册时可选）<input id="${p}-nickname" type="text" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="怎么称呼你"></label>
+          <label class="text-sm">头像（注册时可选）
+            <div class="flex items-center gap-2 mt-1">
+              <img id="${p}-avatar-preview" src="${avatarPreview}" class="w-9 h-9 rounded-full object-cover bg-white border border-mk-sand">
+              <input id="${p}-avatar" type="file" accept="image/*" class="text-xs">
+            </div>
+          </label>
         </div>
         <div class="flex gap-2 mt-3">
           <button id="${p}-login" class="px-4 py-2 rounded-xl bg-mk-mint text-mk-ink font-semibold">登录</button>
@@ -286,6 +369,82 @@
       frm.classList.toggle('hidden');
       if (chv) chv.textContent = frm.classList.contains('hidden') ? '▾' : '▴';
     };
+  }
+  // 给登录/注册表单绑定事件（头像上传 + 登录/注册按钮）
+  function wireAuthForm(prefix) {
+    const p = prefix;
+    const loginBtn = $('#' + p + '-login');
+    if (loginBtn) loginBtn.onclick = () => doAuth('login', $('#' + p + '-email').value, $('#' + p + '-pass').value);
+    const signupBtn = $('#' + p + '-signup');
+    if (signupBtn) signupBtn.onclick = () => doAuth('signup', $('#' + p + '-email').value, $('#' + p + '-pass').value, {
+      nickname: ($('#' + p + '-nickname') || {}).value,
+      avatar: pendingSignupAvatar
+    });
+    const fileInput = $('#' + p + '-avatar');
+    const preview = $('#' + p + '-avatar-preview');
+    if (fileInput) fileInput.onchange = async () => {
+      const f = fileInput.files[0];
+      if (!f) return;
+      try {
+        const dataUrl = await resizeImageToDataURL(f);
+        pendingSignupAvatar = dataUrl;
+        if (preview) preview.src = dataUrl;
+      } catch (e) { toast('头像读取失败', 'error'); }
+    };
+  }
+
+  // 用户资料辅助：显示昵称 / 头像 / 默认头像
+  function getDisplayName() {
+    if (state.profile && state.profile.nickname) return state.profile.nickname;
+    if (currentUser && currentUser.email) return currentUser.email.split('@')[0];
+    return '我';
+  }
+  function getAvatarUrl() {
+    if (state.profile && state.profile.avatar) return state.profile.avatar;
+    return '';
+  }
+  function getAvatarLetter() {
+    const n = getDisplayName();
+    return (n && n[0]) ? n[0].toUpperCase() : '我';
+  }
+  function generateDefaultAvatarSvg(letter) {
+    const l = escapeHtml(letter || '我');
+    const bg = '#f3d2c1'; // 与主题搭的柔和桃色
+    return `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><circle cx="32" cy="32" r="32" fill="${bg}"/><text x="32" y="38" font-size="28" font-family="sans-serif" fill="#8b5cf6" text-anchor="middle" dominant-baseline="middle">${l}</text></svg>`;
+  }
+  function renderAvatarImg(cls = 'w-8 h-8 rounded-full object-cover bg-white shadow-soft') {
+    const url = getAvatarUrl() || generateDefaultAvatarSvg(getAvatarLetter());
+    return `<img src="${url}" alt="${escapeHtml(getDisplayName())}" class="${cls}">`;
+  }
+  function readFileAsDataURL(file) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => reject(new Error('读取文件失败'));
+      r.readAsDataURL(file);
+    });
+  }
+  // 读取图片文件并缩放为正方形 data URL（用于头像，避免 base64 过大）
+  function resizeImageToDataURL(file, maxSize = 200) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const size = Math.min(maxSize, Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = size; canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        // 居中裁剪为正方形
+        const s = Math.min(img.width, img.height);
+        const sx = (img.width - s) / 2;
+        const sy = (img.height - s) / 2;
+        ctx.drawImage(img, sx, sy, s, s, 0, 0, size, size);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('图片加载失败')); };
+      img.src = url;
+    });
   }
 
   /* ===================== 3. 通用工具函数 ===================== */
@@ -788,6 +947,49 @@
       `<button class="nav-btn px-2 sm:px-3 py-1 sm:py-1.5 rounded-xl text-xs sm:text-sm font-semibold text-mk-sub whitespace-nowrap ${v.key === currentView ? 'active' : 'hover:bg-white/60'}" data-view="${v.key}">${v.label}</button>`
     ).join('');
     $$('#nav .nav-btn').forEach(btn => btn.onclick = () => switchView(btn.dataset.view));
+    renderHeaderUser();
+  }
+
+  // 渲染顶部导航右侧用户头像/登录入口
+  function renderHeaderUser() {
+    const container = $('#header-user');
+    if (!container) return;
+    if (!supabase) {
+      container.innerHTML = '';
+      return;
+    }
+    if (!currentUser) {
+      container.innerHTML = `
+        <button id="header-login" type="button" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs sm:text-sm font-semibold text-mk-sub hover:bg-white/60">
+          <span class="w-7 h-7 rounded-full bg-mk-sand flex items-center justify-center text-sm">👤</span>
+          <span class="hidden sm:inline">登录</span>
+        </button>`;
+      $('#header-login').onclick = () => switchView('settings');
+      return;
+    }
+    const name = escapeHtml(getDisplayName());
+    const email = escapeHtml(currentUser.email || '');
+    container.innerHTML = `
+      <div id="header-user-wrap" class="relative group">
+        <button id="header-avatar" type="button" class="flex items-center gap-1.5 focus:outline-none" aria-label="打开个人信息">
+          ${renderAvatarImg('w-8 h-8 sm:w-9 sm:h-9 rounded-full object-cover bg-white shadow-soft ring-2 ring-transparent group-hover:ring-mk-lav transition')}
+          <span class="hidden sm:inline text-xs font-semibold text-mk-ink max-w-[80px] truncate">${name}</span>
+        </button>
+        <div id="header-user-dropdown" class="absolute right-0 top-full mt-2 w-56 p-3 rounded-xl bg-white shadow-soft border border-mk-sand hidden group-hover:block z-50">
+          <div class="flex items-center gap-3 pb-3 mb-3 border-b border-mk-sand/60">
+            ${renderAvatarImg('w-10 h-10 rounded-full object-cover bg-white')}
+            <div class="min-w-0">
+              <div class="text-sm font-bold truncate">${name}</div>
+              <div class="text-xs text-mk-sub truncate">${email}</div>
+            </div>
+          </div>
+          <button id="header-go-settings" type="button" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-mk-sand/40 mb-1">⚙️ 个人信息</button>
+          <button id="header-logout" type="button" class="w-full text-left px-3 py-2 rounded-xl text-sm text-rose-500 hover:bg-rose-50">退出账号</button>
+        </div>
+      </div>`;
+    $('#header-avatar').onclick = () => switchView('settings');
+    $('#header-go-settings').onclick = () => switchView('settings');
+    $('#header-logout').onclick = () => doLogout();
   }
   function switchView(key) {
     currentView = key;
@@ -1009,8 +1211,7 @@
     if (ri) ri.onclick = e => { e.stopPropagation(); restockInOneClick(); };
     const cr = $('#copy-restock');
     if (cr) cr.onclick = e => { e.stopPropagation(); copyRestockList(); };
-    const homeLogin = $('#home-login'); if (homeLogin) homeLogin.onclick = () => doAuth('login', $('#home-email').value, $('#home-pass').value);
-    const homeSignup = $('#home-signup'); if (homeSignup) homeSignup.onclick = () => doAuth('signup', $('#home-email').value, $('#home-pass').value);
+    wireAuthForm('home');
     const homeSyncnow = $('#home-syncnow'); if (homeSyncnow) homeSyncnow.onclick = () => syncPull();
     const homeLogout = $('#home-logout'); if (homeLogout) homeLogout.onclick = () => doLogout();
     wireAccountToggle('home', v);
@@ -2944,8 +3145,32 @@
 
   /* ===================== 16. 设置（色卡映射管理 + 数据 + 视觉AI） ===================== */
   function renderSettings(v) {
+    const avatarUrl = getAvatarUrl() || generateDefaultAvatarSvg(getAvatarLetter());
+    const emailText = currentUser ? escapeHtml(currentUser.email) : '未登录';
     v.innerHTML = `
       <div class="grid lg:grid-cols-2 gap-4">
+        <!-- 个人信息 -->
+        <section class="mk-card rounded-2xl shadow-soft p-5 lg:col-span-2">
+          <h3 class="font-bold mb-4">👤 个人信息</h3>
+          <div class="flex flex-col sm:flex-row gap-4 items-start">
+            <div class="relative shrink-0">
+              <img id="settings-avatar-preview" src="${avatarUrl}" class="w-20 h-20 rounded-full object-cover bg-white border border-mk-sand shadow-soft">
+              <label class="absolute bottom-0 right-0 bg-white rounded-full p-1.5 shadow cursor-pointer hover:bg-mk-sand text-xs border border-mk-sand" title="更换头像">
+                📷
+                <input id="settings-avatar" type="file" accept="image/*" class="hidden">
+              </label>
+            </div>
+            <div class="flex-1 space-y-3 w-full max-w-md">
+              <label class="text-sm block">昵称<input id="settings-nickname" type="text" value="${escapeHtml(state.profile.nickname)}" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="怎么称呼你"></label>
+              <div class="text-sm text-mk-sub">邮箱：${emailText}</div>
+              <div class="flex flex-wrap gap-2">
+                <button id="settings-save-profile" type="button" class="px-4 py-2 rounded-xl bg-mk-mint text-mk-ink font-semibold">保存资料</button>
+                <button id="settings-change-pass" type="button" class="px-4 py-2 rounded-xl bg-white border border-mk-sand text-mk-ink font-semibold ${currentUser ? '' : 'opacity-50 cursor-not-allowed'}">🔒 修改密码</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- 色卡对照表 -->
         <section class="mk-card rounded-2xl shadow-soft p-5">
           <div class="flex items-center justify-between mb-3">
@@ -3019,8 +3244,7 @@
 
     $('#map-add').onclick = openAddMapping;
 
-    const accLogin = $('#acc-login'); if (accLogin) accLogin.onclick = () => doAuth('login', $('#acc-email').value, $('#acc-pass').value);
-    const accSignup = $('#acc-signup'); if (accSignup) accSignup.onclick = () => doAuth('signup', $('#acc-email').value, $('#acc-pass').value);
+    wireAuthForm('acc');
     const syncNow = $('#acc-syncnow'); if (syncNow) syncNow.onclick = () => syncPull();
     const syncOut = $('#acc-logout'); if (syncOut) syncOut.onclick = () => doLogout();
     wireAccountToggle('acc', v);
@@ -3047,6 +3271,31 @@
     $('#restore').onclick = () => $('#restore-file').click();
     $('#restore-file').onchange = e => { if (e.target.files[0]) restoreAll(e.target.files[0]); };
     $('#reset').onclick = () => { if (confirm('将恢复为默认 221 色卡（每色 1000 颗），并清空所有日志、配方与自定义映射，且不可恢复。确定？')) { state = defaultState(); save(); toast('已恢复默认数据', 'success'); switchView('dashboard'); } };
+
+    // 个人信息：头像上传、保存资料、修改密码
+    settingsAvatarTemp = state.profile.avatar || '';
+    const settingsAvatarInput = $('#settings-avatar');
+    const settingsAvatarPreview = $('#settings-avatar-preview');
+    if (settingsAvatarInput) settingsAvatarInput.onchange = async () => {
+      const f = settingsAvatarInput.files[0];
+      if (!f) return;
+      try {
+        const dataUrl = await resizeImageToDataURL(f);
+        settingsAvatarTemp = dataUrl;
+        if (settingsAvatarPreview) settingsAvatarPreview.src = dataUrl;
+      } catch (e) { toast('头像读取失败', 'error'); }
+    };
+    const saveProfileBtn = $('#settings-save-profile');
+    if (saveProfileBtn) saveProfileBtn.onclick = () => {
+      const nick = ($('#settings-nickname') || {}).value || '';
+      state.profile.nickname = nick.trim();
+      state.profile.avatar = settingsAvatarTemp;
+      save();
+      renderHeaderUser();
+      toast('个人资料已保存', 'success');
+    };
+    const changePassBtn = $('#settings-change-pass');
+    if (changePassBtn) changePassBtn.onclick = () => openChangePasswordModal();
   }
 
   function openAddMapping() {
@@ -4754,7 +5003,14 @@
     // 启动时若已有会话（同一浏览器之前登录过），自动恢复登录态并拉取云端数据
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) { currentUser = data.session.user; syncPull(); }
+      renderHeaderUser();
     }).catch(() => {});
+    // 监听 auth 状态变化：登录/登出/密码重置
+    supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_IN') { currentUser = session.user; renderHeaderUser(); }
+      if (event === 'SIGNED_OUT') { currentUser = null; renderHeaderUser(); }
+      if (event === 'PASSWORD_RECOVERY') { openPasswordResetModal(); }
+    });
   }
   renderNav();
   switchView('dashboard');
