@@ -833,61 +833,6 @@
           </div>
           ${low.length ? `<div class="space-y-2">${low.map(b => lowRow(b)).join('')}</div>`
             : '<p class="text-mk-sub text-sm">暂无预警，库存充足 ✨</p>'}
-          ${restockItems && restockItems.length ? (() => {
-            const totalP = restockItems.reduce((s, num) => s + (restockPortions[num] ?? 1), 0);
-            const totalG = totalP * restockPerQty;
-            return `
-          <div id="restock-panel" class="hidden mt-4 pt-4 border-t border-mk-sand/60">
-            <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
-              <div class="text-xs font-semibold text-mk-sub">补货清单（份数默认 1，可修改）</div>
-              <div class="flex items-center gap-2">
-                <label class="text-xs text-mk-sub flex items-center gap-1">每份 <input id="restock-per-qty" type="number" min="1" step="1" value="${restockPerQty}" class="w-20 px-2 py-1 rounded-lg bg-white border border-mk-sand text-xs text-right"> 颗</label>
-                <button id="copy-restock" type="button" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600">📄 复制</button>
-                <button id="restock-in" type="button" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-sky-500 text-white hover:bg-sky-600">➕ 一键入库</button>
-              </div>
-            </div>
-            <div class="overflow-x-auto">
-              <table class="w-full text-sm">
-                <thead>
-                  <tr class="text-mk-sub text-xs border-b border-mk-sand">
-                    <th class="px-2 py-1 text-left">色号</th>
-                    <th class="px-2 py-1 text-right">份数</th>
-                    <th class="px-2 py-1 text-center">操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${restockItems.map(num => {
-                    const b = beadByNumber(num);
-                    if (!b) return `<tr class="border-b border-mk-sand/40"><td colspan="3" class="px-2 py-1 text-xs text-rose-500">色号 ${escapeHtml(num)} 不存在</td></tr>`;
-                    return `
-                    <tr class="border-b border-mk-sand/40">
-                      <td class="px-2 py-1"><span class="inline-flex items-center gap-1.5"><span class="w-4 h-4 rounded-full swatch" style="background:${b.hex}"></span>${b.colorNumber}</span></td>
-                      <td class="px-2 py-1 text-right">
-                        <input type="number" min="1" step="1" value="${restockPortions[b.colorNumber] ?? 1}" data-num="${escapeHtml(b.colorNumber)}" class="restock-qty w-16 px-2 py-1 rounded-lg bg-white border border-mk-sand text-sm text-right">
-                      </td>
-                      <td class="px-2 py-1 text-center">
-                        <button type="button" class="restock-del text-rose-400 hover:text-rose-600 text-xs font-semibold" data-num="${escapeHtml(b.colorNumber)}">🗑️</button>
-                      </td>
-                    </tr>`;
-                  }).join('')}
-                </tbody>
-                <tfoot>
-                  <tr class="font-bold text-xs">
-                    <td class="px-2 py-1 text-right" colspan="2">
-                      总份数 <span id="restock-total-p" class="text-rose-500">${totalP}</span> · 总颗数 <span id="restock-total-g" class="text-rose-500">${totalG}</span>
-                    </td>
-                    <td></td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-            <div class="mt-3 flex items-center gap-2">
-              <input id="add-restock-num" type="text" placeholder="输入色号（如 A2）" class="flex-1 px-2 py-1.5 rounded-lg bg-white border border-mk-sand text-sm">
-              <button id="add-restock" type="button" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-white border border-mk-sand text-mk-ink hover:bg-mk-sand/50">➕ 新增色号</button>
-            </div>
-            <p class="text-[11px] text-mk-sub mt-2">💡 份数 = 该色号要补的「份」数（默认 1 份）。每份默认 1000 颗，可在左上角修改。点「一键入库」会按 份数×每份颗数 自动给对应色号加库存并记录。</p>
-          </div>`;
-          })() : ''}
         </section>
 
         <section class="mk-card rounded-2xl shadow-soft p-5">
@@ -896,6 +841,62 @@
             : '<p class="text-mk-sub text-sm">还没有操作记录</p>'}
         </section>
       </div>
+
+      ${restockItems && restockItems.length ? (() => {
+        const totalP = restockItems.reduce((s, num) => s + (restockPortions[num] ?? 1), 0);
+        const totalG = totalP * restockPerQty;
+        return `
+      <section id="restock-panel" class="mk-card rounded-2xl shadow-soft p-5 mt-4 hidden">
+        <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <h3 class="font-bold">📋 补货清单</h3>
+          <div class="flex items-center gap-2">
+            <label class="text-xs text-mk-sub flex items-center gap-1">每份 <input id="restock-per-qty" type="number" min="1" step="1" value="${restockPerQty}" class="w-20 px-2 py-1 rounded-lg bg-white border border-mk-sand text-xs text-right"> 颗</label>
+            <button id="copy-restock" type="button" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600">📄 复制</button>
+            <button id="restock-in" type="button" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-sky-500 text-white hover:bg-sky-600">➕ 一键入库</button>
+          </div>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-mk-sub text-xs border-b border-mk-sand">
+                <th class="px-2 py-1 text-left">色号</th>
+                <th class="px-2 py-1 text-right">份数</th>
+                <th class="px-2 py-1 text-center">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${restockItems.map(num => {
+                const b = beadByNumber(num);
+                if (!b) return `<tr class="border-b border-mk-sand/40"><td colspan="3" class="px-2 py-1 text-xs text-rose-500">色号 ${escapeHtml(num)} 不存在</td></tr>`;
+                return `
+                <tr class="border-b border-mk-sand/40">
+                  <td class="px-2 py-1"><span class="inline-flex items-center gap-1.5"><span class="w-4 h-4 rounded-full swatch" style="background:${b.hex}"></span>${b.colorNumber}</span></td>
+                  <td class="px-2 py-1 text-right">
+                    <input type="number" min="1" step="1" value="${restockPortions[b.colorNumber] ?? 1}" data-num="${escapeHtml(b.colorNumber)}" class="restock-qty w-16 px-2 py-1 rounded-lg bg-white border border-mk-sand text-sm text-right">
+                  </td>
+                  <td class="px-2 py-1 text-center">
+                    <button type="button" class="restock-del text-rose-400 hover:text-rose-600 text-xs font-semibold" data-num="${escapeHtml(b.colorNumber)}">🗑️</button>
+                  </td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+            <tfoot>
+              <tr class="font-bold text-xs">
+                <td class="px-2 py-1 text-right" colspan="2">
+                  总份数 <span id="restock-total-p" class="text-rose-500">${totalP}</span> · 总颗数 <span id="restock-total-g" class="text-rose-500">${totalG}</span>
+                </td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <div class="mt-3 flex items-center gap-2">
+          <input id="add-restock-num" type="text" placeholder="输入色号（如 A2）" class="flex-1 px-2 py-1.5 rounded-lg bg-white border border-mk-sand text-sm">
+          <button id="add-restock" type="button" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-white border border-mk-sand text-mk-ink hover:bg-mk-sand/50">➕ 新增色号</button>
+        </div>
+        <p class="text-[11px] text-mk-sub mt-2">💡 份数 = 该色号要补的「份」数（默认 1 份）。每份默认 1000 颗，可在左上角修改。点「一键入库」会按 份数×每份颗数 自动给对应色号加库存并记录。</p>
+      </section>`;
+      })() : ''}
 
       <section class="mk-card rounded-2xl shadow-soft p-5 mt-4">
         <div class="flex items-center justify-between mb-3">
@@ -943,7 +944,8 @@
       restockPortions[num] = val;
       updateRestockTotals();
     });
-    $$('.restock-del', v).forEach(btn => btn.onclick = () => {
+    $$('.restock-del', v).forEach(btn => btn.onclick = e => {
+      e.stopPropagation();
       const num = btn.dataset.num;
       restockItems = restockItems.filter(n => n !== num);
       delete restockPortions[num];
@@ -952,7 +954,8 @@
     const addBtn = $('#add-restock');
     const addInput = $('#add-restock-num');
     if (addBtn && addInput) {
-      const doAdd = () => {
+      const doAdd = e => {
+        if (e) { e.stopPropagation(); e.preventDefault(); }
         const raw = addInput.value.trim().toUpperCase();
         if (!raw) return;
         if (restockItems.includes(raw)) return toast('色号已在清单中', 'warn');
@@ -964,7 +967,7 @@
         toast('已添加 ' + raw, 'success');
       };
       addBtn.onclick = doAdd;
-      addInput.onkeydown = e => { if (e.key === 'Enter') doAdd(); };
+      addInput.onkeydown = e => { if (e.key === 'Enter') { e.stopPropagation(); e.preventDefault(); doAdd(e); } };
     }
     const perInput = $('#restock-per-qty');
     if (perInput) perInput.oninput = () => {
@@ -974,9 +977,9 @@
       updateRestockTotals();
     };
     const ri = $('#restock-in');
-    if (ri) ri.onclick = () => restockInOneClick();
+    if (ri) ri.onclick = e => { e.stopPropagation(); restockInOneClick(); };
     const cr = $('#copy-restock');
-    if (cr) cr.onclick = () => copyRestockList();
+    if (cr) cr.onclick = e => { e.stopPropagation(); copyRestockList(); };
     const homeLogin = $('#home-login'); if (homeLogin) homeLogin.onclick = () => doAuth('login', $('#home-email').value, $('#home-pass').value);
     const homeSignup = $('#home-signup'); if (homeSignup) homeSignup.onclick = () => doAuth('signup', $('#home-email').value, $('#home-pass').value);
     const homeSyncnow = $('#home-syncnow'); if (homeSyncnow) homeSyncnow.onclick = () => syncPull();
