@@ -4105,21 +4105,19 @@
   // 在大窗口里预览图片 + 剪裁（不受左侧卡片宽度限制，操作更方便）
   function openImageZoomModal() {
     if (!pImage) return;
-    const wrapW = Math.max(640, Math.min(window.innerWidth - 80, 1400));
-    const ratio = (pImage.naturalHeight || 1) / (pImage.naturalWidth || 1);
-    const imgH = Math.round(wrapW * ratio);
     // 进入 modal 时自动开启剪裁编辑模式（关闭大图后退出）
     const wasMode = pImageCropMode; pImageCropMode = true;
     openModal('🔍 放大预览与剪裁', `
       <div class="flex flex-col items-center">
-        <div id="zoom-img-wrap" class="relative bg-mk-cream rounded-xl border border-mk-sand overflow-hidden" style="width:${wrapW}px;max-width:100%;">
-          <img id="zoom-img" src="${pImage.src}" class="block w-full" style="height:${imgH}px;object-fit:contain;" />
+        <div id="zoom-img-wrap" class="relative inline-block bg-mk-cream rounded-xl border border-mk-sand overflow-hidden">
+          <img id="zoom-img" src="${pImage.src}" class="block max-h-[75vh] max-w-[calc(100vw-80px)] h-auto w-auto" />
           <div id="zoom-img-mask" class="absolute inset-0"></div>
         </div>
         <div class="flex flex-wrap items-center justify-center gap-2 mt-3 text-xs">
           <button id="zoom-crop-mode" class="px-3 py-1.5 rounded-xl ${pImageCropMode ? 'bg-mk-rose text-white' : 'bg-white/70 border border-mk-sand text-mk-sub'}" title="切换编辑模式（可拖 8 手柄 + 内部移动）">${pImageCropMode ? '✓ 完成剪裁' : '✂️ 继续剪裁'}</button>
           <button id="zoom-crop-reset" class="px-3 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" title="选区重置为整张图">↺ 重置选区</button>
           <button id="zoom-crop-clear" class="px-3 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" title="清除剪裁（识别整张图）">✕ 不剪裁</button>
+          <span id="zoom-crop-info" class="text-mk-sub bg-white/70 px-2 py-1 rounded-lg border border-mk-sand">📐 选区: ${pImageCrop ? `${pImageCrop.w|0} × ${pImageCrop.h|0}` : '未设置'}</span>
           <span class="text-mk-sub">💡 拖 4 角/4 边缩放，拖中间移动选区；点「✓ 完成剪裁」保存</span>
         </div>
       </div>
@@ -4129,14 +4127,20 @@
       renderImageCropMask();
       const v = $('#view'); if (v) renderPattern(v);
     });
-    // 把现有选区映射到 modal 大图上
-    renderZoomCropMask();
-    // 关闭时还原之前的 crop 模式
-    const closeBtn = document.querySelector('#modal-root button[onclick*="closeModal"]');
-    if (closeBtn) {
-      const orig = closeBtn.getAttribute('onclick');
-      closeBtn.setAttribute('onclick', `${orig};(${wasMode ? 'pImageCropMode=true;' : ''})`);
-    }
+    // 等图片加载完成 → 取得实际渲染尺寸 → 再渲染 SVG 选区层（避免图片未就绪时 SVG 占位错位）
+    const zimg = $('#zoom-img');
+    const renderWhenReady = () => {
+      // 让 wrap 尺寸 = img 实际渲染尺寸（精准保障 SVG 比例与图片一致）
+      const zwrap = $('#zoom-img-wrap');
+      if (zwrap && zimg) {
+        const r = zimg.getBoundingClientRect();
+        zwrap.style.width = r.width + 'px';
+        zwrap.style.height = r.height + 'px';
+      }
+      renderZoomCropMask();
+    };
+    if (zimg && zimg.complete) renderWhenReady();
+    else if (zimg) zimg.onload = renderWhenReady;
   }
   // 在大图 modal 里画选区（与主视图共用 pImageCrop 状态）
   function renderZoomCropMask() {
@@ -4172,16 +4176,20 @@
       const handleMousedown = (e, handle) => {
         e.preventDefault(); e.stopPropagation();
         const svg = $('#zoom-img-mask svg'); if (!svg) return;
-        const scale = svg.clientWidth / (pImage.naturalWidth || 1);
-        pImageCropDrag = { handle, startCrop: { ...pImageCrop }, startX: e.clientX, startY: e.clientY, scale };
+        const rect = svg.getBoundingClientRect();
+        const sx = rect.width / (pImage.naturalWidth || 1);
+        const sy = rect.height / (pImage.naturalHeight || 1);
+        pImageCropDrag = { handle, startCrop: { ...pImageCrop }, startX: e.clientX, startY: e.clientY, sx, sy };
       };
       $$('.zoom-crop-h').forEach(h => h.onmousedown = (e) => handleMousedown(e, h.dataset.handle));
       $$('.zoom-crop-move').forEach(m => m.onmousedown = (e) => handleMousedown(e, 'move'));
     }
     // 绑定三个 modal 内按钮
-    const modeBtn = $('#zoom-crop-mode'); if (modeBtn) modeBtn.onclick = () => { pImageCropMode = !pImageCropMode; renderZoomCropMask(); };
-    const resetBtn = $('#zoom-crop-reset'); if (resetBtn) resetBtn.onclick = () => { pImageCrop = { x: 0, y: 0, w: pImage.naturalWidth, h: pImage.naturalHeight }; renderZoomCropMask(); renderImageCropMask(); };
-    const clearBtn = $('#zoom-crop-clear'); if (clearBtn) clearBtn.onclick = () => { pImageCrop = null; pImageCropMode = false; renderZoomCropMask(); renderImageCropMask(); };
+    const modeBtn = $('#zoom-crop-mode'); if (modeBtn) modeBtn.onclick = () => { pImageCropMode = !pImageCropMode; renderZoomCropMask(); updateZoomCropInfo(); };
+    const resetBtn = $('#zoom-crop-reset'); if (resetBtn) resetBtn.onclick = () => { pImageCrop = { x: 0, y: 0, w: pImage.naturalWidth, h: pImage.naturalHeight }; renderZoomCropMask(); renderImageCropMask(); updateZoomCropInfo(); };
+    const clearBtn = $('#zoom-crop-clear'); if (clearBtn) clearBtn.onclick = () => { pImageCrop = null; pImageCropMode = false; renderZoomCropMask(); renderImageCropMask(); updateZoomCropInfo(); };
+    // 初次渲染后填充一次信息
+    updateZoomCropInfo();
   }
   // 按当前 pImageCrop / pImageCropMode 渲染 SVG 选区层；剪裁编辑模式下绑定 8 手柄 + 内部移动
   function renderImageCropMask() {
@@ -4224,22 +4232,25 @@
   }
   // 绑 8 手柄 + 内部移动的 mousedown（拖拽过程用 document 级监听，避免鼠标离开 svg 丢事件）
   function bindCropHandleEvents() {
-    $$('.p-crop-h').forEach(h => h.onmousedown = (e) => startCropDrag(e, h.dataset.handle));
-    $$('.p-crop-move').forEach(m => m.onmousedown = (e) => startCropDrag(e, 'move'));
+    $$('.p-crop-h').forEach(h => h.onmousedown = (e) => startCropDrag(e, h.dataset.handle, 'p-img-mask'));
+    $$('.p-crop-move').forEach(m => m.onmousedown = (e) => startCropDrag(e, 'move', 'p-img-mask'));
   }
-  function startCropDrag(e, handle) {
+  // 用 mask 内 svg 的实际渲染尺寸算 X/Y 两个 scale — 防止容器比例与 viewBox 比例不一致时算错
+  function startCropDrag(e, handle, maskId) {
     e.preventDefault(); e.stopPropagation();
-    const svg = $('#p-img-mask svg'); if (!svg) return;
-    const scale = svg.clientWidth / (pImage.naturalWidth || 1);   // CSS 像素 → 原图像素比例
-    pImageCropDrag = { handle, startCrop: { ...pImageCrop }, startX: e.clientX, startY: e.clientY, scale };
+    const svg = $(`#${maskId} svg`); if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    const sx = rect.width / (pImage.naturalWidth || 1);   // CSS X 像素 → 原图 X 像素比例
+    const sy = rect.height / (pImage.naturalHeight || 1); // CSS Y 像素 → 原图 Y 像素比例
+    pImageCropDrag = { handle, startCrop: { ...pImageCrop }, startX: e.clientX, startY: e.clientY, sx, sy };
   }
   // 根据 handle 调整 pImageCrop（保证选区在 [0,W]×[0,H] 内，最小 2% 边）
   function applyCropDrag(e) {
     if (!pImageCropDrag || !pImageCrop) return;
     const W = pImage.naturalWidth, H = pImage.naturalHeight;
     const min = Math.max(W, H) * 0.02;
-    const dx = (e.clientX - pImageCropDrag.startX) / pImageCropDrag.scale;
-    const dy = (e.clientY - pImageCropDrag.startY) / pImageCropDrag.scale;
+    const dx = (e.clientX - pImageCropDrag.startX) / (pImageCropDrag.sx || pImageCropDrag.scale || 1);
+    const dy = (e.clientY - pImageCropDrag.startY) / (pImageCropDrag.sy || pImageCropDrag.scale || 1);
     const c0 = pImageCropDrag.startCrop;
     let x = c0.x, y = c0.y, w = c0.w, h = c0.h;
     const h_ = pImageCropDrag.handle;
@@ -4280,6 +4291,25 @@
     renderImageCropMask();
     // 若放大 modal 开着，同步刷新 modal 里的选区
     if ($('#zoom-img-mask')) renderZoomCropMask();
+    updateZoomCropInfo();
+  }
+  // 更新放大 modal 内「📐 选区: WxH」实时显示（含与目标网格比例对照）
+  function updateZoomCropInfo() {
+    const info = $('#zoom-crop-info');
+    if (!info || !pImage) return;
+    if (!pImageCrop) { info.textContent = '📐 选区: 未设置（识别整图）'; return; }
+    const cw = pImageCrop.w | 0, ch = pImageCrop.h | 0;
+    const tCols = parseInt(($('#p-icols') || {}).value, 10) || 0;
+    const tRows = parseInt(($('#p-irows') || {}).value, 10) || 0;
+    let ratioHint = '';
+    if (tCols > 0 && tRows > 0) {
+      const imgR = cw / Math.max(1, ch);
+      const tgR = tCols / Math.max(1, tRows);
+      const diff = Math.abs(imgR - tgR) / tgR;
+      if (diff > 0.4) ratioHint = ` ⚠️ 与目标 ${tCols}×${tRows} 比例差距较大`;
+      else ratioHint = ` (≈ 目标 ${tCols}×${tRows})`;
+    }
+    info.textContent = `📐 选区: ${cw} × ${ch}${ratioHint}`;
   }
   // 像素网格降色：高过采样 + cell 内粗颜色直方图投票（把格内文字/网格线"少数票"稀释掉）
   //   - 每格采 8×8=64 像素 → 主色占绝大多数票
