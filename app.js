@@ -369,11 +369,14 @@
   }
 
   /* ===================== 5. 模态框系统 ===================== */
-  function openModal(title, bodyHtml, opts = {}) {
+  function openModal(title, bodyHtml, opts = {}, onClose = null) {
     const root = $('#modal-root');
+    // 自定义最大宽度: opts.width (CSS 像素) > opts.wide (3xl=768) > 默认 lg (512)
+    const widthCls = opts.width ? '' : (opts.wide ? 'max-w-3xl' : 'max-w-lg');
+    const widthStyle = opts.width ? `max-width:${opts.width}px;` : '';
     root.innerHTML = `
       <div class="fixed inset-0 z-40 bg-black/30 flex items-center justify-center p-4" id="modal-overlay">
-        <div class="mk-card rounded-2xl shadow-soft w-full ${opts.wide ? 'max-w-3xl' : 'max-w-lg'} max-h-[88vh] flex flex-col">
+        <div class="mk-card rounded-2xl shadow-soft w-full ${widthCls} max-h-[88vh] flex flex-col" style="${widthStyle}">
           <div class="flex items-center justify-between px-5 py-4 border-b border-mk-sand">
             <h3 class="font-bold text-lg">${escapeHtml(title)}</h3>
             <button class="text-mk-sub hover:text-mk-ink text-xl leading-none" id="modal-close">×</button>
@@ -382,8 +385,8 @@
           <div class="px-5 py-3 border-t border-mk-sand flex justify-end gap-2" id="modal-foot"></div>
         </div>
       </div>`;
-    $('#modal-close').onclick = closeModal;
-    $('#modal-overlay').onclick = (e) => { if (e.target.id === 'modal-overlay') closeModal(); };
+    $('#modal-close').onclick = () => { if (onClose) onClose(); closeModal(); };
+    $('#modal-overlay').onclick = (e) => { if (e.target.id === 'modal-overlay') { if (onClose) onClose(); closeModal(); } };
     return $('#modal-body');
   }
   function setModalFoot(html) { $('#modal-foot').innerHTML = html; }
@@ -819,14 +822,14 @@
       </section>
 
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
-        ${statCard('色号种类', state.beads.length, '🌈', 'from-mk-pink to-mk-rose')}
-        ${statCard('当前总库存', totalStock, '📦', 'from-mk-sky to-mk-mint')}
-        ${statCard('低库存预警', low.length, '⚠️', 'from-mk-peach to-mk-lemon', low.length ? 'text-rose-500' : '')}
-        ${statCard('操作记录', state.logs.length, '📝', 'from-mk-lav to-mk-sky')}
+        ${statCard('色号种类', state.beads.length, '🌈', 'from-mk-pink to-mk-rose', 'text-mk-ink', 'warehouse')}
+        ${statCard('当前总库存', totalStock, '📦', 'from-mk-sky to-mk-mint', 'text-mk-ink', 'warehouse')}
+        ${statCard('低库存预警', low.length, '⚠️', 'from-mk-peach to-mk-lemon', low.length ? 'text-rose-500' : '', 'low-stock')}
+        ${statCard('操作记录', state.logs.length, '📝', 'from-mk-lav to-mk-sky', 'text-mk-ink', 'logs')}
       </div>
 
       <div class="grid md:grid-cols-2 gap-4">
-        <section class="mk-card rounded-2xl shadow-soft p-5">
+        <section id="low-stock-section" class="mk-card rounded-2xl shadow-soft p-5">
           <div class="flex items-center justify-between mb-3">
             <h3 class="font-bold">🚨 低库存预警（低于补货阈值）</h3>
             ${restockItems && restockItems.length ? '<button id="gen-restock" type="button" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-mk-lav/70 text-mk-ink hover:bg-mk-lav/90">📋 生成补货清单</button>' : ''}
@@ -924,6 +927,21 @@
       pendingWarehouseColor = btn.dataset.num;
       switchView('warehouse');
     });
+    $$('.stat-card', v).forEach(card => card.onclick = () => {
+      const action = card.dataset.action;
+      if (!action) return;
+      if (action === 'warehouse') {
+        whFilterLow = false;
+        whSearch = '';
+        pendingWarehouseColor = '';
+        switchView('warehouse');
+      } else if (action === 'logs') {
+        switchView('logs');
+      } else if (action === 'low-stock') {
+        const el = $('#low-stock-section');
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    });
     const di = $('#dash-in'); if (di) di.onclick = () => openBatchStock('入库');
     const dout = $('#dash-out'); if (dout) dout.onclick = () => openBatchStock('出库');
     $$('.low-stock-row', v).forEach(btn => btn.onclick = () => {
@@ -946,10 +964,15 @@
     });
     $$('.restock-del', v).forEach(btn => btn.onclick = e => {
       e.stopPropagation();
+      e.preventDefault();
       const num = btn.dataset.num;
       restockItems = restockItems.filter(n => n !== num);
       delete restockPortions[num];
+      const scrollY = window.scrollY;
       renderDashboard(v);
+      window.scrollTo({ top: scrollY, behavior: 'instant' });
+      const inputAfter = $('#add-restock-num');
+      if (inputAfter) { inputAfter.focus(); }
     });
     const addBtn = $('#add-restock');
     const addInput = $('#add-restock-num');
@@ -963,7 +986,11 @@
         if (!b) return toast('色号 ' + raw + ' 不存在', 'error');
         restockItems.push(raw);
         restockPortions[raw] = 1;
+        const scrollY = window.scrollY;
         renderDashboard(v);
+        window.scrollTo({ top: scrollY, behavior: 'instant' });
+        const inputAfter = $('#add-restock-num');
+        if (inputAfter) { inputAfter.focus(); }
         toast('已添加 ' + raw, 'success');
       };
       addBtn.onclick = doAdd;
@@ -986,8 +1013,10 @@
     const homeLogout = $('#home-logout'); if (homeLogout) homeLogout.onclick = () => doLogout();
     wireAccountToggle('home', v);
   }
-  function statCard(label, val, icon, grad, valColor = 'text-mk-ink') {
-    return `<div class="mk-card rounded-2xl shadow-soft p-4 bg-gradient-to-br ${grad}">
+  function statCard(label, val, icon, grad, valColor = 'text-mk-ink', action = '') {
+    const actionAttr = action ? ` data-action="${action}"` : '';
+    const cursorClass = action ? ' cursor-pointer hover:scale-[1.02] active:scale-[0.98] transition-transform' : '';
+    return `<div class="stat-card mk-card rounded-2xl shadow-soft p-4 bg-gradient-to-br ${grad}${cursorClass}"${actionAttr}>
       <div class="text-2xl">${icon}</div>
       <div class="text-2xl font-bold ${valColor} mt-1">${val}</div>
       <div class="text-xs text-mk-ink/70 font-semibold">${label}</div>
@@ -4110,10 +4139,19 @@
     if (!pImage) return;
     // 进入 modal 时自动开启剪裁编辑模式（关闭大图后退出）
     const wasMode = pImageCropMode; pImageCropMode = true;
+    // 关键: 预计算 wrap 尺寸（按 natural 比例 + 视口上限），不依赖运行时 getBoundingClientRect 时机
+    const naturalW = pImage.naturalWidth || 1440;
+    const naturalH = pImage.naturalHeight || 886;
+    const ar = naturalH / naturalW;
+    const maxW = Math.max(320, Math.min(window.innerWidth - 100, 1400, naturalW));
+    const maxH = Math.max(240, Math.min(window.innerHeight * 0.75, 800, naturalH));
+    let wrapW, wrapH;
+    if (maxW * ar <= maxH) { wrapW = maxW; wrapH = Math.round(maxW * ar); }
+    else { wrapH = maxH; wrapW = Math.round(maxH / ar); }
     openModal('🔍 放大预览与剪裁', `
       <div class="flex flex-col items-center">
-        <div id="zoom-img-wrap" class="relative inline-block bg-mk-cream rounded-xl border border-mk-sand overflow-hidden">
-          <img id="zoom-img" src="${pImage.src}" class="block max-h-[75vh] max-w-[calc(100vw-80px)] h-auto w-auto" />
+        <div id="zoom-img-wrap" class="relative bg-mk-cream rounded-xl border border-mk-sand overflow-hidden" style="width:${wrapW}px;height:${wrapH}px;">
+          <img id="zoom-img" src="${pImage.src}" class="absolute inset-0 block w-full h-full" style="object-fit:contain;" />
           <div id="zoom-img-mask" class="absolute inset-0"></div>
         </div>
         <div class="flex flex-wrap items-center justify-center gap-2 mt-3 text-xs">
@@ -4124,26 +4162,15 @@
           <span class="text-mk-sub">💡 拖 4 角/4 边缩放，拖中间移动选区；点「✓ 完成剪裁」保存</span>
         </div>
       </div>
-    `, () => {
+    }, { wide: true, width: Math.min(window.innerWidth - 40, wrapW + 80) }, () => {
       // 关闭时：把 modal 里的 crop 状态写回 pImageCrop / pImageCropMode，刷新主视图
       pImageCropMode = false;
       renderImageCropMask();
       const v = $('#view'); if (v) renderPattern(v);
     });
-    // 等图片加载完成 → 取得实际渲染尺寸 → 再渲染 SVG 选区层（避免图片未就绪时 SVG 占位错位）
-    const zimg = $('#zoom-img');
-    const renderWhenReady = () => {
-      // 让 wrap 尺寸 = img 实际渲染尺寸（精准保障 SVG 比例与图片一致）
-      const zwrap = $('#zoom-img-wrap');
-      if (zwrap && zimg) {
-        const r = zimg.getBoundingClientRect();
-        zwrap.style.width = r.width + 'px';
-        zwrap.style.height = r.height + 'px';
-      }
-      renderZoomCropMask();
-    };
-    if (zimg && zimg.complete) renderWhenReady();
-    else if (zimg) zimg.onload = renderWhenReady;
+    // wrap 尺寸已显式固定 → SVG 比例与图片天然一致，直接渲染选区层即可
+    renderZoomCropMask();
+    updateZoomCropInfo();
   }
   // 在大图 modal 里画选区（与主视图共用 pImageCrop 状态）
   function renderZoomCropMask() {
