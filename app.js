@@ -4323,6 +4323,12 @@
     const fullW = pImage.naturalWidth || pImage.width;
     const fullH = pImage.naturalHeight || pImage.height;
     if (!fullW || !fullH) return;
+    // 关键诊断：色卡为空时任何 cell 都会落到 null，每行空 → 全图空 — 必须先拦
+    if (!state.beads || !state.beads.length) {
+      toast('⚠️ 拼豆色卡为空\n请先到「色卡管理」添加一些色卡（黑色、白色、肉色等基础配色），再识别图纸', 'warn', 6000);
+      pCells = Array.from({ length: pRows }, () => new Array(pCols).fill(null));
+      return;
+    }
     // 按用户剪裁区域取像素；若未设剪裁或选区=整图，则退化为整图
     let sx = 0, sy = 0, sw = fullW, sh = fullH;
     if (pImageCrop && (pImageCrop.x > 0 || pImageCrop.y > 0 || pImageCrop.w < fullW || pImageCrop.h < fullH)) {
