@@ -837,7 +837,7 @@
       const res = await fetch('/api/legend-vision', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: dataUrl, model: model || 'glm-4v-flash', prompt })
+        body: JSON.stringify({ image: dataUrl, model: 'glm-4v-flash', prompt })
       });
       if (!res.ok) {
         let msg = '代理服务返回 ' + res.status;
