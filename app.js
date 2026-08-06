@@ -2013,9 +2013,10 @@
                   <button id="parse-legend" type="button" class="px-3 py-1.5 rounded-lg bg-mk-lav/70 text-mk-ink text-xs font-semibold hover:bg-mk-lav/90">🎨 解析图例</button>
                 </span>
               </div>
-              ${state.settings.enableVision && state.settings.apiKey
-                ? `<button id="ai-parse-legend" type="button" class="w-full px-3 py-2 rounded-xl bg-gradient-to-r from-violet-400 to-sky-400 text-white text-sm font-semibold hover:opacity-90 ${tempLegendMap.length ? 'hidden' : ''}">🤖 AI识别图例（云端视觉自动读色号）</button>`
-                : `<p class="text-[11px] text-mk-sub">想用 AI 自动识别图例色号？到「设置 → 云端视觉 AI」启用并填入 API Key（API 地址可填兼容端点）即可。</p>`}
+              ${(() => {
+                const aiReady = !!(state.settings.enableVision && state.settings.apiKey);
+                return `<button id="ai-parse-legend" type="button" ${aiReady ? '' : 'disabled title="请先到「设置 → 云端视觉AI」启用并填写 API Key"'} class="w-full px-3 py-2 rounded-xl text-sm font-semibold ${aiReady ? 'bg-gradient-to-r from-violet-400 to-sky-400 text-white hover:opacity-90' : 'bg-gray-100 text-gray-400 cursor-not-allowed'} ${tempLegendMap.length ? 'hidden' : ''}">🤖 AI识别图例（云端视觉自动读色号）</button>${aiReady ? '' : '<p class="text-[10px] text-center text-mk-sub mt-1">未配置 API Key：到「设置 → 云端视觉AI」启用并填写 Key 后即可使用</p>'}`;
+              })()}
               <div id="legend-list" class="${tempLegendMap.length ? '' : 'hidden'}">
                 <div class="flex items-center justify-between mb-1">
                   <div class="text-xs text-mk-sub">已解析色号清单${tempLegendMap.some(x => x.count > 0) ? '（含数量）' : ''}（色号/名称可点击编辑）：</div>
@@ -2313,6 +2314,7 @@
     // AI 识别图例：把框选的图例区域裁剪后发给视觉大模型，自动读出色块颜色与印的色号
     const aiLegendBtn = $('#ai-parse-legend');
     if (aiLegendBtn) aiLegendBtn.onclick = async () => {
+      if (!state.settings.enableVision || !state.settings.apiKey) return toast('请先到「设置 → 云端视觉AI」启用并填写 API Key', 'warn', 4000);
       if (!tempImage) return toast('请先上传图片', 'error');
       if (!tempCropRegion) return toast('请先在图上框选图例区域', 'error');
       const baseUrl = state.settings.visionBaseUrl || '';
@@ -4148,6 +4150,7 @@
     let wrapW, wrapH;
     if (maxW * ar <= maxH) { wrapW = maxW; wrapH = Math.round(maxW * ar); }
     else { wrapH = maxH; wrapW = Math.round(maxH / ar); }
+    const cropInfoText = pImageCrop ? ((pImageCrop.w | 0) + ' × ' + (pImageCrop.h | 0)) : '未设置';
     openModal('🔍 放大预览与剪裁', `
       <div class="flex flex-col items-center">
         <div id="zoom-img-wrap" class="relative bg-mk-cream rounded-xl border border-mk-sand overflow-hidden" style="width:${wrapW}px;height:${wrapH}px;">
@@ -4158,11 +4161,11 @@
           <button id="zoom-crop-mode" class="px-3 py-1.5 rounded-xl ${pImageCropMode ? 'bg-mk-rose text-white' : 'bg-white/70 border border-mk-sand text-mk-sub'}" title="切换编辑模式（可拖 8 手柄 + 内部移动）">${pImageCropMode ? '✓ 完成剪裁' : '✂️ 继续剪裁'}</button>
           <button id="zoom-crop-reset" class="px-3 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" title="选区重置为整张图">↺ 重置选区</button>
           <button id="zoom-crop-clear" class="px-3 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" title="清除剪裁（识别整张图）">✕ 不剪裁</button>
-          <span id="zoom-crop-info" class="text-mk-sub bg-white/70 px-2 py-1 rounded-lg border border-mk-sand">📐 选区: ${pImageCrop ? `${pImageCrop.w|0} × ${pImageCrop.h|0}` : '未设置'}</span>
+          <span id="zoom-crop-info" class="text-mk-sub bg-white/70 px-2 py-1 rounded-lg border border-mk-sand">📐 选区: <span id="zoom-crop-info-text">${cropInfoText}</span></span>
           <span class="text-mk-sub">💡 拖 4 角/4 边缩放，拖中间移动选区；点「✓ 完成剪裁」保存</span>
         </div>
       </div>
-    }, { wide: true, width: Math.min(window.innerWidth - 40, wrapW + 80) }, () => {
+    `, { wide: true, width: Math.min(window.innerWidth - 40, wrapW + 80) }, () => {
       // 关闭时：把 modal 里的 crop 状态写回 pImageCrop / pImageCropMode，刷新主视图
       pImageCropMode = false;
       renderImageCropMask();
