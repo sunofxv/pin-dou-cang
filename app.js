@@ -3413,14 +3413,86 @@
       img.src = dataUrl;
     });
   }
-  // 放大查看图库图片
+  // 放大查看图库图片（支持滚轮缩放 / 双指缩放 / 拖拽平移）
   function openGalleryImageZoom(g) {
     const body = `
-      <div class="flex items-center justify-center min-h-[50vh]">
-        <img src="${g.image}" class="max-w-full max-h-[78vh] rounded-xl shadow-lg" alt="${escapeHtml(g.name)}">
+      <div id="gzoom-stage" class="relative flex items-center justify-center min-h-[55vh] overflow-hidden select-none" style="touch-action:none;">
+        <img id="gzoom-img" src="${g.image}" class="max-w-full max-h-[78vh] rounded-xl shadow-lg select-none" alt="${escapeHtml(g.name)}" style="transform-origin:0 0;">
+        <div id="gzoom-info" class="absolute top-2 left-2 text-xs bg-black/55 text-white px-2 py-1 rounded-full pointer-events-none">100%</div>
+        <div class="absolute bottom-2 left-2 text-[11px] bg-black/40 text-white px-2 py-1 rounded-full pointer-events-none">滚轮/双指缩放 · 拖拽平移</div>
       </div>`;
     openModal(escapeHtml(g.name), body, { width: 1200 });
-    setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">关闭</button>`);
+    setModalFoot(`<button id="gzoom-reset" class="px-3 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub">重置</button>
+      <button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">关闭</button>`);
+
+    const stage = $('#gzoom-stage');
+    const img = $('#gzoom-img');
+    const info = $('#gzoom-info');
+    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+    let scale = 1, tx = 0, ty = 0;
+    const apply = () => {
+      img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+      info.textContent = Math.round(scale * 100) + '%';
+    };
+    // 以某屏幕点为锚点缩放：保持该点下的图像内容不动
+    function zoomAt(clientX, clientY, factor) {
+      const layoutLeft = stage.getBoundingClientRect().left + img.offsetLeft;
+      const layoutTop = stage.getBoundingClientRect().top + img.offsetTop;
+      const px = clientX - layoutLeft, py = clientY - layoutTop;
+      const newScale = clamp(scale * factor, 1, 8);
+      if (newScale === scale) return;
+      tx = px - (px - tx) * (newScale / scale);
+      ty = py - (py - ty) * (newScale / scale);
+      scale = newScale;
+      if (scale === 1) { tx = 0; ty = 0; }
+      apply();
+    }
+    // 桌面滚轮缩放
+    stage.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.15 : 1 / 1.15);
+    }, { passive: false });
+    // 桌面拖拽平移
+    let dragging = false, sx = 0, sy = 0, stx = 0, sty = 0;
+    stage.addEventListener('mousedown', (e) => {
+      if (scale <= 1) return;
+      dragging = true; sx = e.clientX; sy = e.clientY; stx = tx; sty = ty;
+      e.preventDefault();
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      tx = stx + (e.clientX - sx); ty = sty + (e.clientY - sy); apply();
+    });
+    window.addEventListener('mouseup', () => { dragging = false; });
+    // 移动端双指缩放 + 单指拖拽
+    let pinchDist = 0, pinchMidX = 0, pinchMidY = 0;
+    stage.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 2) {
+        const [a, b] = e.touches;
+        pinchDist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+        pinchMidX = (a.clientX + b.clientX) / 2; pinchMidY = (a.clientY + b.clientY) / 2;
+      } else if (e.touches.length === 1 && scale > 1) {
+        dragging = true; sx = e.touches[0].clientX; sy = e.touches[0].clientY; stx = tx; sty = ty;
+      }
+    }, { passive: false });
+    stage.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      if (e.touches.length === 2) {
+        const [a, b] = e.touches;
+        const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+        if (pinchDist > 0) zoomAt((a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2, dist / pinchDist);
+        pinchDist = dist;
+        pinchMidX = (a.clientX + b.clientX) / 2; pinchMidY = (a.clientY + b.clientY) / 2;
+      } else if (dragging && e.touches.length === 1) {
+        tx = stx + (e.touches[0].clientX - sx); ty = sty + (e.touches[0].clientY - sy); apply();
+      }
+    }, { passive: false });
+    stage.addEventListener('touchend', (e) => {
+      if (e.touches.length < 2) pinchDist = 0;
+      if (e.touches.length === 0) { dragging = false; pinchDist = 0; }
+    });
+    $('#gzoom-reset').onclick = () => { scale = 1; tx = 0; ty = 0; apply(); };
+    apply();
   }
   // 编辑图纸信息
   function openEditGalleryModal(g) {
