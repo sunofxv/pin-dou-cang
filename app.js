@@ -3289,58 +3289,117 @@
         <div>
           <label class="text-sm font-semibold block mb-1">图纸图片（可多选批量上传）*</label>
           <input id="g-file" type="file" accept="image/*" multiple class="w-full text-sm">
-          <div id="g-preview-list" class="mt-2 hidden grid sm:grid-cols-3 gap-2"></div>
+          <div id="g-preview-list" class="mt-2 hidden grid sm:grid-cols-2 gap-2"></div>
         </div>
-        <label class="text-sm font-semibold block">平台 / 来源（批量共用）<input id="g-platform" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="例如：小红书 / 淘宝 / 自制"></label>
-        <label class="text-sm font-semibold block">作者（批量共用）<input id="g-author" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="例如：豆豆"></label>
-        <label class="flex items-center gap-2 text-sm"><input id="g-made" type="checkbox"> 全部标记为「已拼」</label>
-        <p class="text-xs text-mk-sub">每张图名称默认可在下方单独修改（未填则用文件名），上传后会自动裁切白边。</p>
+        <p class="text-xs text-mk-sub">填写第 1 张图纸信息后，点击「批量应用」可把名称按序号顺延到其他图纸。不点击则各张单独填写。</p>
       </div>`;
     openModal('添加图纸', body, { wide: true });
-    let pendingItems = []; // { img, name }
+    let pendingItems = []; // { img, name, platform, author, status }
     const fileInput = $('#g-file');
     const listEl = $('#g-preview-list');
+    const escapeAttr = s => escapeHtml(s).replace(/"/g, '&quot;');
     const renderPreviewList = () => {
-      listEl.innerHTML = pendingItems.map((it, i) => `
-        <div class="mk-card rounded-xl p-2">
-          <div class="rounded-lg overflow-hidden bg-mk-sand/30 aspect-square flex items-center justify-center">
-            <img src="${it.img}" class="w-full h-full object-contain" alt="${escapeHtml(it.name)}">
+      listEl.innerHTML = pendingItems.map((it, i) => {
+        const made = it.status === 'made';
+        return `<div class="mk-card rounded-xl p-2 flex gap-2">
+          <div class="flex-shrink-0 w-24 h-24 rounded-lg overflow-hidden bg-mk-sand/30 flex items-center justify-center">
+            <img src="${it.img}" class="w-full h-full object-contain" alt="${escapeAttr(it.name)}">
           </div>
-          <input class="g-item-name mt-1 w-full text-xs px-2 py-1 rounded-lg bg-white/70 border border-mk-sand" data-i="${i}" value="${escapeHtml(it.name)}" placeholder="名称">
-        </div>`).join('');
-      listEl.querySelectorAll('.g-item-name').forEach(inp => {
+          <div class="flex-1 min-w-0 space-y-1.5">
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] text-mk-sub">#${i + 1}</span>
+              ${i === 0 ? '<span class="text-[11px] bg-sky-100 text-sky-600 px-1.5 py-0.5 rounded-full">模板</span>' : ''}
+            </div>
+            <input class="g-name w-full text-xs px-2 py-1 rounded-lg bg-white/70 border border-mk-sand" data-i="${i}" value="${escapeAttr(it.name)}" placeholder="名称">
+            <input class="g-platform w-full text-xs px-2 py-1 rounded-lg bg-white/70 border border-mk-sand" data-i="${i}" value="${escapeAttr(it.platform || '')}" placeholder="平台 / 来源">
+            <div class="flex items-center gap-1.5">
+              <input class="g-author flex-1 text-xs px-2 py-1 rounded-lg bg-white/70 border border-mk-sand" data-i="${i}" value="${escapeAttr(it.author || '')}" placeholder="作者">
+              <label class="flex items-center gap-1 text-[11px] whitespace-nowrap"><input class="g-made" type="checkbox" data-i="${i}" ${made ? 'checked' : ''}>已拼</label>
+            </div>
+          </div>
+        </div>`;
+      }).join('');
+      listEl.querySelectorAll('.g-name').forEach(inp => {
         inp.oninput = () => { pendingItems[+inp.dataset.i].name = inp.value; };
+      });
+      listEl.querySelectorAll('.g-platform').forEach(inp => {
+        inp.oninput = () => { pendingItems[+inp.dataset.i].platform = inp.value; };
+      });
+      listEl.querySelectorAll('.g-author').forEach(inp => {
+        inp.oninput = () => { pendingItems[+inp.dataset.i].author = inp.value; };
+      });
+      listEl.querySelectorAll('.g-made').forEach(inp => {
+        inp.onchange = () => { pendingItems[+inp.dataset.i].status = inp.checked ? 'made' : 'unmade'; };
       });
     };
     fileInput.onchange = async () => {
       const files = [...fileInput.files];
       if (!files.length) return;
       listEl.classList.remove('hidden');
-      listEl.innerHTML = '<div class="col-span-3 text-xs text-mk-sub">处理中…</div>';
+      listEl.innerHTML = '<div class="col-span-2 text-xs text-mk-sub">处理中…</div>';
       pendingItems = [];
       await Promise.all(files.map(async (f, idx) => {
         try {
           const img = await autoCropDataURL(await fitImageToDataURL(f, 1600));
           const base = (f.name || ('图纸 ' + (idx + 1))).replace(/\.[^.]+$/, '');
-          pendingItems.push({ img, name: base });
+          pendingItems.push({ img, name: base, platform: '', author: '', status: 'unmade' });
         } catch (e) { toast('图片读取失败：' + (f.name || ''), 'error'); }
       }));
       renderPreviewList();
     };
     setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">取消</button>
+      <button id="g-apply-all" class="px-4 py-2 rounded-xl bg-sky-100 text-sky-600 font-semibold" disabled>批量应用</button>
       <button id="g-save" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold">添加到图库</button>`);
+    const applyBtn = $('#g-apply-all');
+    applyBtn.onclick = () => {
+      if (!pendingItems.length) return;
+      const base = pendingItems[0];
+      pendingItems.forEach((it, i) => {
+        it.platform = base.platform;
+        it.author = base.author;
+        it.status = base.status;
+        if (i === 0) return;
+        const rawName = (base.name || '').trim();
+        if (!rawName) {
+          it.name = base.name;
+          return;
+        }
+        // 去掉尾部已有序号（支持 2、_2、(2) 等）再顺延
+        const stem = rawName.replace(/\s*(?:\(|_|-)?\d+\)?$/, '').trim();
+        it.name = stem + ' ' + (i + 1);
+      });
+      renderPreviewList();
+      toast('已批量应用，名称按序号顺延', 'success');
+    };
+    const updateApplyDisabled = () => {
+      applyBtn.disabled = pendingItems.length < 2;
+      applyBtn.title = pendingItems.length < 2 ? '至少上传两张图才可批量应用' : '将第 1 张的信息应用到全部图纸';
+    };
+    const wrappedRender = () => { renderPreviewList(); updateApplyDisabled(); };
+    fileInput.onchange = async () => {
+      const files = [...fileInput.files];
+      if (!files.length) return;
+      listEl.classList.remove('hidden');
+      listEl.innerHTML = '<div class="col-span-2 text-xs text-mk-sub">处理中…</div>';
+      pendingItems = [];
+      await Promise.all(files.map(async (f, idx) => {
+        try {
+          const img = await autoCropDataURL(await fitImageToDataURL(f, 1600));
+          const base = (f.name || ('图纸 ' + (idx + 1))).replace(/\.[^.]+$/, '');
+          pendingItems.push({ img, name: base, platform: '', author: '', status: 'unmade' });
+        } catch (e) { toast('图片读取失败：' + (f.name || ''), 'error'); }
+      }));
+      wrappedRender();
+    };
     $('#g-save').onclick = () => {
       if (!pendingItems.length) return toast('请上传图纸图片', 'error');
-      const platform = ($('#g-platform').value || '').trim();
-      const author = ($('#g-author').value || '').trim();
-      const status = $('#g-made').checked ? 'made' : 'unmade';
       const t = Date.now();
       pendingItems.forEach((it, i) => {
         const name = (it.name || '').trim() || ('图纸 ' + (i + 1));
         state.gallery.unshift({
           id: 'g' + (t + i).toString(36) + Math.random().toString(36).slice(2, 6),
-          name, platform, author,
-          image: it.img, status,
+          name, platform: (it.platform || '').trim(), author: (it.author || '').trim(),
+          image: it.img, status: it.status,
           createdAt: t + i
         });
       });
@@ -3348,6 +3407,7 @@
       pendingItems = [];
       save(); closeModal(); renderGallery($('#view')); toast('已添加 ' + n + ' 张图纸到图库', 'success');
     };
+    updateApplyDisabled();
   }
   // 保持比例缩放图片为 data URL（不裁剪），用于图库缩略图
   function fitImageToDataURL(file, maxEdge = 900) {
