@@ -41,7 +41,7 @@ module.exports = async (req, res) => {
         'Authorization': 'Bearer ' + apiKey
       },
       body: JSON.stringify({
-        model: 'glm-4v-flash',
+        model: 'glm-4v-plus',
         messages: [{
           role: 'user',
           content: [

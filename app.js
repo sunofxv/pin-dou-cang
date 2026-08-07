@@ -118,7 +118,7 @@
       // 用户个人资料（昵称/头像），随 state 同步到云端
       profile: { nickname: '', avatar: '' },
       settings: {
-        enableVision: true, apiKey: '', model: 'glm-4v-flash', visionBaseUrl: '',
+        enableVision: true, apiKey: '', model: 'glm-4v-plus', visionBaseUrl: '',
         sampleTolerance: 48, scaleFactor: 1,
         // 识别模式：'auto' = 智能识别（自动框图+自动行列，最省事）；'grid' = 手动格子数；'pixel' = 像素聚类
         recognizeMode: 'auto',
@@ -839,7 +839,7 @@
       const res = await fetch('/api/legend-vision', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: dataUrl, model: 'glm-4v-flash', prompt })
+        body: JSON.stringify({ image: dataUrl, model: 'glm-4v-plus', prompt })
       });
       if (!res.ok) {
         let msg = '代理服务返回 ' + res.status;
