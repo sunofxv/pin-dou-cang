@@ -896,11 +896,19 @@
   }
   // 让视觉模型识别“图例区域”中的颜色色块：返回每个色块的 hex 与印的色号 code。
   async function callLegendVisionAPI(dataUrl, apiKey, model, baseUrl) {
-    const prompt = `这是一张拼豆(Perler/Hama)图纸的「颜色图例」区域，里面是一排颜色色块，每个色块通常印有该颜色的色号/字母编号。
-请从左到右、从上到下，逐一列出图例中每一个不同的颜色色块。
-请严格只返回一个 JSON 对象，不要包含任何额外文字或 Markdown 代码块，格式如下：
-{"colors":[{"hex":"#RRGGBB","code":"色块上印的色号/编号/字母，若看不清或没有则留空字符串"}]}
-其中 hex 是该色块的主体颜色（不要取文字或边框的颜色），code 是色块上印刷的编号或字母。`;
+    const prompt = `你正在看一张拼豆(Perler/Hama)图纸的「颜色图例」区域：这是一排/一列整齐排列的颜色色块，每个色块上通常印有该颜色对应的色号或字母编号。
+
+任务：识别图例中每一个「颜色色块」，从左到右、从上到下逐一列出。
+
+严格要求（务必遵守）：
+1. 只识别纯色填充的「色块」本身，忽略色块之间的白色间隔、黑色网格线、边框、以及色块外的文字说明。
+2. hex 取该色块中心的「主体填充色」，不要取文字颜色、边框颜色或阴影。
+3. code 是该色块上「印刷的编号/字母/短码」（例如 "C25"、"W1"、"R12"）。如果实在看不清或该色块没有印字，填空字符串 ""，绝对不要猜测或编造。
+4. 不要合并相近颜色——只要肉眼是可区分的不同色块，就分别列出（包括深浅不同的同色系）。
+5. 不要包含任何额外文字、解释或 Markdown 代码块。只返回一个 JSON。
+
+返回格式（示例）：
+{"colors":[{"hex":"#FFD700","code":"Y8"},{"hex":"#A52A2A","code":"BR3"}]}`;
     const parsed = await callVLM(dataUrl, apiKey, model, prompt, baseUrl);
     const colors = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.colors) ? parsed.colors : []);
     return colors
@@ -909,15 +917,19 @@
   }
   // 将归一化区域裁剪为独立图片 dataURL（用于把图例区域单独发给视觉模型）
   function cropRegionToDataURL(img, region) {
-    const { canvas, w, h } = createAnalysisCanvas(img, 1200);
+    const { canvas, w, h } = createAnalysisCanvas(img, 1600);
     const x0 = Math.max(0, Math.round(region.x * w));
     const y0 = Math.max(0, Math.round(region.y * h));
     const x1 = Math.min(w, Math.round((region.x + region.w) * w));
     const y1 = Math.min(h, Math.round((region.y + region.h) * h));
     const cw = Math.max(1, x1 - x0), ch = Math.max(1, y1 - y0);
+    // 裁剪出图例区后，若分辨率偏小（色块在图里被缩得很小），放大到更清晰再发，
+    // 让视觉模型更容易看清颜色和印字，提升识别准确率。
+    const upscale = Math.max(1, Math.ceil(900 / Math.min(cw, ch)));
     const c = document.createElement('canvas');
-    c.width = cw; c.height = ch;
-    c.getContext('2d').drawImage(canvas, x0, y0, cw, ch, 0, 0, cw, ch);
+    c.width = Math.min(cw * upscale, 2400);
+    c.height = Math.min(ch * upscale, 2400);
+    c.getContext('2d').drawImage(canvas, x0, y0, cw, ch, 0, 0, c.width, c.height);
     // 输出 JPEG 减小 base64 体积，避免 PNG 无压缩导致 body 过大/智谱 400
     return c.toDataURL('image/jpeg', 0.9);
   }
@@ -3275,7 +3287,7 @@
       const f = fileInput.files[0];
       if (!f) return;
       try {
-        pendingImg = await fitImageToDataURL(f, 900);
+        pendingImg = await autoCropDataURL(await fitImageToDataURL(f, 900));
         const pv = $('#g-preview'); const pvi = $('#g-preview-img');
         if (pv && pvi) { pvi.src = pendingImg; pv.classList.remove('hidden'); }
       } catch (e) { toast('图片读取失败', 'error'); }
@@ -3315,6 +3327,72 @@
       };
       img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('图片加载失败')); };
       img.src = url;
+    });
+  }
+  // 自动裁切图片四周留白（基于边框背景色采样）
+  function autoCropDataURL(dataUrl, opts = {}) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const W = img.width, H = img.height;
+        const canvas = document.createElement('canvas');
+        canvas.width = W; canvas.height = H;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        let d;
+        try { d = ctx.getImageData(0, 0, W, H).data; }
+        catch (e) { return resolve(dataUrl); }
+        // 采样边框像素估算背景色
+        const samples = [];
+        const border = Math.max(4, Math.floor(Math.min(W, H) * 0.03));
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            if (x < border || x >= W - border || y < border || y >= H - border) {
+              const i = (y * W + x) * 4;
+              if (d[i + 3] < 128) continue;
+              samples.push([d[i], d[i + 1], d[i + 2]]);
+            }
+          }
+        }
+        let bg = [255, 255, 255];
+        if (samples.length) {
+          const buckets = {};
+          let bestKey = '', bestCount = 0;
+          for (const [r, g, b] of samples) {
+            const key = `${r >> 4},${g >> 4},${b >> 4}`;
+            buckets[key] = (buckets[key] || 0) + 1;
+            if (buckets[key] > bestCount) { bestCount = buckets[key]; bestKey = key; }
+          }
+          if (bestKey) bg = bestKey.split(',').map(v => parseInt(v, 10) << 4);
+        }
+        const bgLum = (0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2]) / 255;
+        const threshold = opts.threshold || (bgLum > 0.85 ? 26 : 36);
+        const isContent = (i) => {
+          if (d[i + 3] < 128) return false;
+          const dr = d[i] - bg[0], dg = d[i + 1] - bg[1], db = d[i + 2] - bg[2];
+          const dist = Math.sqrt(dr * dr + dg * dg + db * db);
+          const lum = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
+          return dist > threshold && !(lum > 0.96 && dist < threshold * 1.6);
+        };
+        const rowHas = (y) => { for (let x = 0; x < W; x++) if (isContent((y * W + x) * 4)) return true; return false; };
+        const colHas = (x) => { for (let y = 0; y < H; y++) if (isContent((y * W + x) * 4)) return true; return false; };
+        let top = 0, bottom = H - 1, left = 0, right = W - 1;
+        while (top < H && !rowHas(top)) top++;
+        while (bottom > top && !rowHas(bottom)) bottom--;
+        while (left < W && !colHas(left)) left++;
+        while (right > left && !colHas(right)) right--;
+        if (top >= bottom || left >= right) return resolve(dataUrl);
+        const pad = Math.max(4, Math.round(Math.min(W, H) * 0.015));
+        left = Math.max(0, left - pad); top = Math.max(0, top - pad);
+        right = Math.min(W - 1, right + pad); bottom = Math.min(H - 1, bottom + pad);
+        const cw = right - left + 1, ch = bottom - top + 1;
+        const out = document.createElement('canvas');
+        out.width = cw; out.height = ch;
+        out.getContext('2d').drawImage(canvas, left, top, cw, ch, 0, 0, cw, ch);
+        resolve(out.toDataURL('image/jpeg', 0.88));
+      };
+      img.onerror = () => reject(new Error('图片加载失败'));
+      img.src = dataUrl;
     });
   }
 
