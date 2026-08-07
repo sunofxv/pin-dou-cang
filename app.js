@@ -3287,45 +3287,66 @@
     const body = `
       <div class="space-y-3">
         <div>
-          <label class="text-sm font-semibold block mb-1">图纸图片 *</label>
-          <input id="g-file" type="file" accept="image/*" class="w-full text-sm">
-          <div id="g-preview" class="mt-2 hidden rounded-xl overflow-hidden bg-mk-sand/30 aspect-[4/3] flex items-center justify-center">
-            <img id="g-preview-img" class="max-w-full max-h-48 object-contain" alt="预览">
-          </div>
+          <label class="text-sm font-semibold block mb-1">图纸图片（可多选批量上传）*</label>
+          <input id="g-file" type="file" accept="image/*" multiple class="w-full text-sm">
+          <div id="g-preview-list" class="mt-2 hidden grid sm:grid-cols-3 gap-2"></div>
         </div>
-        <label class="text-sm font-semibold block">名称 *<input id="g-name" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="例如：小熊钥匙扣"></label>
-        <label class="text-sm font-semibold block">平台 / 来源<input id="g-platform" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="例如：小红书 / 淘宝 / 自制"></label>
-        <label class="text-sm font-semibold block">作者<input id="g-author" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="例如：豆豆"></label>
-        <label class="flex items-center gap-2 text-sm"><input id="g-made" type="checkbox"> 直接标记为「已拼」</label>
+        <label class="text-sm font-semibold block">平台 / 来源（批量共用）<input id="g-platform" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="例如：小红书 / 淘宝 / 自制"></label>
+        <label class="text-sm font-semibold block">作者（批量共用）<input id="g-author" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="例如：豆豆"></label>
+        <label class="flex items-center gap-2 text-sm"><input id="g-made" type="checkbox"> 全部标记为「已拼」</label>
+        <p class="text-xs text-mk-sub">每张图名称默认可在下方单独修改（未填则用文件名），上传后会自动裁切白边。</p>
       </div>`;
     openModal('添加图纸', body, { wide: true });
-    let pendingImg = '';
+    let pendingItems = []; // { img, name }
     const fileInput = $('#g-file');
+    const listEl = $('#g-preview-list');
+    const renderPreviewList = () => {
+      listEl.innerHTML = pendingItems.map((it, i) => `
+        <div class="mk-card rounded-xl p-2">
+          <div class="rounded-lg overflow-hidden bg-mk-sand/30 aspect-square flex items-center justify-center">
+            <img src="${it.img}" class="w-full h-full object-contain" alt="${escapeHtml(it.name)}">
+          </div>
+          <input class="g-item-name mt-1 w-full text-xs px-2 py-1 rounded-lg bg-white/70 border border-mk-sand" data-i="${i}" value="${escapeHtml(it.name)}" placeholder="名称">
+        </div>`).join('');
+      listEl.querySelectorAll('.g-item-name').forEach(inp => {
+        inp.oninput = () => { pendingItems[+inp.dataset.i].name = inp.value; };
+      });
+    };
     fileInput.onchange = async () => {
-      const f = fileInput.files[0];
-      if (!f) return;
-      try {
-        pendingImg = await autoCropDataURL(await fitImageToDataURL(f, 900));
-        const pv = $('#g-preview'); const pvi = $('#g-preview-img');
-        if (pv && pvi) { pvi.src = pendingImg; pv.classList.remove('hidden'); }
-      } catch (e) { toast('图片读取失败', 'error'); }
+      const files = [...fileInput.files];
+      if (!files.length) return;
+      listEl.classList.remove('hidden');
+      listEl.innerHTML = '<div class="col-span-3 text-xs text-mk-sub">处理中…</div>';
+      pendingItems = [];
+      await Promise.all(files.map(async (f, idx) => {
+        try {
+          const img = await autoCropDataURL(await fitImageToDataURL(f, 1600));
+          const base = (f.name || ('图纸 ' + (idx + 1))).replace(/\.[^.]+$/, '');
+          pendingItems.push({ img, name: base });
+        } catch (e) { toast('图片读取失败：' + (f.name || ''), 'error'); }
+      }));
+      renderPreviewList();
     };
     setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">取消</button>
       <button id="g-save" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold">添加到图库</button>`);
     $('#g-save').onclick = () => {
-      const name = ($('#g-name').value || '').trim();
-      if (!name) return toast('请填写图纸名称', 'error');
-      if (!pendingImg) return toast('请上传图纸图片', 'error');
-      state.gallery.unshift({
-        id: 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-        name,
-        platform: ($('#g-platform').value || '').trim(),
-        author: ($('#g-author').value || '').trim(),
-        image: pendingImg,
-        status: $('#g-made').checked ? 'made' : 'unmade',
-        createdAt: Date.now()
+      if (!pendingItems.length) return toast('请上传图纸图片', 'error');
+      const platform = ($('#g-platform').value || '').trim();
+      const author = ($('#g-author').value || '').trim();
+      const status = $('#g-made').checked ? 'made' : 'unmade';
+      const t = Date.now();
+      pendingItems.forEach((it, i) => {
+        const name = (it.name || '').trim() || ('图纸 ' + (i + 1));
+        state.gallery.unshift({
+          id: 'g' + (t + i).toString(36) + Math.random().toString(36).slice(2, 6),
+          name, platform, author,
+          image: it.img, status,
+          createdAt: t + i
+        });
       });
-      save(); closeModal(); renderGallery($('#view')); toast('已添加到图库', 'success');
+      const n = pendingItems.length;
+      pendingItems = [];
+      save(); closeModal(); renderGallery($('#view')); toast('已添加 ' + n + ' 张图纸到图库', 'success');
     };
   }
   // 保持比例缩放图片为 data URL（不裁剪），用于图库缩略图
@@ -3341,7 +3362,7 @@
         canvas.width = w; canvas.height = h;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/jpeg', 0.82));
+        resolve(canvas.toDataURL('image/jpeg', 0.88));
       };
       img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('图片加载失败')); };
       img.src = url;
@@ -3407,7 +3428,7 @@
         const out = document.createElement('canvas');
         out.width = cw; out.height = ch;
         out.getContext('2d').drawImage(canvas, left, top, cw, ch, 0, 0, cw, ch);
-        resolve(out.toDataURL('image/jpeg', 0.88));
+        resolve(out.toDataURL('image/jpeg', 0.92));
       };
       img.onerror = () => reject(new Error('图片加载失败'));
       img.src = dataUrl;
