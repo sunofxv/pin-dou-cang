@@ -3218,6 +3218,11 @@
       const g = state.gallery.find(x => x.id === b.dataset.id);
       if (g) viewGallery(g);
     });
+    $$('.g-edit').forEach(b => b.onclick = (e) => {
+      e.stopPropagation();
+      const g = state.gallery.find(x => x.id === b.dataset.id);
+      if (g) openEditGalleryModal(g);
+    });
   }
   function gStatCard(label, val, active) {
     const f = label === '全部' ? 'all' : (label === '未拼' ? 'unmade' : 'made');
@@ -3229,9 +3234,12 @@
   function galleryCard(g) {
     const made = g.status === 'made';
     return `<div class="mk-card rounded-2xl shadow-soft p-3">
-      <div class="g-view cursor-pointer">
-        <div class="rounded-xl overflow-hidden bg-mk-sand/30 aspect-[4/3] flex items-center justify-center">
-          ${g.image ? `<img src="${g.image}" class="w-full h-full object-contain" alt="${escapeHtml(g.name)}">` : '<span class="text-mk-sub text-sm">无图</span>'}
+      <div class="g-view cursor-pointer group" data-id="${g.id}">
+        <div class="rounded-xl overflow-hidden bg-mk-sand/30 aspect-[4/3] flex items-center justify-center relative">
+          ${g.image ? `<img src="${g.image}" class="w-full h-full object-contain" alt="${escapeHtml(g.name)}">
+          <div class="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition flex items-center justify-center opacity-0 group-hover:opacity-100 pointer-events-none">
+            <span class="text-xs bg-white/80 text-mk-ink px-2 py-1 rounded-full shadow-sm">点击查看详情</span>
+          </div>` : '<span class="text-mk-sub text-sm">无图</span>'}
         </div>
       </div>
       <div class="mt-2">
@@ -3240,6 +3248,7 @@
         <div class="mt-2 flex items-center justify-between">
           <span class="text-[11px] px-2 py-0.5 rounded-full ${made ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}">${made ? '✓ 已拼' : '○ 未拼'}</span>
           <div class="flex gap-1.5">
+            <button class="g-edit text-[11px] px-2.5 py-1.5 rounded-xl bg-sky-50 text-sky-500" data-id="${g.id}">编辑</button>
             <button class="g-toggle text-[11px] px-2.5 py-1.5 rounded-xl ${made ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600'}" data-id="${g.id}">${made ? '标记未拼' : '标记已拼'}</button>
             <button class="g-del text-[11px] px-2.5 py-1.5 rounded-xl bg-rose-50 text-rose-400" data-id="${g.id}">删除</button>
           </div>
@@ -3251,7 +3260,12 @@
     const made = g.status === 'made';
     const body = `
       <div class="flex flex-col items-center">
-        ${g.image ? `<img src="${g.image}" class="max-w-full max-h-[60vh] rounded-xl border border-mk-sand">` : '<div class="text-mk-sub">该图纸无图片</div>'}
+        ${g.image ? `<div class="relative group cursor-zoom-in" id="g-detail-img-wrap">
+            <img src="${g.image}" class="max-w-full max-h-[60vh] rounded-xl border border-mk-sand" alt="${escapeHtml(g.name)}">
+            <div class="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition pointer-events-none">
+              <span class="text-xs bg-black/50 text-white px-2 py-1 rounded-full">点击放大</span>
+            </div>
+          </div>` : '<div class="text-mk-sub">该图纸无图片</div>'}
         <div class="mt-3 text-sm text-mk-sub w-full space-y-1">
           <div><b>名称：</b>${escapeHtml(g.name)}</div>
           <div><b>平台 / 来源：</b>${escapeHtml(g.platform || '—')}</div>
@@ -3262,8 +3276,12 @@
       </div>`;
     openModal('图纸详情：' + g.name, body, { wide: true });
     setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">关闭</button>
+      <button id="g-edit2" class="px-4 py-2 rounded-xl bg-sky-100 text-sky-600 font-semibold">编辑</button>
       <button id="g-toggle2" class="px-4 py-2 rounded-xl ${made ? 'bg-amber-400 text-white' : 'bg-emerald-500 text-white'} font-semibold">${made ? '标记未拼' : '标记已拼'}</button>`);
     $('#g-toggle2').onclick = () => { g.status = made ? 'unmade' : 'made'; save(); closeModal(); renderGallery($('#view')); toast(made ? '已标记为未拼' : '已标记为已拼', 'success'); };
+    $('#g-edit2').onclick = () => openEditGalleryModal(g);
+    const imgWrap = $('#g-detail-img-wrap');
+    if (imgWrap) imgWrap.onclick = () => openGalleryImageZoom(g);
   }
   function openAddGalleryModal() {
     const body = `
@@ -3394,6 +3412,44 @@
       img.onerror = () => reject(new Error('图片加载失败'));
       img.src = dataUrl;
     });
+  }
+  // 放大查看图库图片
+  function openGalleryImageZoom(g) {
+    const body = `
+      <div class="flex items-center justify-center min-h-[50vh]">
+        <img src="${g.image}" class="max-w-full max-h-[78vh] rounded-xl shadow-lg" alt="${escapeHtml(g.name)}">
+      </div>`;
+    openModal(escapeHtml(g.name), body, { width: 1200 });
+    setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">关闭</button>`);
+  }
+  // 编辑图纸信息
+  function openEditGalleryModal(g) {
+    const made = g.status === 'made';
+    const body = `
+      <div class="space-y-3">
+        <div class="flex flex-col items-center">
+          <div class="rounded-xl overflow-hidden bg-mk-sand/30 aspect-[4/3] w-full max-w-xs flex items-center justify-center">
+            ${g.image ? `<img src="${g.image}" class="w-full h-full object-contain" alt="${escapeHtml(g.name)}">` : '<span class="text-mk-sub text-sm">无图</span>'}
+          </div>
+          <div class="text-xs text-mk-sub mt-1">点击图片可在详情中放大查看</div>
+        </div>
+        <label class="text-sm font-semibold block">名称 *<input id="ge-name" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${escapeHtml(g.name)}"></label>
+        <label class="text-sm font-semibold block">平台 / 来源<input id="ge-platform" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${escapeHtml(g.platform || '')}" placeholder="例如：小红书 / 淘宝 / 自制"></label>
+        <label class="text-sm font-semibold block">作者<input id="ge-author" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${escapeHtml(g.author || '')}" placeholder="例如：豆豆"></label>
+        <label class="flex items-center gap-2 text-sm"><input id="ge-made" type="checkbox" ${made ? 'checked' : ''}> 标记为「已拼」</label>
+      </div>`;
+    openModal('编辑图纸信息', body, { wide: true });
+    setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">取消</button>
+      <button id="ge-save" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold">保存</button>`);
+    $('#ge-save').onclick = () => {
+      const name = ($('#ge-name').value || '').trim();
+      if (!name) return toast('请填写图纸名称', 'error');
+      g.name = name;
+      g.platform = ($('#ge-platform').value || '').trim();
+      g.author = ($('#ge-author').value || '').trim();
+      g.status = $('#ge-made').checked ? 'made' : 'unmade';
+      save(); closeModal(); renderGallery($('#view')); toast('图纸信息已保存', 'success');
+    };
   }
 
   /* ===================== 16. 设置（色卡映射管理 + 数据 + 视觉AI） ===================== */
