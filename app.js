@@ -111,6 +111,8 @@
       beads,
       logs: [],
       recipes: [],
+      // 图库：用户上传的图纸，含名称/来源(平台)/作者/是否已拼状态
+      gallery: [],
       // 自定义色号映射覆盖表（可选）：识别时优先于内置 221 色卡匹配
       mappings: [],
       // 用户个人资料（昵称/头像），随 state 同步到云端
@@ -974,6 +976,7 @@
     { key: 'recognize', label: '图纸识别' },
     { key: 'recipes',   label: '配方库' },
     { key: 'pattern',   label: '图纸生成器' },
+    { key: 'gallery',   label: '图库' },
     { key: 'logs',      label: '操作记录' },
     { key: 'settings',  label: '设置' }
   ];
@@ -1037,6 +1040,7 @@
     if (key === 'recognize')  renderRecognize(v);
     if (key === 'recipes')    renderRecipes(v);
     if (key === 'pattern')    renderPattern(v);
+    if (key === 'gallery')    renderGallery(v);
     if (key === 'logs')       renderLogs(v);
     if (key === 'settings')   renderSettings(v);
   }
@@ -3167,6 +3171,151 @@
         </div>
       </div>`;
     $$('.lf-btn').forEach(b => b.onclick = () => { logFilter = b.dataset.t; renderLogs(v); });
+  }
+
+  /* ===================== 15.5 图库 ===================== */
+  // 图纸图库：用户上传图纸，记录名称/来源(平台)/作者，并标记是否已拼。
+  let galleryFilter = 'all'; // 'all' | 'unmade' | 'made'
+  function renderGallery(v) {
+    const all = state.gallery;
+    const unmade = all.filter(g => g.status === 'unmade');
+    const made = all.filter(g => g.status === 'made');
+    const list = galleryFilter === 'all' ? all : (galleryFilter === 'unmade' ? unmade : made);
+    v.innerHTML = `
+      <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <h2 class="text-xl font-bold">🖼️ 图库</h2>
+        <button id="gallery-add" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold shadow-soft">+ 添加图纸</button>
+      </div>
+      <div class="grid grid-cols-3 gap-3 mb-5">
+        ${gStatCard('全部', all.length, galleryFilter === 'all')}
+        ${gStatCard('未拼', unmade.length, galleryFilter === 'unmade')}
+        ${gStatCard('已拼', made.length, galleryFilter === 'made')}
+      </div>
+      ${list.length ? `<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">${list.map(galleryCard).join('')}</div>`
+        : '<div class="mk-card rounded-2xl shadow-soft p-8 text-center text-mk-sub">还没有图纸，点右上角「+ 添加图纸」上传吧 🌟</div>'}`;
+    $('#gallery-add').onclick = openAddGalleryModal;
+    $$('.g-filter').forEach(b => b.onclick = () => { galleryFilter = b.dataset.f; renderGallery(v); });
+    $$('.g-toggle').forEach(b => b.onclick = () => {
+      const g = state.gallery.find(x => x.id === b.dataset.id);
+      if (g) { g.status = (g.status === 'made' ? 'unmade' : 'made'); save(); renderGallery(v); }
+    });
+    $$('.g-del').forEach(b => b.onclick = () => {
+      if (confirm('删除该图纸？')) { state.gallery = state.gallery.filter(x => x.id !== b.dataset.id); save(); renderGallery(v); }
+    });
+    $$('.g-view').forEach(b => b.onclick = () => {
+      const g = state.gallery.find(x => x.id === b.dataset.id);
+      if (g) viewGallery(g);
+    });
+  }
+  function gStatCard(label, val, active) {
+    const f = label === '全部' ? 'all' : (label === '未拼' ? 'unmade' : 'made');
+    return `<button class="g-filter mk-card rounded-2xl shadow-soft p-4 text-center ${active ? 'ring-2 ring-mk-rose' : 'hover:scale-[1.02]'} transition" data-f="${f}">
+      <div class="text-2xl font-bold text-mk-ink">${val}</div>
+      <div class="text-xs text-mk-sub mt-1">${label}</div>
+    </button>`;
+  }
+  function galleryCard(g) {
+    const made = g.status === 'made';
+    return `<div class="mk-card rounded-2xl shadow-soft p-3">
+      <div class="g-view cursor-pointer">
+        <div class="rounded-xl overflow-hidden bg-mk-sand/30 aspect-[4/3] flex items-center justify-center">
+          ${g.image ? `<img src="${g.image}" class="w-full h-full object-contain" alt="${escapeHtml(g.name)}">` : '<span class="text-mk-sub text-sm">无图</span>'}
+        </div>
+      </div>
+      <div class="mt-2">
+        <div class="font-bold truncate">${escapeHtml(g.name)}</div>
+        <div class="text-xs text-mk-sub mt-0.5 truncate">${g.platform ? '📦 ' + escapeHtml(g.platform) : ''}${g.platform && g.author ? ' · ' : ''}${g.author ? '✍️ ' + escapeHtml(g.author) : ''}</div>
+        <div class="mt-2 flex items-center justify-between">
+          <span class="text-[11px] px-2 py-0.5 rounded-full ${made ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}">${made ? '✓ 已拼' : '○ 未拼'}</span>
+          <div class="flex gap-1.5">
+            <button class="g-toggle text-[11px] px-2.5 py-1.5 rounded-xl ${made ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600'}" data-id="${g.id}">${made ? '标记未拼' : '标记已拼'}</button>
+            <button class="g-del text-[11px] px-2.5 py-1.5 rounded-xl bg-rose-50 text-rose-400" data-id="${g.id}">删除</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+  function viewGallery(g) {
+    const made = g.status === 'made';
+    const body = `
+      <div class="flex flex-col items-center">
+        ${g.image ? `<img src="${g.image}" class="max-w-full max-h-[60vh] rounded-xl border border-mk-sand">` : '<div class="text-mk-sub">该图纸无图片</div>'}
+        <div class="mt-3 text-sm text-mk-sub w-full space-y-1">
+          <div><b>名称：</b>${escapeHtml(g.name)}</div>
+          <div><b>平台 / 来源：</b>${escapeHtml(g.platform || '—')}</div>
+          <div><b>作者：</b>${escapeHtml(g.author || '—')}</div>
+          <div><b>状态：</b>${made ? '已拼' : '未拼'}</div>
+          <div><b>添加时间：</b>${fmtTime(g.createdAt)}</div>
+        </div>
+      </div>`;
+    openModal('图纸详情：' + g.name, body, { wide: true });
+    setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">关闭</button>
+      <button id="g-toggle2" class="px-4 py-2 rounded-xl ${made ? 'bg-amber-400 text-white' : 'bg-emerald-500 text-white'} font-semibold">${made ? '标记未拼' : '标记已拼'}</button>`);
+    $('#g-toggle2').onclick = () => { g.status = made ? 'unmade' : 'made'; save(); closeModal(); renderGallery($('#view')); toast(made ? '已标记为未拼' : '已标记为已拼', 'success'); };
+  }
+  function openAddGalleryModal() {
+    const body = `
+      <div class="space-y-3">
+        <div>
+          <label class="text-sm font-semibold block mb-1">图纸图片 *</label>
+          <input id="g-file" type="file" accept="image/*" class="w-full text-sm">
+          <div id="g-preview" class="mt-2 hidden rounded-xl overflow-hidden bg-mk-sand/30 aspect-[4/3] flex items-center justify-center">
+            <img id="g-preview-img" class="max-w-full max-h-48 object-contain" alt="预览">
+          </div>
+        </div>
+        <label class="text-sm font-semibold block">名称 *<input id="g-name" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="例如：小熊钥匙扣"></label>
+        <label class="text-sm font-semibold block">平台 / 来源<input id="g-platform" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="例如：小红书 / 淘宝 / 自制"></label>
+        <label class="text-sm font-semibold block">作者<input id="g-author" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="例如：豆豆"></label>
+        <label class="flex items-center gap-2 text-sm"><input id="g-made" type="checkbox"> 直接标记为「已拼」</label>
+      </div>`;
+    openModal('添加图纸', body, { wide: true });
+    let pendingImg = '';
+    const fileInput = $('#g-file');
+    fileInput.onchange = async () => {
+      const f = fileInput.files[0];
+      if (!f) return;
+      try {
+        pendingImg = await fitImageToDataURL(f, 900);
+        const pv = $('#g-preview'); const pvi = $('#g-preview-img');
+        if (pv && pvi) { pvi.src = pendingImg; pv.classList.remove('hidden'); }
+      } catch (e) { toast('图片读取失败', 'error'); }
+    };
+    setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">取消</button>
+      <button id="g-save" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold">添加到图库</button>`);
+    $('#g-save').onclick = () => {
+      const name = ($('#g-name').value || '').trim();
+      if (!name) return toast('请填写图纸名称', 'error');
+      if (!pendingImg) return toast('请上传图纸图片', 'error');
+      state.gallery.unshift({
+        id: 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        name,
+        platform: ($('#g-platform').value || '').trim(),
+        author: ($('#g-author').value || '').trim(),
+        image: pendingImg,
+        status: $('#g-made').checked ? 'made' : 'unmade',
+        createdAt: Date.now()
+      });
+      save(); closeModal(); renderGallery($('#view')); toast('已添加到图库', 'success');
+    };
+  }
+  // 保持比例缩放图片为 data URL（不裁剪），用于图库缩略图
+  function fitImageToDataURL(file, maxEdge = 900) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
+        const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', 0.82));
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('图片加载失败')); };
+      img.src = url;
+    });
   }
 
   /* ===================== 16. 设置（色卡映射管理 + 数据 + 视觉AI） ===================== */
