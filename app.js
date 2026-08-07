@@ -3286,12 +3286,20 @@
         </div>
       </div>
       <div class="mt-2 space-y-1.5">
-        <input class="g-e-name w-full text-sm font-bold px-2 py-1 rounded-lg bg-white/70 border border-mk-sand" data-id="${g.id}" value="${esc(g.name)}" placeholder="名称（必填）">
-        <input class="g-e-platform w-full text-xs px-2 py-1 rounded-lg bg-white/70 border border-mk-sand" data-id="${g.id}" value="${esc(g.platform || '')}" placeholder="平台 / 来源">
-        <div class="flex items-center gap-1.5">
+        <label class="flex items-center gap-1.5">
+          <span class="text-xs text-mk-sub shrink-0 w-10 text-right">名字</span>
+          <input class="g-e-name flex-1 text-sm font-bold px-2 py-1 rounded-lg bg-white/70 border border-mk-sand" data-id="${g.id}" value="${esc(g.name)}" placeholder="名称（必填）">
+        </label>
+        <label class="flex items-center gap-1.5">
+          <span class="text-xs text-mk-sub shrink-0 w-10 text-right">来源</span>
+          <input class="g-e-platform flex-1 text-xs px-2 py-1 rounded-lg bg-white/70 border border-mk-sand" data-id="${g.id}" value="${esc(g.platform || '')}" placeholder="平台 / 来源">
+        </label>
+        <label class="flex items-center gap-1.5">
+          <span class="text-xs text-mk-sub shrink-0 w-10 text-right">作者</span>
           <input class="g-e-author flex-1 text-xs px-2 py-1 rounded-lg bg-white/70 border border-mk-sand" data-id="${g.id}" value="${esc(g.author || '')}" placeholder="作者">
-          <label class="flex items-center gap-1 text-[11px] whitespace-nowrap"><input class="g-e-made" type="checkbox" data-id="${g.id}" ${made ? 'checked' : ''}>已拼</label>
-        </div>
+          <span class="text-xs text-mk-sub shrink-0">已拼</span>
+          <input class="g-e-made" type="checkbox" data-id="${g.id}" ${made ? 'checked' : ''}>
+        </label>
         <div class="flex gap-1.5 pt-1">
           <button class="g-e-save text-[11px] px-3 py-1.5 rounded-xl bg-mk-rose text-white font-semibold" data-id="${g.id}">保存</button>
           <button class="g-e-cancel text-[11px] px-3 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" data-id="${g.id}">取消</button>
