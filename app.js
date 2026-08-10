@@ -1348,37 +1348,51 @@
     const gEl = $('#restock-total-g');
     if (gEl) gEl.textContent = totalG;
   }
+  // 从当前补货清单表格 DOM 读取实际条目，避免内存变量不同步导致误报空
+  function readRestockItemsFromDOM() {
+    const rows = $$('#restock-panel tbody tr');
+    const items = [];
+    rows.forEach(tr => {
+      const numEl = tr.querySelector('td:first-child span:last-child');
+      const qtyEl = tr.querySelector('.restock-qty');
+      if (!numEl || !qtyEl) return;
+      const num = numEl.textContent.trim();
+      const portions = parseInt(qtyEl.value, 10) || 1;
+      if (num) items.push({ num, portions });
+    });
+    return items;
+  }
   function restockInOneClick() {
-    if (!restockItems || !restockItems.length) return toast('清单为空，无法入库', 'warn');
+    const items = readRestockItemsFromDOM();
+    if (!items.length) return toast('清单为空，无法入库', 'warn');
     let totalQty = 0;
-    const n = restockItems.length;
-    restockItems.forEach(num => {
+    items.forEach(({ num, portions }) => {
       const b = beadByNumber(num);
       if (!b) return;
-      const portions = restockPortions[num] ?? 1;
       const qty = portions * restockPerQty;
       b.stock += qty;
       addLog('入库', b, qty, '补货清单一键入库（' + portions + '份 × ' + restockPerQty + '颗）');
       totalQty += qty;
     });
     save();
-    const msg = '已入库 ' + n + ' 色，共 ' + totalQty + ' 颗';
+    const msg = '已入库 ' + items.length + ' 色，共 ' + totalQty + ' 颗';
     restockItems = null;
-    renderDashboard(v);
+    restockPortions = {};
+    renderDashboard($('#view'));
     toast(msg, 'success');
   }
   function copyRestockList() {
-    if (!restockItems || !restockItems.length) return toast('清单为空，没有可复制的补货内容', 'warn');
+    const items = readRestockItemsFromDOM();
+    if (!items.length) return toast('清单为空，没有可复制的补货内容', 'warn');
     const lines = ['补货清单（每份 ' + restockPerQty + ' 颗）', '色号\t份数\t颗数'];
     let totalP = 0, totalG = 0;
-    restockItems.forEach(num => {
+    items.forEach(({ num, portions }) => {
       const b = beadByNumber(num);
       if (!b) return;
-      const p = restockPortions[num] ?? 1;
-      const g = p * restockPerQty;
-      totalP += p;
+      const g = portions * restockPerQty;
+      totalP += portions;
       totalG += g;
-      lines.push(b.colorNumber + '\t' + p + '\t' + g);
+      lines.push(b.colorNumber + '\t' + portions + '\t' + g);
     });
     lines.push('总份数\t' + totalP + '\t总颗数\t' + totalG);
     const text = lines.join('\n');
@@ -4181,6 +4195,10 @@
             </div>
             <p id="p-hl-tip" class="text-[11px] text-mk-sub mb-2 ${pHighlight ? '' : 'hidden'}">🔍 正在高亮：<b>${pHighlight || ''}</b>（点图纸或此按钮取消）</p>
             <div id="p-bom"></div>
+            <details id="p-palette" class="mt-3 ${pPaletteReport.length ? '' : 'hidden'}">
+              <summary class="cursor-pointer text-xs text-mk-sub hover:text-mk-ink select-none">📊 色彩映射（识别图色 → 色卡号，点开展开）</summary>
+              <div id="p-palette-body" class="mt-2 p-2 rounded-lg bg-white/40 max-h-48 overflow-auto"></div>
+            </details>
             <label class="text-sm block mt-3">图纸名称（用于导出文件名）
               <input id="p-name" type="text" placeholder="留空则自动命名" value="${escapeHtml(pName)}" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand">
             </label>
@@ -5358,22 +5376,22 @@
     pLastDetectedColors = detectedKeys.size;
 
     // === 第三遍: 每 cell 量化 → 全局调色板 → 色号 ===
-    // 同时收集配色报告 (top 10 量化色)
+    // 同时收集配色报告 (top 12 量化色，按占比降序)
     const reportArr = [];
-    let totalMapped = 0;
     for (const [qk, agg] of detectedAgg) {
       const beadCode = paletteMap.get(qk);
-      const [br, bg, bb] = [agg.sr / agg.n, agg.sg / agg.n, agg.sb / agg.n];
-      reportArr.push({ qk, n: agg.n, rgb: [br, bg, bb], beadCode });
-      totalMapped += agg.n;
+      const r = Math.round(agg.sr / agg.n), g = Math.round(agg.sg / agg.n), b = Math.round(agg.sb / agg.n);
+      reportArr.push({ qk, n: agg.n, r, g, b, beadCode });
     }
+    const totalMapped = reportArr.reduce((s, x) => s + x.n, 0);
     reportArr.sort((a, b) => b.n - a.n);
-    pPaletteReport = reportArr.map(x => ({
+    pPaletteReport = reportArr.slice(0, 12).map(x => ({
       pct: Math.round(100 * x.n / Math.max(1, totalMapped)),
-      r: x.rgb[0] | 0, g: x.rgb[1] | 0, b: x.rgb[2] | 0,
+      r: x.r, g: x.g, b: x.b,
       beadCode: x.beadCode,
-      hex: rgbToHex(x.rgb[0], x.rgb[1], x.rgb[2])
+      hex: rgbToHex(x.r, x.g, x.b)
     }));
+    renderPaletteReportPanel();
 
     const cells = [];
     for (const rowRgb of tmp_cells) {
@@ -5420,23 +5438,22 @@
     const total = pCols * pRows;
     const beadCount = (state.beads && state.beads.length) || 0;
     const detected = pLastDetectedColors || 0;
-    // 当前剪裁区比例（用于提示「把网格调到接近这个比例」）
+    // 当前剪裁区比例（用于提示"把网格调到接近这个比例"）
     const cropW = pImageCrop ? pImageCrop.w : (pImage ? pImage.naturalWidth : 1);
     const cropH = pImageCrop ? pImageCrop.h : (pImage ? pImage.naturalHeight : 1);
     const cropRatio = (cropW / cropH).toFixed(2);
     const cellPxW = (cropW / pCols).toFixed(1), cellPxH = (cropH / pRows).toFixed(1);
-    const reportLines = (pPaletteReport || []).slice(0, 8).map(x => {
-      const swatch = `■`;
-      return `${swatch} #${x.hex} (${x.r},${x.g},${x.b})  →  ${x.beadCode || '?'}  ${x.pct}%`;
-    }).join('\n');
-    const reportBlock = reportLines && !fromAuto ? `\n📊 色彩映射（前 8 种）：\n${reportLines}` : '';
+
+    // 紧凑的"色彩映射"摘要：只列色号+占比（不打印 RGB/hex，省行数，详细报告渲染到下方面板）
+    const topPalette = (pPaletteReport || []).slice(0, 5).map(x => `${x.beadCode || '?'}·${x.pct}%`).join(' · ');
+    const paletteSummary = topPalette ? `  Top5: ${topPalette}` : '';
 
     if (fromAuto) {
       // 静默场景：仅给一行简洁反馈
       if (filled === 0) {
         toast(`⚠️ ${pCols}×${pRows} 全空 — 检查色卡或缩小网格/调整剪裁`, 'warn', 4000);
       } else {
-        toast(`🔄 自动重算 ${pCols}×${pRows}，${filled} 格匹配 / ${empty} 格空`, 'info', 2200);
+        toast(`🔄 自动重算 ${pCols}×${pRows}，匹配 ${filled} 格${paletteSummary}`, 'info', 2400);
       }
       return;
     }
@@ -5450,20 +5467,48 @@
       if (!pImageCrop || (pImageCrop.x === 0 && pImageCrop.y === 0 && pImageCrop.w >= (pImage.naturalWidth - 1) && pImageCrop.h >= (pImage.naturalHeight - 1))) {
         tips.push(`④ 当前未剪裁, 整张图含大量白底 — 点「✂️ 剪裁」框出内容区`);
       }
-      toast(`⚠️ 没匹配到任何色卡（共 ${total} 格全空）\n图检测到 ${detected} 种主色 / 你的色卡 ${beadCount} 种\n${tips.join('\n')}${reportBlock}`, 'warn', 12000);
+      toast(`⚠️ 没匹配到任何色卡（${total} 格全空）\n图检测到 ${detected} 种主色 / 你的色卡 ${beadCount} 种\n${tips.join('\n')}${paletteSummary}`, 'warn', 6000);
     } else if (empty / total > 0.5) {
-      const tips2 = [`已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格`];
-      if (detected > beadCount * 2 && beadCount < 20) tips2.push(`图检测到 ${detected} 种主色, 但色卡只有 ${beadCount} 种`);
-      if (cellPxW < 12 || cellPxH < 12) tips2.push(`每格仅约 ${cellPxW}×${cellPxH} 原图像素（<12px），识别精度受限 — 把网格调小到 30~40 列`);
-      else tips2.push(`建议把目标网格 ${pCols}×${pRows} 调到接近剪裁区比例 ${cropRatio}:1`);
-      toast(`⚠️ ${tips2.join('\n')}${reportBlock}\n🧭 坐标映射: 剪裁 ${cropW}×${cropH} → 画布 ${pCols}×${pRows}, 每格 ≈ ${cellPxW}×${cellPxH}px`, 'warn', 12000);
+      const tips2 = [`匹配 ${filled} / 空 ${empty}（${total} 格），检测 ${detected} 种主色`];
+      if (detected > beadCount * 2 && beadCount < 20) tips2.push(`色卡 ${beadCount} 种 < 检测 ${detected} 种 — 颜色卡里导入更多`);
+      if (cellPxW < 12 || cellPxH < 12) tips2.push(`每格仅 ${cellPxW}×${cellPxH}px（<12），识别精度受限 — 把网格调小到 30~40 列`);
+      else tips2.push(`建议把 ${pCols}×${pRows} 调到接近剪裁比例 ${cropRatio}:1`);
+      toast(`⚠️ ${tips2.join('\n')}${paletteSummary}`, 'warn', 5000);
     } else {
-      const okLines = [
-        `✅ 已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格（图中检测到 ${detected} 种主色）`,
-        `🧭 剪裁 ${cropW}×${cropH} → 画布 ${pCols}×${pRows}, 每格 ≈ ${cellPxW}×${cellPxH}px（hover 单元格查具体原图坐标段）`
-      ];
-      toast(okLines.join('\n') + reportBlock, 'success', 12000);
+      // 成功路径：2 行 + 紧凑摘要
+      toast(`✅ 已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格（检测 ${detected} 种主色）\n🎨 hover 网格看具体色号；详细色彩映射在下方面板展开`, 'success', 4000);
     }
+  }
+  // 渲染"色彩映射"详情面板（BOM 下方的折叠区），只展示识别到的主色 + 占色卡号 + 占比。
+  // 当 pPaletteReport 为空时折叠区自动隐藏。
+  function renderPaletteReportPanel() {
+    const wrap = $('#p-palette');
+    const body = $('#p-palette-body');
+    if (!wrap || !body) return;
+    if (!pPaletteReport || !pPaletteReport.length) {
+      wrap.classList.add('hidden');
+      body.innerHTML = '';
+      return;
+    }
+    wrap.classList.remove('hidden');
+    const totalShown = pPaletteReport.reduce((s, x) => s + x.pct, 0);
+    body.innerHTML = `
+      <table class="w-full text-xs leading-tight">
+        <thead><tr class="text-mk-sub text-left">
+          <th class="py-1 pr-1">■</th><th class="py-1 pr-1">HEX</th><th class="py-1 pr-1">RGB</th>
+          <th class="py-1 pr-1">→ 色号</th><th class="py-1 pr-1 text-right">%</th><th class="py-1">色块</th>
+        </tr></thead>
+        <tbody>
+          ${pPaletteReport.map(x => `<tr class="border-t border-mk-sand/40">
+            <td class="py-1 pr-1 font-mono">${escapeHtml(x.hex)}</td>
+            <td class="py-1 pr-1 text-mk-sub">${x.r},${x.g},${x.b}</td>
+            <td class="py-1 pr-1 font-semibold">${escapeHtml(x.beadCode || '?')}</td>
+            <td class="py-1 pr-1 text-right tabular-nums">${x.pct}%</td>
+            <td class="py-1"><span class="inline-block w-6 h-3 rounded align-middle border border-mk-sand/60" style="background:${x.hex}"></span></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      <p class="text-[11px] text-mk-sub mt-2">前 ${pPaletteReport.length} 色共占 ${totalShown}%（剩余 ${100 - totalShown}% 为背景白/网格）</p>`;
   }
   function patternExportPNG() {
     const safe = patternSafeName(pName);
