@@ -915,6 +915,25 @@
       .map(c => ({ hex: (c.hex || '').trim(), code: (c.code || '').trim() }))
       .filter(c => /^#?[0-9a-fA-F]{6}$/.test(c.hex) || /^#[0-9a-fA-F]{3}$/.test(c.hex));
   }
+  // 单块模式：图例条已切成独立小图，每张只含一个色块。prompt 强调「只有一个色块」，
+  // 让模型专注读出该块主体色与印字，避免把间隔/边框当色块。
+  async function callSingleLegendVisionAPI(dataUrl, apiKey, model, baseUrl) {
+    const prompt = `这张图是从拼豆图纸颜色图例中裁剪出来的「单个色块」区域，里面应当只包含一个纯色填充的颜色方块，方块上可能印有该颜色对应的色号或字母编号。
+
+任务：识别这个色块的属性。
+
+严格要求：
+1. hex 取该色块中心的「主体填充色」，不要取文字颜色、边框或阴影。
+2. code 是该色块上「印刷的编号/字母/短码」（如 "C25"、"W1"）。若看不清或没有印字，填空字符串 ""，绝对不要猜测编造。
+3. 只返回一个 JSON 对象，不要任何额外文字或 Markdown：{"hex":"#RRGGBB","code":"..."}`;
+    const parsed = await callVLM(dataUrl, apiKey, model, prompt, baseUrl);
+    // 兼容返回纯数组 [{}] 与对象 {hex,code} 两种形态
+    const obj = (Array.isArray(parsed) ? parsed[0] : parsed) || {};
+    const hex = (obj.hex || '').trim();
+    const code = (obj.code || '').trim();
+    if (!/^#?[0-9a-fA-F]{6}$/.test(hex) && !/^#[0-9a-fA-F]{3}$/.test(hex)) return { hex: '', code: '' };
+    return { hex, code };
+  }
   // 将归一化区域裁剪为独立图片 dataURL（用于把图例区域单独发给视觉模型）
   function cropRegionToDataURL(img, region) {
     const { canvas, w, h } = createAnalysisCanvas(img, 1600);
@@ -933,6 +952,30 @@
     // 输出 JPEG 减小 base64 体积，避免 PNG 无压缩导致 body 过大/智谱 400
     return c.toDataURL('image/jpeg', 0.9);
   }
+  // 把图例区域按列切成 N 个独立色块小图（用于「按列逐个识别」提升密集小色块的准确率）。
+  // region 为归一化的图例区域；index 从 0 开始；返回单个色块的 dataURL，剔除左右边界各 8%
+  // 以避开网格线/分隔，避免把相邻色块边缘混入。
+  function cropColumnToDataURL(img, region, index, cols) {
+    const { canvas, w, h } = createAnalysisCanvas(img, 1600);
+    const x0 = Math.max(0, Math.round(region.x * w));
+    const y0 = Math.max(0, Math.round(region.y * h));
+    const x1 = Math.min(w, Math.round((region.x + region.w) * w));
+    const y1 = Math.min(h, Math.round((region.y + region.h) * h));
+    const cw = Math.max(1, x1 - x0), ch = Math.max(1, y1 - y0);
+    // 每列宽度（含间隔），切出该列中心区
+    const colW = cw / cols;
+    const pad = colW * 0.08; // 两侧各剔除 8%，避开网格/分隔
+    const cx0 = Math.round(x0 + index * colW + pad);
+    const cx1 = Math.round(x0 + (index + 1) * colW - pad);
+    const ccw = Math.max(1, cx1 - cx0);
+    // 放大到足够清晰（短边放大到 ~600px），让模型看清颜色/印字
+    const upscale = Math.max(1, Math.ceil(600 / Math.min(ccw, ch)));
+    const c = document.createElement('canvas');
+    c.width = Math.min(ccw * upscale, 1600);
+    c.height = Math.min(ch * upscale, 1600);
+    c.getContext('2d').drawImage(canvas, cx0, y0, ccw, ch, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.92);
+  }
   // 异步加载图片为 HTMLImageElement
   function loadImage(src) {
     return new Promise((resolve, reject) => {
@@ -943,24 +986,46 @@
     });
   }
   // 用视觉大模型识别图例：裁剪图例区 → 调 VLM 读色 → 映射成标准色号清单
-  async function aiParseLegend(img, region, baseUrl) {
+  // cols>1 时启用「按列逐个识别」：把图例条切成 cols 个独立色块小图，每张单独发 VLN，
+  // 几乎零漏色（代价是 API 调用次数 = cols）。cols<=1 时走整条图例识别（兜底）。
+  async function aiParseLegend(img, region, baseUrl, cols) {
+    if (cols && cols > 1) {
+      const results = [];
+      for (let i = 0; i < cols; i++) {
+        const dataUrl = cropColumnToDataURL(img, region, i, cols);
+        if (!dataUrl || dataUrl.length < 400) continue;
+        try {
+          const raw = await callSingleLegendVisionAPI(dataUrl, state.settings.apiKey, state.settings.model, baseUrl);
+          results.push(raw);
+        } catch (e) {
+          console.warn('第' + (i + 1) + '列识别失败：', e.message);
+          // 单块失败不影响整体，留空补位（保证位置对齐）
+          results.push({ hex: '', code: '' });
+        }
+      }
+      return buildLegendFromColors(results, cols);
+    }
+    // 兜底：整条图例一次识别
     const dataUrl = cropRegionToDataURL(img, region);
     if (!dataUrl || dataUrl.length < 500) throw new Error('裁剪出的图例区为空/过小，请重新框选图例区域');
     const raw = await callLegendVisionAPI(dataUrl, state.settings.apiKey, state.settings.model, baseUrl);
+    return buildLegendFromColors(raw, raw.length || undefined);
+  }
+  // 把模型返回的 [{hex,code}] 映射为标准色号清单
+  function buildLegendFromColors(raw, estimatedCols) {
     const out = [];
     for (const c of raw) {
       let hex = (c.hex || '').trim();
-      if (hex && !hex.startsWith('#')) hex = '#' + hex;
+      if (!hex) continue; // 该列未识别到颜色（图像为空/识别失败），跳过不占位，避免噪声
+      if (!hex.startsWith('#')) hex = '#' + hex;
       const rgb = hexToRgb(hex);
       if (!rgb || rgb.some(v => isNaN(v))) continue;
       const [r, g, b] = rgb;
       let colorNumber = '', colorName = '';
-      // 若 AI 读到了色块上印的编号，优先按编号精确匹配自有色卡
       if (c.code) {
         const bead = beadByCode(c.code);
         if (bead) { colorNumber = bead.colorNumber; colorName = bead.colorName; }
       }
-      // 否则按色块主体颜色就近匹配标准色卡
       if (!colorNumber) {
         const m = mapColorToStandard(r, g, b);
         colorNumber = m.colorNumber || '';
@@ -968,7 +1033,7 @@
       }
       out.push({ r, g, b, hex: rgbToHex(r, g, b), colorNumber, colorName, count: 0 });
     }
-    out.estimatedCols = out.length;
+    out.estimatedCols = estimatedCols || out.length;
     return out;
   }
 
@@ -2561,21 +2626,23 @@
       if (!viaProxy && !(state.settings.enableVision && state.settings.apiKey)) return toast('当前无法使用云端视觉：请使用内置代理（API 地址留空）或先在设置填写 API Key 与端点', 'warn', 4000);
       if (!tempImage) return toast('请先上传图片', 'error');
       if (!tempCropRegion) return toast('请先在图上框选图例区域', 'error');
+      // 读取图例列数：用户填了就用它做「按列逐个识别」，否则整条一次识别
+      const colsInput = $('#legend-cols');
+      const cols = colsInput && colsInput.value ? parseInt(colsInput.value, 10) : 0;
       const baseUrl = state.settings.visionBaseUrl || '';
       aiLegendBtn.disabled = true;
       const oldText = aiLegendBtn.textContent;
-      aiLegendBtn.textContent = '⏳ AI识别中…';
+      aiLegendBtn.textContent = cols > 1 ? `⏳ 逐列识别 ${cols} 块…` : '⏳ AI识别中…';
       try {
         const img = await loadImage(tempImage);
-        tempLegendMap = await aiParseLegend(img, tempCropRegion, baseUrl);
+        tempLegendMap = await aiParseLegend(img, tempCropRegion, baseUrl, cols);
         tempLegendRegion = tempCropRegion;   // 锁定图例区，图案区留给第二步框选
         tempCropRegion = null;
         tempDetectedVLines = []; tempDetectedHLines = [];
-        const colsInput = $('#legend-cols');
         if (colsInput && !colsInput.value) colsInput.value = tempLegendMap.estimatedCols || '';
         drawEditor();
         renderRecognize(v);
-        toast(`AI 已识别 ${tempLegendMap.length} 个图例色，请再框选图案区域后点「计算整图用量」`, tempLegendMap.length ? 'success' : 'warn');
+        toast(`AI 已识别 ${tempLegendMap.length} 个图例色（${cols > 1 ? '按列逐个识别' : '整条识别'}），请再框选图案区域后点「计算整图用量」`, tempLegendMap.length ? 'success' : 'warn');
       } catch (err) {
         console.error(err);
         toast('AI 识别失败：' + (err.message || err), 'error');
