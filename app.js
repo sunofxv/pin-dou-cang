@@ -120,11 +120,11 @@
       settings: {
         enableVision: true, apiKey: '', model: 'glm-4v-plus', visionBaseUrl: '',
         sampleTolerance: 48, scaleFactor: 1,
-        // 识别模式：'auto' = 智能识别（自动框图+自动行列，最省事）；'grid' = 手动格子数；'pixel' = 像素聚类
-        recognizeMode: 'auto',
-        gridCols: 80, gridRows: 80,
-        // 单元格高宽比（行距 = 列距 × cellAspect）。MARD 标准图纸默认 0.555 ≈ 该图实测行列距比，
-        // 不同图纸若行数不对，可在此微调（一般 0.45~0.7）。
+        // 识别模式：本应用仅保留「图例识别」一种模式——框选图纸色块图例，
+        // 由云端视觉 AI 读取每个色块的色号与下方数量，直接生成色号清单并扣减库存。
+        recognizeMode: 'legend',
+        gridCols: 0, gridRows: 0,
+        // 单元格高宽比（仅图例用量统计时的兜底参考，默认 0.555）。
         cellAspect: 0.555,
         // 全局补货阈值：库存低于此值即触发“低库存/需补货”预警（可在设置中调整，默认 100）。
         // 单个色号在「豆子仓库」里可单独设置覆盖值（阈值填 0 = 使用此全局值）。
@@ -135,8 +135,8 @@
 
   /* ===================== 2. 存储与会话状态 ===================== */
   let state = load();
-  // 旧版 aligned 模式已移除，兼容降级到 auto（智能识别）
-  if (state.settings.recognizeMode === 'aligned') state.settings.recognizeMode = 'auto';
+  // 旧版模式（auto/grid/pixel/aligned）已移除，统一为图例识别模式。
+  if (state.settings.recognizeMode !== 'legend') state.settings.recognizeMode = 'legend';
 
   function load() {
     try {
@@ -495,17 +495,6 @@
     const l = brightness(r, g, b), s = saturation(r, g, b);
     return l > 0.90 || l < 0.15 || s < 0.12;
   }
-  // 从原图指定比例位置取 1 个像素颜色（预览图缩放后点击用）
-  function getPixelColorFromImage(img, xRatio, yRatio) {
-    const canvas = document.createElement('canvas');
-    canvas.width = img.width; canvas.height = img.height;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0);
-    const px = Math.min(img.width - 1, Math.max(0, Math.round(xRatio * img.width)));
-    const py = Math.min(img.height - 1, Math.max(0, Math.round(yRatio * img.height)));
-    const d = ctx.getImageData(px, py, 1, 1).data;
-    return { r: d[0], g: d[1], b: d[2], hex: rgbToHex(d[0], d[1], d[2]) };
-  }
   function fmtTime(ts) {
     const d = new Date(ts);
     const p = n => String(n).padStart(2, '0');
@@ -577,195 +566,6 @@
    *   3) 每个桶 = 图纸中的一种颜色；桶的像素数 ≈ 需要的豆子数。
    *   scaleFactor（默认 1）可用于“每多少像素折算 1 颗豆”的微调。
    * ==================================================================== */
-  function clusterImageColors(img, tolerance, ignoreColors = []) {
-    const MAX = 300;
-    let { width: w, height: h } = img;
-    const scale = Math.min(1, MAX / Math.max(w, h));
-    const cw = Math.max(1, Math.round(w * scale));
-    const ch = Math.max(1, Math.round(h * scale));
-
-    const canvas = document.createElement('canvas');
-    canvas.width = cw; canvas.height = ch;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0, cw, ch);
-    const data = ctx.getImageData(0, 0, cw, ch).data;
-
-    const buckets = []; // { r,g,b,count }
-    for (let i = 0; i < data.length; i += 4) {
-      const a = data[i + 3];
-      if (a < 128) continue; // 跳过透明背景
-      const r = data[i], g = data[i + 1], b = data[i + 2];
-
-      // 跳过用户标记的忽略颜色（背景/网格线）
-      let ignored = false;
-      for (const ig of ignoreColors) {
-        if (colorDist(r, g, b, ig.r, ig.g, ig.b) <= (ig.tolerance || 24)) { ignored = true; break; }
-      }
-      if (ignored) continue;
-
-      let hit = null;
-      for (const bk of buckets) {
-        if (colorDist(r, g, b, bk.r, bk.g, bk.b) <= tolerance) { hit = bk; break; }
-      }
-      if (hit) {
-        // 用 running average 更新桶心颜色，减少光照/抗锯齿造成的漂移
-        hit.r = Math.round((hit.r * hit.count + r) / (hit.count + 1));
-        hit.g = Math.round((hit.g * hit.count + g) / (hit.count + 1));
-        hit.b = Math.round((hit.b * hit.count + b) / (hit.count + 1));
-        hit.count++;
-      } else buckets.push({ r, g, b, count: 1 });
-    }
-    return buckets;
-  }
-
-  /* ====================================================================
-   * 6.5 核心算法 A2：格子中心采样（专为带色号标注的图纸设计）
-   * --------------------------------------------------------------------
-   * 问题：很多拼豆图纸在每个格子里印有“色号数字/字母”。
-   * 如果直接做像素聚类，文字颜色会被当成独立颜色，导致结果零散、主色被稀释。
-   * 解决：用户输入图纸的列数(rows)和行数(cols)，程序把图等分为若干格子，
-   * 对每个格子的中心小区域取色，并取该区域内的“众数颜色”作为该格子的代表色。
-   * 这样能避开格子边缘的网格线和格子内部的文字标注，得到接近真实豆子分布的统计。
-   * ==================================================================== */
-  function sampleByGrid(img, cols, rows, ignoreColors = [], tolerance = 24) {
-    const MAX = 1200; // 格子采样需要更高分辨率，才能区分格子和文字
-    let { width: w, height: h } = img;
-    const scale = Math.min(1, MAX / Math.max(w, h));
-    const cw = Math.max(1, Math.round(w * scale));
-    const ch = Math.max(1, Math.round(h * scale));
-
-    const canvas = document.createElement('canvas');
-    canvas.width = cw; canvas.height = ch;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0, cw, ch);
-    const data = ctx.getImageData(0, 0, cw, ch).data;
-
-    const cellW = cw / cols;
-    const cellH = ch / rows;
-    const cellColors = []; // 每个格子的代表色 {r,g,b,count:1}
-
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        // 取格子中心 36% 区域，避开网格线边缘和大部分文字
-        const cx = (x + 0.5) * cellW;
-        const cy = (y + 0.5) * cellH;
-        const rw = cellW * 0.36;
-        const rh = cellH * 0.36;
-        const sx = Math.max(0, Math.round(cx - rw / 2));
-        const sy = Math.max(0, Math.round(cy - rh / 2));
-        const ex = Math.min(cw, Math.round(cx + rw / 2));
-        const ey = Math.min(ch, Math.round(cy + rh / 2));
-
-        // 统计中心区域内每种颜色的出现次数，取众数
-        const freq = new Map(); // hex -> {r,g,b,count}
-        for (let py = sy; py < ey; py++) {
-          for (let px = sx; px < ex; px++) {
-            const idx = (py * cw + px) * 4;
-            const a = data[idx + 3];
-            if (a < 128) continue;
-            const r = data[idx], g = data[idx + 1], b = data[idx + 2];
-
-            // 跳过忽略色与自动背景色
-            let ignored = false;
-            for (const ig of ignoreColors) {
-              if (colorDist(r, g, b, ig.r, ig.g, ig.b) <= (ig.tolerance || 24)) { ignored = true; break; }
-            }
-            if (ignored || isGridBackgroundLike(r, g, b)) continue;
-
-            const hex = rgbToHex(r, g, b);
-            if (freq.has(hex)) freq.get(hex).count++;
-            else freq.set(hex, { r, g, b, count: 1 });
-          }
-        }
-
-        let best = null, bestCount = 0;
-        for (const v of freq.values()) {
-          if (v.count > bestCount) { best = v; bestCount = v.count; }
-        }
-        // 如果该格子中心区域剩下的主色仍然是背景/空白，整个格子跳过
-        if (best && isGridBackgroundLike(best.r, best.g, best.b)) continue;
-        // 关键：每个格子只计 1 颗豆，不要携带中心区域的像素数
-        if (best) cellColors.push({ r: best.r, g: best.g, b: best.b, count: 1 });
-      }
-    }
-
-    // 对格子代表色做二次轻聚类（合并相近色），得到最终颜色桶
-    // tolerance 使用用户设置的聚类容差，避免把同一色号因轻微色差拆成多行
-    const buckets = [];
-    for (const c of cellColors) {
-      let hit = null;
-      for (const bk of buckets) {
-        if (colorDist(c.r, c.g, c.b, bk.r, bk.g, bk.b) <= tolerance) { hit = bk; break; }
-      }
-      if (hit) {
-        hit.r = Math.round((hit.r * hit.count + c.r) / (hit.count + 1));
-        hit.g = Math.round((hit.g * hit.count + c.g) / (hit.count + 1));
-        hit.b = Math.round((hit.b * hit.count + c.b) / (hit.count + 1));
-        hit.count++; // 累加的是“格子数”，不是像素数
-      } else buckets.push({ r: c.r, g: c.g, b: c.b, count: 1 });
-    }
-    return buckets;
-  }
-
-  /* 在框选区域内均匀采样（兜底：没检测到网格线时用） */
-  function sampleByGridInRegion(img, region, cols, rows, ignoreColors = [], tolerance = 24) {
-    const MAX = 1200;
-    const { w, h, ctx } = createAnalysisCanvas(img, MAX);
-    const data = ctx.getImageData(0, 0, w, h).data;
-    const x0 = region.x * w, y0 = region.y * h;
-    const rw = region.w * w, rh = region.h * h;
-    const cellW = rw / cols, cellH = rh / rows;
-    const cellColors = [];
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        const cx = x0 + (x + 0.5) * cellW;
-        const cy = y0 + (y + 0.5) * cellH;
-        const halfX = cellW * 0.30, halfY = cellH * 0.30;
-        const sx = Math.max(0, Math.round(cx - halfX));
-        const sy = Math.max(0, Math.round(cy - halfY));
-        const ex = Math.min(w, Math.round(cx + halfX));
-        const ey = Math.min(h, Math.round(cy + halfY));
-        const freq = new Map();
-        for (let py = sy; py < ey; py++) {
-          for (let px = sx; px < ex; px++) {
-            const idx = (py * w + px) * 4;
-            const a = data[idx + 3];
-            if (a < 128) continue;
-            const r = data[idx], g = data[idx + 1], b = data[idx + 2];
-            let ignored = false;
-            for (const ig of ignoreColors) {
-              if (colorDist(r, g, b, ig.r, ig.g, ig.b) <= (ig.tolerance || 24)) { ignored = true; break; }
-            }
-            if (ignored || isGridBackgroundLike(r, g, b)) continue;
-            const hex = rgbToHex(r, g, b);
-            if (freq.has(hex)) freq.get(hex).count++;
-            else freq.set(hex, { r, g, b, count: 1 });
-          }
-        }
-        let best = null, bestCount = 0;
-        for (const v of freq.values()) {
-          if (v.count > bestCount) { best = v; bestCount = v.count; }
-        }
-        if (best && isGridBackgroundLike(best.r, best.g, best.b)) continue;
-        if (best) cellColors.push({ r: best.r, g: best.g, b: best.b, count: 1 });
-      }
-    }
-    const buckets = [];
-    for (const c of cellColors) {
-      let hit = null;
-      for (const bk of buckets) {
-        if (colorDist(c.r, c.g, c.b, bk.r, bk.g, bk.b) <= tolerance) { hit = bk; break; }
-      }
-      if (hit) {
-        hit.r = Math.round((hit.r * hit.count + c.r) / (hit.count + 1));
-        hit.g = Math.round((hit.g * hit.count + c.g) / (hit.count + 1));
-        hit.b = Math.round((hit.b * hit.count + c.b) / (hit.count + 1));
-        hit.count++;
-      } else buckets.push({ r: c.r, g: c.g, b: c.b, count: 1 });
-    }
-    return buckets;
-  }
-
   /* ====================================================================
    * 7. 核心算法 B：色号映射（采样 RGB → 标准拼豆色号）
    * --------------------------------------------------------------------
@@ -886,22 +686,6 @@
     const j = await res.json();
     const content = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '{}';
     return extractJsonContent(content);
-  }
-  async function callVisionAPI(dataUrl, apiKey, model, baseUrl) {
-    const prompt = `这是一张拼豆(Perler/Hama)图纸。请识别图中每一种颜色对应的像素(豆子)数量，并尽量映射为拼豆标准色号。
-只返回一个 JSON 对象，形如 {"items":[{"colorNumber":"色号或空串","colorName":"颜色名","hex":"#RRGGBB","count":数量}]}，不要输出任何其他文字。`;
-    const parsed = await callVLM(dataUrl, apiKey, model, prompt, baseUrl);
-    return (parsed.items || []).map(it => ({
-      r: hexToRgb(it.hex || '#000000')[0],
-      g: hexToRgb(it.hex || '#000000')[1],
-      b: hexToRgb(it.hex || '#000000')[2],
-      count: Math.max(0, parseInt(it.count) || 0),
-      colorNumber: it.colorNumber || '',
-      colorName: it.colorName || '',
-      hex: it.hex || '#000000',
-      matched: !!it.colorNumber,
-      matchedBy: it.colorNumber ? 'VLM' : ''
-    }));
   }
   // 归一化单个图例条目：解析 hex / code / count，并防御模型把「内部色号」与「下方数量」互换
   function normalizeLegendItem(c) {
@@ -1091,12 +875,47 @@
     { key: 'settings',  label: '设置' }
   ];
   let currentView = 'dashboard';
+  let navMoreDocClickBound = false;
 
   function renderNav() {
-    $('#nav').innerHTML = VIEWS.map(v =>
-      `<button class="nav-btn px-2 sm:px-3 py-1 sm:py-1.5 rounded-xl text-xs sm:text-sm font-semibold text-mk-sub whitespace-nowrap ${v.key === currentView ? 'active' : 'hover:bg-white/60'}" data-view="${v.key}">${v.label}</button>`
+    const visibleCount = 4;
+    const visible = VIEWS.slice(0, visibleCount);
+    const more = VIEWS.slice(visibleCount);
+    const isCurrentHidden = more.some(v => v.key === currentView);
+    const moreMenuHtml = more.map(v =>
+      `<button class="nav-more-btn block w-full text-left px-3 py-2 text-xs font-semibold text-mk-sub hover:bg-mk-sand/40 ${v.key === currentView ? 'bg-mk-sand/60' : ''}" data-view="${v.key}">${v.label}</button>`
     ).join('');
+    $('#nav').innerHTML =
+      visible.map(v =>
+        `<button class="nav-btn px-2 sm:px-3 py-1 sm:py-1.5 rounded-xl text-xs sm:text-sm font-semibold text-mk-sub whitespace-nowrap ${v.key === currentView ? 'active' : 'hover:bg-white/60'}" data-view="${v.key}">${v.label}</button>`
+      ).join('') +
+      (more.length ? `<div class="relative sm:hidden">
+        <button id="nav-more" class="px-2 py-1 sm:py-1.5 rounded-xl text-xs sm:text-sm font-semibold text-mk-sub whitespace-nowrap ${isCurrentHidden ? 'active' : 'hover:bg-white/60'}">更多</button>
+        <div id="nav-more-menu" class="absolute right-0 top-full mt-1 w-28 py-1 rounded-xl bg-white shadow-soft border border-mk-sand hidden z-50">${moreMenuHtml}</div>
+      </div>` : '') +
+      more.map(v =>
+        `<button class="nav-btn hidden sm:inline-block px-2 sm:px-3 py-1 sm:py-1.5 rounded-xl text-xs sm:text-sm font-semibold text-mk-sub whitespace-nowrap ${v.key === currentView ? 'active' : 'hover:bg-white/60'}" data-view="${v.key}">${v.label}</button>`
+      ).join('');
     $$('#nav .nav-btn').forEach(btn => btn.onclick = () => switchView(btn.dataset.view));
+    const moreBtn = $('#nav-more');
+    const moreMenu = $('#nav-more-menu');
+    if (moreBtn && moreMenu) {
+      moreBtn.onclick = (e) => {
+        e.stopPropagation();
+        moreMenu.classList.toggle('hidden');
+      };
+      $$('#nav-more-menu .nav-more-btn').forEach(btn => btn.onclick = () => {
+        switchView(btn.dataset.view);
+        moreMenu.classList.add('hidden');
+      });
+      if (!navMoreDocClickBound) {
+        navMoreDocClickBound = true;
+        document.addEventListener('click', () => {
+          const m = $('#nav-more-menu');
+          if (m) m.classList.add('hidden');
+        });
+      }
+    }
     renderHeaderUser();
   }
 
@@ -1703,12 +1522,8 @@
 
   /* ===================== 13. 图纸识别上传页 ===================== */
   let tempImage = null;       // 已上传图片的 dataURL
-  let recognitionResult = []; // 识别结果数组（模态框校对用）
   let tempIgnoreColors = [];  // 本次识别手动标记的忽略颜色（背景/网格线）
-  let tempAlignPoints = [];   // （旧版十字格对齐点，已弃用，保留兼容）
-  let recognitionResultSampleInfo = ''; // 识别统计信息（弹窗顶部展示）
   let tempCropRegion = null;  // 当前选中的识别区域（归一化 0~1 的 {x,y,w,h}）
-  let tempDetectedRegions = []; // 自动检测到的候选图案区域
   let tempDetectedVLines = [];  // 选中区域内检测到的垂直网格线（归一化 0~1）
   let tempDetectedHLines = [];  // 选中区域内检测到的水平网格线（归一化 0~1）
   let tempDetectedFramePx = null; // 检测到的图纸边框（分析画布像素坐标 {gx0,gy0,gx1,gy1,aw,ah}），用于按行列数重排网格
@@ -1731,56 +1546,6 @@
   }
 
   // 检测图片中的候选网格区域，返回归一化矩形数组 {x,y,w,h}
-  function detectCandidateRegions(img) {
-    const { w, h, ctx } = createAnalysisCanvas(img, 500);
-    const data = ctx.getImageData(0, 0, w, h).data;
-    // 网格响应：暗色 + 局部梯度大
-    const score = new Float32Array(w * h);
-    for (let y = 1; y < h - 1; y++) {
-      for (let x = 1; x < w - 1; x++) {
-        const i = (y * w + x) * 4;
-        const lum = (data[i] + data[i + 1] + data[i + 2]) / 3;
-        const dark = 255 - lum;
-        const li = (y * w + (x - 1)) * 4, ri = (y * w + (x + 1)) * 4;
-        const ti = ((y - 1) * w + x) * 4, bi = ((y + 1) * w + x) * 4;
-        const gx = Math.abs(data[ri] + data[ri + 1] + data[ri + 2] - data[li] - data[li + 1] - data[li + 2]);
-        const gy = Math.abs(data[bi] + data[bi + 1] + data[bi + 2] - data[ti] - data[ti + 1] - data[ti + 2]);
-        score[y * w + x] = dark * 0.4 + Math.max(gx, gy) * 0.6;
-      }
-    }
-    // 滑动窗口找高分区域
-    const step = Math.max(12, Math.floor(Math.min(w, h) / 16));
-    const win = step * 2;
-    const windows = [];
-    for (let y = 0; y + win <= h; y += step) {
-      for (let x = 0; x + win <= w; x += step) {
-        let s = 0;
-        for (let yy = y; yy < y + win; yy++) {
-          for (let xx = x; xx < x + win; xx++) s += score[yy * w + xx];
-        }
-        windows.push({ x, y, w: win, h: win, score: s });
-      }
-    }
-    windows.sort((a, b) => b.score - a.score);
-    // 非极大值抑制
-    const picked = [];
-    for (const b of windows.slice(0, 24)) {
-      const bx1 = b.x + b.w, by1 = b.y + b.h;
-      let overlap = false;
-      for (const p of picked) {
-        const px1 = p.x + p.w, py1 = p.y + p.h;
-        const ix = Math.max(0, Math.min(bx1, px1) - Math.max(b.x, p.x));
-        const iy = Math.max(0, Math.min(by1, py1) - Math.max(b.y, p.y));
-        if (ix * iy > b.w * b.h * 0.5) { overlap = true; break; }
-      }
-      if (!overlap) picked.push(b);
-      if (picked.length >= 4) break;
-    }
-    const regions = picked.map(p => ({ x: p.x / w, y: p.y / h, w: p.w / w, h: p.h / h }));
-    if (!regions.length) regions.push({ x: 0.05, y: 0.05, w: 0.9, h: 0.9 });
-    return regions;
-  }
-
   // 1D 投影中找周期性峰（网格线）
   function findPeriodicPeaks(proj, minPeriod) {
     const smooth = proj.map((v, i) => {
@@ -2135,90 +1900,7 @@
   // 用检测到的网格线逐格中心采样：取每格中心 50% 区域的“众数颜色”（量化为 /8），
   // 跳过近白像素与背景色，再与 MARD 标准色号匹配。每个格子计 1 颗豆。
   // 该中心采样法在 80×74 标准图纸上实测 C25≈608（标注 598），远优于旧的 Blob 面积法。
-  function sampleByDetectedGrid(img, region, vLines, hLines, ignoreColors = [], tolerance = 24) {
-    const MAX = 1500;
-    const { w, h, ctx } = createAnalysisCanvas(img, MAX);
-    const data = ctx.getImageData(0, 0, w, h).data;
-    const frac = 0.5; // 中心区域占比：越大越接近整格（含文字/边界风险），越小越稳
-    const cellColors = [];
-    for (let yi = 0; yi < hLines.length - 1; yi++) {
-      for (let xi = 0; xi < vLines.length - 1; xi++) {
-        const lx = Math.round(vLines[xi] * w);
-        const rx = Math.round(vLines[xi + 1] * w);
-        const ty = Math.round(hLines[yi] * h);
-        const by = Math.round(hLines[yi + 1] * h);
-        if (lx >= rx || ty >= by) continue;
-        const cw = rx - lx, ch = by - ty;
-        const iw = Math.max(1, Math.round(cw * frac)), ih = Math.max(1, Math.round(ch * frac));
-        const sx = lx + ((cw - iw) >> 1), sy = ty + ((ch - ih) >> 1);
-        // 统计中心区域像素的众数颜色（量化到 /8 以抗轻微抗锯齿色差）
-        const freq = new Map();
-        for (let py = sy; py < sy + ih; py++) {
-          for (let px = sx; px < sx + iw; px++) {
-            const idx = (py * w + px) * 4;
-            const r = data[idx], g = data[idx + 1], b = data[idx + 2];
-            if ((r + g + b) / 3 > 236) continue; // 跳过近白
-            // 量化到 /8 后用 24 位整数做键（每通道 8 位，避免位移截断导致颜色错乱）
-            const key = ((r & 0xF8) << 16) | ((g & 0xF8) << 8) | (b & 0xF8);
-            freq.set(key, (freq.get(key) || 0) + 1);
-          }
-        }
-        if (!freq.size) continue;
-        let bestK = 0, bestC = 0;
-        for (const [k, c] of freq) { if (c > bestC) { bestC = c; bestK = k; } }
-        const r = (bestK >> 16) & 0xFF, g = (bestK >> 8) & 0xFF, b = bestK & 0xFF;
-        // 应用忽略色与背景过滤
-        let ignored = false;
-        for (const ig of ignoreColors) {
-          if (colorDist(r, g, b, ig.r, ig.g, ig.b) <= (ig.tolerance || 24)) { ignored = true; break; }
-        }
-        if (ignored || isGridBackgroundLike(r, g, b)) continue;
-        cellColors.push({ r, g, b, count: 1 });
-      }
-    }
-    // 二次聚合成桶
-    const buckets = [];
-    for (const c of cellColors) {
-      let hit = null;
-      for (const bk of buckets) {
-        if (colorDist(c.r, c.g, c.b, bk.r, bk.g, bk.b) <= tolerance) { hit = bk; break; }
-      }
-      if (hit) {
-        hit.r = Math.round((hit.r * hit.count + c.r) / (hit.count + 1));
-        hit.g = Math.round((hit.g * hit.count + c.g) / (hit.count + 1));
-        hit.b = Math.round((hit.b * hit.count + c.b) / (hit.count + 1));
-        hit.count++;
-      } else buckets.push({ r: c.r, g: c.g, b: c.b, count: 1 });
-    }
-    return buckets;
-  }
 
-  // 把“检测到的边框 + 指定行列数”重排成规整网格线，并写入全局变量（供预览叠加与识别复用）。
-  // 边框来自 detectGridLines 的分析画布像素坐标；行列数变化时仅缩放间距，原点/边框不变。
-  function applyGridFromFrame(cols, rows) {
-    if (!tempDetectedFramePx) return;
-    const f = tempDetectedFramePx;
-    // 等距跨满边框放置（与 detectGridLines 完全一致）：cols 个格子 => (cols-1) 个间距
-    const vx = (f.gx1 - f.gx0) / Math.max(1, cols - 1);
-    const vy = (f.gy1 - f.gy0) / Math.max(1, rows - 1);
-    const vLines = [], hLines = [];
-    for (let i = 0; i <= cols; i++) vLines.push((f.gx0 + i * vx) / f.aw);
-    for (let i = 0; i <= rows; i++) hLines.push((f.gy0 + i * vy) / f.ah);
-    tempDetectedVLines = vLines;
-    tempDetectedHLines = hLines;
-    tempCropRegion = { x: f.gx0 / f.aw, y: f.gy0 / f.ah, w: (f.gx1 - f.gx0) / f.aw, h: (f.gy1 - f.gy0) / f.ah };
-  }
-
-  // 智能识别：在全图上自动定位图纸边框并识别行列，结果写入全局变量并刷新预览。
-  function runAutoDetect(img, onDone) {
-    const res = detectGridLines(img, { x: 0, y: 0, w: 1, h: 1 });
-    tempDetectedFramePx = { gx0: res.frame.gx0, gy0: res.frame.gy0, gx1: res.frame.gx1, gy1: res.frame.gy1, aw: res.aw, ah: res.ah };
-    state.settings.gridCols = Math.max(1, res.cols);
-    state.settings.gridRows = Math.max(1, res.rows);
-    save();
-    applyGridFromFrame(state.settings.gridCols, state.settings.gridRows);
-    if (onDone) onDone(res);
-  }
 
   // 在编辑器画布上绘制图片、候选区域、选中区域与网格线
   function drawEditor() {
@@ -2236,32 +1918,6 @@
       const ctx = cv.getContext('2d');
       ctx.clearRect(0, 0, dw, dh);
       ctx.drawImage(img, 0, 0, dw, dh);
-      // 候选区域
-      tempDetectedRegions.forEach((r, i) => {
-        ctx.strokeStyle = tempCropRegion && tempCropRegion === r ? '#10b981' : '#f59e0b';
-        ctx.lineWidth = 2;
-        ctx.setLineDash([6, 4]);
-        ctx.strokeRect(r.x * dw, r.y * dh, r.w * dw, r.h * dh);
-        ctx.setLineDash([]);
-        ctx.fillStyle = tempCropRegion && tempCropRegion === r ? 'rgba(16,185,129,0.12)' : 'rgba(245,158,11,0.08)';
-        ctx.fillRect(r.x * dw, r.y * dh, r.w * dw, r.h * dh);
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 12px sans-serif';
-        ctx.fillText('图案 ' + (i + 1), (r.x * dw) + 4, (r.y * dh) + 14);
-      });
-      // 选中区域网格线
-      if (tempCropRegion && tempDetectedVLines.length && tempDetectedHLines.length) {
-        ctx.strokeStyle = 'rgba(244,114,182,0.55)';
-        ctx.lineWidth = 1;
-        tempDetectedVLines.forEach(lx => {
-          const x = lx * dw;
-          ctx.beginPath(); ctx.moveTo(x, tempCropRegion.y * dh); ctx.lineTo(x, (tempCropRegion.y + tempCropRegion.h) * dh); ctx.stroke();
-        });
-        tempDetectedHLines.forEach(ly => {
-          const y = ly * dh;
-          ctx.beginPath(); ctx.moveTo(tempCropRegion.x * dw, y); ctx.lineTo((tempCropRegion.x + tempCropRegion.w) * dw, y); ctx.stroke();
-        });
-      }
       // 图例模式：图例区(紫)与图案区(绿)分别绘制
       if (state.settings.recognizeMode === 'legend') {
         if (tempLegendRegion) {
@@ -2285,10 +1941,6 @@
           ctx.font = 'bold 12px sans-serif';
           ctx.fillText('图案区域', (tempCropRegion.x * dw) + 4, (tempCropRegion.y * dh) + 14);
         }
-      } else if (tempCropRegion) {
-        ctx.strokeStyle = '#10b981';
-        ctx.lineWidth = 2; ctx.setLineDash([]);
-        ctx.strokeRect(tempCropRegion.x * dw, tempCropRegion.y * dh, tempCropRegion.w * dw, tempCropRegion.h * dh);
       }
     };
     img.src = tempImage;
@@ -2304,63 +1956,29 @@
     v.innerHTML = `
       <div class="grid md:grid-cols-2 gap-4">
         <section class="mk-card rounded-2xl shadow-soft p-5">
-          <h2 class="text-xl font-bold mb-1">🖼️ 图纸识别</h2>
-          <p class="text-sm text-mk-sub mb-4">上传拼豆图纸，框选要识别的图案区域后自动检测格子。</p>
+          <h2 class="text-xl font-bold mb-1">🖼️ 图纸识别（图例模式）</h2>
+          <p class="text-sm text-mk-sub mb-4">上传拼豆图纸，框选底部的「颜色图例」条，由云端视觉 AI 自动读出色号与数量。</p>
 
           <label class="block border-2 border-dashed border-mk-brown rounded-2xl p-6 text-center cursor-pointer hover:bg-white/50 transition">
             <input id="img-input" type="file" accept="image/png,image/jpeg" class="hidden">
             <div class="text-4xl">📤</div>
             <div class="mt-2 font-semibold">点击上传图纸图片</div>
-            <div class="text-xs text-mk-sub">支持整张图含多个图案，框选其中一个即可</div>
+            <div class="text-xs text-mk-sub">框选图纸底部的色块图例（每个色块内印色号、下方印数量）</div>
           </label>
 
           <div id="preview" class="mt-4 ${tempImage ? '' : 'hidden'}">
             <div class="relative inline-block w-full">
               <canvas id="editor-canvas" class="w-full rounded-xl border border-mk-sand cursor-crosshair bg-white" style="max-height:360px;"></canvas>
-              <div id="editor-hint" class="text-[11px] text-mk-sub mt-1">🤖 智能识别模式下，上传后自动定位图纸并叠加网格，无需手动对齐；如需自定义，仍可拖拽框选或点「自动框选」。</div>
+              <div id="editor-hint" class="text-[11px] text-mk-sub mt-1">在图上拖拽框选<b>图例区域</b>（通常是一整条横向排列的色块）。紫框=图例区，绿框=可选的图案区（用于精确统计用量）。</div>
             </div>
             <div class="flex flex-wrap gap-2 mt-2">
-              <button id="auto-region" type="button" class="px-3 py-1.5 rounded-lg bg-mk-lav/60 text-mk-ink text-xs hover:bg-mk-lav/80">🪄 自动框选图案</button>
-              <button id="detect-grid" type="button" class="px-3 py-1.5 rounded-lg bg-mk-mint/60 text-mk-ink text-xs hover:bg-mk-mint/80">🔍 检测格子</button>
               <button id="clear-region" type="button" class="px-3 py-1.5 rounded-lg bg-white border border-mk-sand text-mk-sub text-xs hover:bg-mk-sand/30">↺ 重新框选</button>
             </div>
           </div>
 
           <div class="mt-4 space-y-3">
-            <label class="flex items-center justify-between text-sm bg-white/60 rounded-xl px-3 py-2">
-              <span>识别模式</span>
-              <select id="mode" class="px-2 py-1 rounded-lg bg-white border border-mk-sand text-sm">
-                <option value="auto" ${state.settings.recognizeMode === 'auto' ? 'selected' : ''}>🤖 智能识别（推荐·自动框图）</option>
-                <option value="grid" ${state.settings.recognizeMode === 'grid' ? 'selected' : ''}>格子采样（手填格子数）</option>
-                <option value="pixel" ${state.settings.recognizeMode === 'pixel' ? 'selected' : ''}>像素聚类（无标注小图）</option>
-                <option value="legend" ${state.settings.recognizeMode === 'legend' ? 'selected' : ''}>🎨 图例识别（框选图例生成色号清单）</option>
-              </select>
-            </label>
-
-            <!-- 智能识别：自动定位边框 + 自动行列，最省事 -->
-            <div id="auto-options" class="${state.settings.recognizeMode === 'auto' ? '' : 'hidden'} space-y-2">
-              <p class="text-[11px] text-mk-sub">上传后程序会自动定位图纸边框、识别行列数，并在预览上叠加粉色网格。若行数略有偏差，点下方步进或用“单元格高宽比”微调即可，<b>无需手动对齐十字格</b>。</p>
-              <button id="detect-auto" type="button" class="w-full px-3 py-2 rounded-xl bg-mk-mint/70 text-mk-ink text-sm font-semibold hover:bg-mk-mint/90">🔍 自动识别网格</button>
-              <div class="flex items-center justify-between text-sm bg-mk-mint/20 rounded-xl px-3 py-2">
-                <span>已识别行列（可微调）</span>
-                <span class="flex items-center gap-1">
-                  <button id="auto-col-dec" class="w-6 h-6 rounded-lg bg-white border border-mk-sand text-sm leading-none">−</button>
-                  <b id="auto-col-v" class="w-8 text-center">${state.settings.gridCols}</b>
-                  <button id="auto-col-inc" class="w-6 h-6 rounded-lg bg-white border border-mk-sand text-sm leading-none">+</button>
-                  <span class="mx-1">×</span>
-                  <button id="auto-row-dec" class="w-6 h-6 rounded-lg bg-white border border-mk-sand text-sm leading-none">−</button>
-                  <b id="auto-row-v" class="w-8 text-center">${state.settings.gridRows}</b>
-                  <button id="auto-row-inc" class="w-6 h-6 rounded-lg bg-white border border-mk-sand text-sm leading-none">+</button>
-                </span>
-              </div>
-              <label class="flex items-center justify-between text-sm bg-white/60 rounded-xl px-3 py-2">
-                <span>单元格高宽比 <span class="text-[10px] text-mk-sub">（行距=列距×此值）</span></span>
-                <span><input id="cell-aspect" type="range" min="0.40" max="0.80" step="0.005" value="${state.settings.cellAspect || 0.555}" class="align-middle"><b id="cell-aspect-v" class="ml-1">${(state.settings.cellAspect || 0.555).toFixed(3)}</b></span>
-              </label>
-            </div>
-
             <!-- 图例识别：框选图例 → 解析颜色 → 生成色号清单 → 框选图案 → 统计用量 -->
-            <div id="legend-options" class="${state.settings.recognizeMode === 'legend' ? '' : 'hidden'} space-y-2">
+            <div id="legend-options" class="space-y-2">
               <p class="text-[11px] text-mk-sub"><b>第一步</b>：在图上拖拽框选<b>图例区域</b>（通常是图纸底部的色块条，每个色块内印色号、下方印数量），点「🤖 AI识别图例」即可自动读出色号与数量。<br>若图例下方已印数量，识别后可直接「存为配方 / 扣减库存」，<b>无需再框选图案</b>；若想按图案精确统计，可再框选<b>图案区域</b>点「计算整图用量」覆盖数量。</p>
               <div class="flex items-center justify-between text-sm bg-white/60 rounded-xl px-3 py-2">
                 <span>图例列数（色块个数）</span>
@@ -2406,63 +2024,21 @@
               </div>
               <button id="legend-usage" type="button" class="w-full px-3 py-2 rounded-xl bg-mk-mint/70 text-mk-ink text-sm font-semibold hover:bg-mk-mint/90 ${tempLegendMap.length ? '' : 'hidden'}">📊 计算整图用量（先框选图案区域）</button>
             </div>
-
-            <!-- 手动格子采样 -->
-            <div id="grid-options" class="${state.settings.recognizeMode === 'grid' ? '' : 'hidden'} space-y-2">
-              <div class="flex items-center justify-between text-sm bg-white/60 rounded-xl px-3 py-2">
-                <span>图纸格子数（宽 × 高）</span>
-                <span class="flex items-center gap-2">
-                  <input id="grid-cols" type="number" min="1" value="${state.settings.gridCols}" class="w-16 px-2 py-1 rounded-lg bg-white border border-mk-sand text-sm">
-                  <span>×</span>
-                  <input id="grid-rows" type="number" min="1" value="${state.settings.gridRows}" class="w-16 px-2 py-1 rounded-lg bg-white border border-mk-sand text-sm">
-                </span>
-              </div>
-              <div class="flex flex-wrap gap-2">
-                ${[29, 48, 64, 80, 96].map(n => `<button class="grid-preset px-2 py-1 rounded-lg bg-white border border-mk-sand text-xs hover:bg-mk-lav/30" data-n="${n}">${n}×${n}</button>`).join('')}
-              </div>
-              <p class="text-[11px] text-mk-sub">可先框选图案（或点「自动框选」）再点「检测格子」自动填入；不对时再看图纸边缘刻度手动改。</p>
-            </div>
-
-            <label class="flex items-center justify-between text-sm bg-white/60 rounded-xl px-3 py-2">
-              <span>颜色聚类容差</span>
-              <span><input id="tol" type="range" min="10" max="120" value="${state.settings.sampleTolerance}" class="align-middle"><b id="tol-v" class="ml-1">${state.settings.sampleTolerance}</b></span>
-            </label>
-            <label id="scale-wrap" class="flex items-center justify-between text-sm bg-white/60 rounded-xl px-3 py-2 ${state.settings.recognizeMode === 'pixel' ? '' : 'hidden'}">
-              <span>折算系数（每多少像素算 1 颗豆）</span>
-              <input id="scale" type="number" step="0.1" min="0.1" value="${state.settings.scaleFactor}" class="w-20 px-2 py-1 rounded-lg bg-white border border-mk-sand">
-            </label>
-            <label class="flex items-center justify-between text-sm bg-white/60 rounded-xl px-3 py-2">
-              <span>自动过滤背景/网格线</span>
-              <input id="filter-bg" type="checkbox" checked class="w-4 h-4 accent-mk-rose">
-            </label>
-            <button id="auto-ignore-bg" type="button" class="w-full text-left text-xs px-3 py-2 rounded-xl bg-mk-lav/40 text-mk-ink hover:bg-mk-lav/60 ${tempImage ? '' : 'hidden'}">
-              🎯 自动取图纸四角颜色作为背景忽略
-            </button>
-            <div id="ignore-list" class="${tempIgnoreColors.length ? '' : 'hidden'} text-sm">
-              <div class="text-mk-sub mb-1 text-xs">已忽略颜色（点击 × 移除）：</div>
-              <div class="flex flex-wrap gap-2">
-                ${tempIgnoreColors.map((c, i) => `<span class="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-mk-sand text-xs"><span class="w-4 h-4 rounded-full swatch" style="background:${c.hex}"></span>${c.hex}<button class="ig-del text-rose-400 ml-1 leading-none" data-i="${i}">×</button></span>`).join('')}
-              </div>
-            </div>
-            ${(() => { const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0; return (viaProxy || (state.settings.enableVision && state.settings.apiKey)) ? `<label class="flex items-center gap-2 text-sm bg-mk-lav/40 rounded-xl px-3 py-2"><input id="use-vision" type="checkbox"> 使用云端视觉 AI（内置代理 / OpenAI Vision）直接识别</label>` : ''; })()}
           </div>
-
-          <button id="start" class="mt-4 w-full py-2.5 rounded-xl bg-mk-rose text-white font-bold shadow-soft disabled:opacity-40" ${tempImage ? '' : 'disabled'}>🔍 开始识别</button>
-          <p class="text-xs text-mk-sub mt-2">提示：<b>智能识别</b>最省事——上传即自动框图、自动识别行列并叠加网格，直接点「开始识别」即可（行数若略有偏差，用右侧步进或“单元格高宽比”微调）。每格计 1 颗豆，相同标准色号自动合并。</p>
         </section>
 
         <section class="mk-card rounded-2xl shadow-soft p-5">
-          <h3 class="font-bold mb-3">📋 识别说明</h3>
+          <h3 class="font-bold mb-3">📋 使用说明</h3>
           <ol class="text-sm text-mk-ink/80 space-y-2 list-decimal list-inside">
-            <li>上传图纸。若图中有多个图案，请分别框选识别。</li>
-            <li><b>图例模式（推荐复杂图纸）</b>：先框选图纸下方的色块图例，点「解析图例」或「🤖 AI识别图例」生成色号清单并校对（AI 可读取色块印的色号，更准）；再切换「智能识别/格子采样」框选图案、识别用量。</li>
-            <li>「智能识别」会自动框图并识别行列；「格子采样」需手动填格子数并点「检测格子」。</li>
-            <li>点击“开始识别”：程序按格子中心取色，自动避开网格线与色号文字；若已设图例，会优先按图例颜色映射色号。</li>
-            <li>相同标准色号合并，弹窗中的“数量”即该色号的格子数。</li>
+            <li>上传图纸图片。</li>
+            <li>在图上拖拽框选<b>底部色块图例</b>区域（每个色块内印色号、下方印数量）。</li>
+            <li>填「图例列数」（色块个数，不填则自动估算），点「🤖 AI识别图例」——云端视觉自动读出色号与数量。</li>
+            <li>若图例下方已印数量，识别后可直接「存为配方 / 扣减库存」，<b>无需框选图案</b>。</li>
+            <li>若想按实际图案精确统计数量，可再框选<b>图案区域</b>后点「计算整图用量」覆盖数量。</li>
             <li>校对色号/数量后，确认扣减库存或存为配方。</li>
           </ol>
           <div class="mt-4 p-3 rounded-xl bg-mk-lemon/50 text-xs text-mk-ink/70">
-            💡 自动框选通过网格线密度定位图案；检测格子通过暗色线投影定位每条网格线。若结果不对，先检查橙色/绿色框是否准确包围了一个完整图案。
+            💡 本应用只保留「图例识别」一种模式：框选色块图例、由云端视觉读取每个色块的色号与下方数量，直接生成色号清单。已移除智能识别/格子采样/像素聚类等旧模式。
           </div>
         </section>
       </div>`;
@@ -2475,106 +2051,24 @@
       reader.onload = ev => {
         tempImage = ev.target.result;
         tempIgnoreColors = [];
-        tempAlignPoints = [];
         tempCropRegion = null;
-        tempDetectedRegions = [];
         tempDetectedVLines = [];
         tempDetectedHLines = [];
         tempDetectedFramePx = null;
         tempLegendMap = [];
         tempLegendRegion = null;
         renderRecognize(v);
-        // 智能识别模式：上传即自动识别，免去手动点按
-        if (state.settings.recognizeMode === 'auto') {
-          const img = new Image();
-          img.onload = () => { runAutoDetect(img, () => { syncAutoInputs(); drawEditor(); }); };
-          img.src = tempImage;
-        }
       };
       reader.readAsDataURL(file);
     };
-    $('#tol').oninput = (e) => { state.settings.sampleTolerance = +e.target.value; $('#tol-v').textContent = e.target.value; save(); };
-    $('#scale').onchange = (e) => { state.settings.scaleFactor = Math.max(0.1, parseFloat(e.target.value) || 1); save(); };
-    $('#mode').onchange = (e) => {
-      const oldMode = state.settings.recognizeMode;
-      state.settings.recognizeMode = e.target.value;
-      $('#grid-options').classList.toggle('hidden', e.target.value !== 'grid');
-      $('#auto-options').classList.toggle('hidden', e.target.value !== 'auto');
-      $('#legend-options').classList.toggle('hidden', e.target.value !== 'legend');
-      $('#scale-wrap').classList.toggle('hidden', e.target.value === 'grid' || e.target.value === 'auto' || e.target.value === 'legend');
-      // 从/到 图例模式切换时，当前选区含义不同（图例区 vs 图案区），清空避免混淆
-      if (oldMode === 'legend' || e.target.value === 'legend') {
-        tempCropRegion = null;
-        tempLegendRegion = null;
-        tempDetectedVLines = []; tempDetectedHLines = [];
-      }
-      save();
-      // 切到智能识别且已上传图片时，自动跑一次识别，免手动点
-      if (e.target.value === 'auto' && tempImage) {
-        const img = new Image();
-        img.onload = () => { runAutoDetect(img, () => { syncAutoInputs(); drawEditor(); toast(`已自动识别 ${state.settings.gridCols} 列 × ${state.settings.gridRows} 行`, 'success'); }); };
-        img.src = tempImage;
-      }
-    };
-    // —— 智能识别：行列步进 + 单元格高宽比微调 ——
-    function syncAutoInputs() {
-      const cv = $('#auto-col-v'), rv = $('#auto-row-v');
-      if (cv) cv.textContent = state.settings.gridCols;
-      if (rv) rv.textContent = state.settings.gridRows;
-    }
-    const stepAuto = (key, delta) => {
-      state.settings[key] = Math.max(1, (state.settings[key] || 1) + delta);
-      if (tempDetectedFramePx) applyGridFromFrame(state.settings.gridCols, state.settings.gridRows);
-      syncAutoInputs(); drawEditor(); save();
-    };
-    $('#auto-col-dec').onclick = () => stepAuto('gridCols', -1);
-    $('#auto-col-inc').onclick = () => stepAuto('gridCols', +1);
-    $('#auto-row-dec').onclick = () => stepAuto('gridRows', -1);
-    $('#auto-row-inc').onclick = () => stepAuto('gridRows', +1);
-    const aspectIn = $('#cell-aspect');
-    if (aspectIn) aspectIn.oninput = (e) => {
-      state.settings.cellAspect = Math.max(0.1, parseFloat(e.target.value) || 0.555);
-      $('#cell-aspect-v').textContent = state.settings.cellAspect.toFixed(3);
-      // 行数 = 边框高 / (列距 × 高宽比)，列距 = 边框宽 / 列数
-      if (tempDetectedFramePx) {
-        const f = tempDetectedFramePx;
-        const colPitch = (f.gx1 - f.gx0) / Math.max(1, state.settings.gridCols);
-        const rowPitch = colPitch * state.settings.cellAspect;
-        state.settings.gridRows = Math.max(1, Math.round((f.gy1 - f.gy0) / rowPitch));
-        applyGridFromFrame(state.settings.gridCols, state.settings.gridRows);
-        syncAutoInputs(); drawEditor();
-      }
-      save();
-    };
-    $('#detect-auto').onclick = () => {
-      if (!tempImage) return toast('请先上传图片', 'error');
-      const img = new Image();
-      img.onload = () => { runAutoDetect(img, () => { syncAutoInputs(); drawEditor(); toast(`已自动识别 ${state.settings.gridCols} 列 × ${state.settings.gridRows} 行`, 'success'); }); };
-      img.src = tempImage;
-    };
-    $('#grid-cols').onchange = (e) => { state.settings.gridCols = Math.max(1, parseInt(e.target.value) || 1); save(); };
-    $('#grid-rows').onchange = (e) => { state.settings.gridRows = Math.max(1, parseInt(e.target.value) || 1); save(); };
-    $$('.grid-preset').forEach(btn => btn.onclick = (e) => {
-      const n = +e.target.dataset.n;
-      state.settings.gridCols = n; state.settings.gridRows = n;
-      $('#grid-cols').value = n; $('#grid-rows').value = n;
-      save();
-    });
 
-    // 编辑器画布事件
+    // 编辑器画布事件（拖拽框选区域：图例区或图案区）
     const cv = $('#editor-canvas');
     if (cv && tempImage) {
       drawEditor();
       let dragging = false, dragStart = null, dragCurrent = null;
       cv.onmousedown = (e) => {
         const p = canvasNorm(e, cv);
-        // 若点击在候选区域内，选中它
-        const hit = tempDetectedRegions.slice().reverse().find(r => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h);
-        if (hit) {
-          tempCropRegion = hit;
-          drawEditor();
-          return;
-        }
         dragging = true; dragStart = p; dragCurrent = p;
       };
       cv.onmousemove = (e) => {
@@ -2612,38 +2106,8 @@
       cv.onmouseleave = endDrag;
     }
 
-    $('#auto-region').onclick = () => {
-      if (!tempImage) return toast('请先上传图片', 'error');
-      const img = new Image();
-      img.onload = () => {
-        tempDetectedRegions = detectCandidateRegions(img);
-        if (tempDetectedRegions.length) tempCropRegion = tempDetectedRegions[0];
-        tempDetectedVLines = []; tempDetectedHLines = [];
-        drawEditor();
-        toast(`检测到 ${tempDetectedRegions.length} 个候选区域，已选中第 1 个`, 'success');
-      };
-      img.src = tempImage;
-    };
-    $('#detect-grid').onclick = () => {
-      if (!tempImage || !tempCropRegion) return toast('请先框选图案区域', 'error');
-      const img = new Image();
-      img.onload = () => {
-        const res = detectGridLines(img, tempCropRegion);
-        tempDetectedVLines = res.vLines;
-        tempDetectedHLines = res.hLines;
-        state.settings.gridCols = Math.max(1, res.cols);
-        state.settings.gridRows = Math.max(1, res.rows);
-        const colsIn = $('#grid-cols'), rowsIn = $('#grid-rows');
-        if (colsIn) colsIn.value = state.settings.gridCols;
-        if (rowsIn) rowsIn.value = state.settings.gridRows;
-        drawEditor();
-        toast(`检测到 ${res.cols} 列 × ${res.rows} 行`, 'success');
-      };
-      img.src = tempImage;
-    };
     $('#clear-region').onclick = () => {
       tempCropRegion = null;
-      tempDetectedRegions = [];
       tempDetectedVLines = []; tempDetectedHLines = [];
       tempDetectedFramePx = null;
       drawEditor();
@@ -2715,8 +2179,6 @@
       }
     };
 
-    $('#start').onclick = runRecognition;
-
     // 图例模式：统计整图用量 / 存配方 / 扣减库存
     const legendUsageBtn = $('#legend-usage');
     if (legendUsageBtn) legendUsageBtn.onclick = () => {
@@ -2757,110 +2219,6 @@
       toast(`已扣减 ${ok} 种颜色${skip ? `，跳过 ${skip} 种未匹配` : ''}`, 'success');
     };
 
-    $('#auto-ignore-bg').onclick = () => autoIgnoreCorners(v);
-    if (state.settings.recognizeMode === 'legend' && tempLegendMap.length) {
-      // 重渲染后图例清单编辑框会重建，但值已存在；无需额外同步
-    }
-    $$('.ig-del').forEach(btn => btn.onclick = (e) => {
-      tempIgnoreColors.splice(+e.target.dataset.i, 1);
-      renderRecognize(v);
-    });
-  }
-  async function runRecognition() {
-    if (!tempImage) return toast('请先上传图片', 'error');
-    const mode = state.settings.recognizeMode || 'pixel';
-    if (mode === 'grid' && !tempCropRegion) {
-      return toast('请先在图上框选要识别的图案区域', 'error');
-    }
-    toast('识别中…', 'info');
-    const img = new Image();
-    img.onload = async () => {
-      try {
-        const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
-        const useVision = (viaProxy || (state.settings.enableVision && state.settings.apiKey)) && $('#use-vision') && $('#use-vision').checked;
-        if (useVision) {
-          recognitionResult = await callVisionAPI(tempImage, state.settings.apiKey, state.settings.model, state.settings.visionBaseUrl);
-        } else {
-          const sf = state.settings.scaleFactor || 1;
-          const filterBg = $('#filter-bg') && $('#filter-bg').checked;
-          let buckets = [];
-          let sampleInfo = '';
-          // 智能识别：若尚未检测，先在全图自动定位边框并识别行列
-          if (mode === 'auto' && tempDetectedVLines.length < 2) {
-            const det = detectGridLines(img, { x: 0, y: 0, w: 1, h: 1 });
-            tempDetectedFramePx = { gx0: det.frame.gx0, gy0: det.frame.gy0, gx1: det.frame.gx1, gy1: det.frame.gy1, aw: det.aw, ah: det.ah };
-            state.settings.gridCols = det.cols; state.settings.gridRows = det.rows;
-            applyGridFromFrame(det.cols, det.rows);
-            if (!tempCropRegion) tempCropRegion = { x: 0, y: 0, w: 1, h: 1 };
-          }
-          if (mode === 'grid' || mode === 'auto') {
-            const cols = Math.max(1, state.settings.gridCols || 1);
-            const rows = Math.max(1, state.settings.gridRows || 1);
-            // 如果检测到了网格线，用实际线位置采样（更准）；否则用均匀分格兜底
-            if (tempDetectedVLines.length >= 2 && tempDetectedHLines.length >= 2) {
-              buckets = sampleByDetectedGrid(img, tempCropRegion, tempDetectedVLines, tempDetectedHLines, tempIgnoreColors, state.settings.sampleTolerance);
-              sampleInfo = `本次按智能识别的网格线采样：${cols} 列 × ${rows} 行`;
-            } else {
-              buckets = sampleByGridInRegion(img, tempCropRegion || { x: 0, y: 0, w: 1, h: 1 }, cols, rows, tempIgnoreColors, state.settings.sampleTolerance);
-              sampleInfo = `本次按 ${cols}×${rows} 均匀采样`;
-            }
-          } else {
-            // —— 像素聚类路径（核心算法 A）：适合无标注的“每像素=1豆”小图 ——
-            buckets = clusterImageColors(img, state.settings.sampleTolerance, tempIgnoreColors);
-            sampleInfo = '本次为像素聚类模式';
-          }
-
-          // —— 色号映射（核心算法 B）——
-          if (mode === 'grid' || mode === 'auto') {
-            const merged = new Map();
-            for (const bk of buckets) {
-              if (filterBg && isGridBackgroundLike(bk.r, bk.g, bk.b)) continue;
-              const m = mapColorToStandard(bk.r, bk.g, bk.b, tempLegendMap);
-              const key = m.colorNumber || `__unmatched_${bk.r}_${bk.g}_${bk.b}`;
-              if (!merged.has(key)) {
-                merged.set(key, {
-                  id: uid('r'),
-                  sampleHex: rgbToHex(bk.r, bk.g, bk.b),
-                  sr: bk.r, sg: bk.g, sb: bk.b,
-                  count: 0, removed: false,
-                  colorNumber: m.colorNumber,
-                  colorName: m.colorName,
-                  hex: m.hex,
-                  matched: m.matched,
-                  matchedBy: m.matchedBy,
-                  distance: m.distance
-                });
-              }
-              merged.get(key).count += bk.count;
-            }
-            recognitionResult = Array.from(merged.values()).sort((a, b) => b.count - a.count);
-          } else {
-            recognitionResult = buckets
-              .filter(bk => !filterBg || !isBackgroundLike(bk.r, bk.g, bk.b))
-              .map(bk => {
-                const cnt = Math.max(1, Math.round(bk.count / sf));
-                const m = mapColorToStandard(bk.r, bk.g, bk.b, tempLegendMap);
-                return {
-                  id: uid('r'),
-                  sampleHex: rgbToHex(bk.r, bk.g, bk.b),
-                  sr: bk.r, sg: bk.g, sb: bk.b,
-                  count: cnt, removed: false,
-                  ...m
-                };
-              })
-              .sort((a, b) => b.count - a.count);
-          }
-          recognitionResultSampleInfo = sampleInfo;
-        }
-        if (!recognitionResult.length) return toast('未识别到颜色（可能是纯色/透明图）', 'warn');
-        openRecognitionModal();
-      } catch (err) {
-        console.error(err);
-        toast('识别失败：' + err.message, 'error');
-      }
-    };
-    img.onerror = () => toast('图片加载失败', 'error');
-    img.src = tempImage;
   }
 
   // 图例模式：用图例色卡统计图案区域每个色号的用量（数量=格子数）
@@ -3050,144 +2408,6 @@
     return colors;
   }
 
-  // 自动取图纸四角颜色加入忽略列表（通常四角是背景/空白）
-  function autoIgnoreCorners(v) {
-    if (!tempImage) return toast('请先上传图片', 'error');
-    const img = new Image();
-    img.onload = () => {
-      const corners = [[0.08, 0.08], [0.92, 0.08], [0.08, 0.92], [0.92, 0.92]];
-      let added = 0;
-      corners.forEach(([nx, ny]) => {
-        const c = getPixelColorFromImage(img, nx, ny);
-        if (!tempIgnoreColors.some(ig => ig.hex === c.hex)) {
-          tempIgnoreColors.push({ ...c, tolerance: 32 });
-          added++;
-        }
-      });
-      renderRecognize(v);
-      toast(`已自动忽略 ${added} 个四角颜色`, added ? 'success' : 'info');
-    };
-    img.onerror = () => toast('图片加载失败', 'error');
-    img.src = tempImage;
-  }
-
-  // ---- 识别结果校对弹窗 ----
-  function openRecognitionModal() {
-    const mode = state.settings.recognizeMode || 'pixel';
-    const totalCells = recognitionResult.reduce((s, r) => s + (r.removed ? 0 : r.count), 0);
-    const suspicious = recognitionResult.filter(r => !r.removed && isGridBackgroundLike(r.sr, r.sg, r.sb));
-
-    const renderRows = () => recognitionResult.filter(r => !r.removed).map(r => `
-      <tr data-id="${r.id}" class="border-t border-mk-sand/50 align-middle ${isGridBackgroundLike(r.sr, r.sg, r.sb) ? 'bg-amber-50/50' : ''}">
-        <td class="px-2 py-2 text-center">
-          <span class="w-6 h-6 rounded-full swatch inline-block" style="background:${r.sampleHex}"></span>
-          <div class="font-mono text-[10px] mt-1">${r.sampleHex}</div>
-        </td>
-        <td class="px-2 py-2 text-center">
-          <span class="w-6 h-6 rounded-full swatch inline-block" style="background:${r.hex}"></span>
-          <div class="text-[10px] mt-1">${r.colorNumber || '未匹配'}</div>
-        </td>
-        <td class="px-2 py-2">
-          <select class="r-color w-full px-2 py-1 rounded-lg bg-white border border-mk-sand text-sm" data-id="${r.id}">
-            <option value="">（未匹配·请选择）</option>
-            ${state.beads.map(b => `<option value="${b.colorNumber}" ${r.colorNumber === b.colorNumber ? 'selected' : ''}>${b.colorNumber} ${escapeHtml(b.colorName)}</option>`).join('')}
-          </select>
-          ${r.matchedBy ? `<div class="text-[11px] text-mk-sub mt-0.5">自动匹配：${r.matchedBy}${r.distance !== Infinity ? ` · 距离 ${Math.round(r.distance)}` : ''}</div>` : ''}
-        </td>
-        <td class="px-2 py-2"><input type="number" min="0" value="${r.count}" class="r-qty w-20 px-2 py-1 rounded-lg bg-white border border-mk-sand text-sm" data-id="${r.id}"></td>
-        <td class="px-2 py-2 text-center">
-          <button class="r-del text-rose-400 text-sm" data-id="${r.id}">✕</button>
-          ${gridMode ? `<button class="r-ignore text-mk-sub text-[11px] block mt-1" data-id="${r.id}">忽略色</button>` : ''}
-        </td>
-      </tr>`).join('');
-
-    const gridMode = (mode === 'grid' || mode === 'auto');
-    const body = `
-      <input id="recipe-name" class="w-full mb-3 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand text-sm" placeholder="可填写配方名称（用于保存到配方库）">
-      <div class="mb-3 p-3 rounded-xl bg-mk-lav/40 text-xs text-mk-ink">
-        <div>${recognitionResultSampleInfo || `本次按 <b>${gridMode ? `${state.settings.gridCols}×${state.settings.gridRows}` : '整图像素'}</b> 采样`}，共识别到 <b>${totalCells}</b> 个有效${gridMode ? '格子' : '像素'}。</div>
-        ${gridMode ? `<div class="mt-1 text-mk-sub">若总格数与图纸实际不符，请返回修改“图纸格子数”。总格数 = 宽 × 高，应与框选区域内的实际格子数一致。</div>` : ''}
-        ${suspicious.length ? `<div class="mt-1 text-amber-600">⚠️ 检测到 ${suspicious.length} 行颜色接近背景/网格线，建议点击下方“忽略色”后重跑。</div>` : ''}
-      </div>
-      <div class="overflow-x-auto">
-        <table class="w-full text-sm">
-          <thead class="bg-mk-sand/40 text-mk-sub"><tr>
-            <th class="px-2 py-2">采样色</th><th class="px-2 py-2">匹配色号</th><th class="px-2 py-2">标准色号</th><th class="px-2 py-2">数量${mode === 'grid' ? '<span class="text-[10px] font-normal">（格子）</span>' : ''}</th><th class="px-2 py-2"></th>
-          </tr></thead>
-          <tbody id="rec-rows">${renderRows()}</tbody>
-        </table>
-      </div>`;
-    openModal('识别结果校对', body, { wide: true });
-
-    // 行内事件
-    $$('.r-color').forEach(sel => sel.onchange = (e) => {
-      const r = recognitionResult.find(x => x.id === e.target.dataset.id);
-      const bead = beadByNumber(e.target.value);
-      r.colorNumber = e.target.value;
-      r.colorName = bead ? bead.colorName : '';
-      r.hex = bead ? bead.hex : r.sampleHex;
-      r.matched = !!bead; r.matchedBy = bead ? '手动' : '';
-      // 同步更新“匹配色号”列的色样与色号文字
-      const row = e.target.closest('tr');
-      row.querySelectorAll('span.swatch')[1].style.background = r.hex;
-      row.querySelector('td:nth-child(2) div').textContent = r.colorNumber || '未匹配';
-    });
-    $$('.r-qty').forEach(inp => inp.oninput = (e) => {
-      const r = recognitionResult.find(x => x.id === e.target.dataset.id);
-      r.count = Math.max(0, parseInt(e.target.value) || 0);
-    });
-    $$('.r-del').forEach(btn => btn.onclick = (e) => {
-      const r = recognitionResult.find(x => x.id === e.target.dataset.id);
-      r.removed = true;
-      e.target.closest('tr').remove();
-    });
-    $$('.r-ignore').forEach(btn => btn.onclick = (e) => {
-      const r = recognitionResult.find(x => x.id === e.target.dataset.id);
-      if (r && !tempIgnoreColors.some(ig => ig.hex === r.sampleHex)) {
-        tempIgnoreColors.push({ r: r.sr, g: r.sg, b: r.sb, hex: r.sampleHex, tolerance: 32 });
-      }
-      closeModal();
-      renderRecognize($('#view'));
-      toast('已将该行采样色加入忽略，请重新识别', 'info');
-    });
-
-    setModalFoot(`
-      <button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">取消</button>
-      <button id="rec-save-recipe" class="px-4 py-2 rounded-xl bg-mk-lav text-mk-ink font-semibold">存为配方</button>
-      <button id="rec-confirm" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold shadow-soft">确认扣减库存</button>`);
-
-    $('#rec-confirm').onclick = confirmDeduct;
-    $('#rec-save-recipe').onclick = saveRecipeFromResult;
-  }
-
-  // 确认：从库存对应色号扣减并写日志
-  function confirmDeduct() {
-    let okCount = 0, skip = 0;
-    recognitionResult.filter(r => !r.removed && r.colorNumber && r.count > 0).forEach(r => {
-      const bead = beadByNumber(r.colorNumber);
-      if (!bead) { skip++; return; }
-      bead.stock = Math.max(0, bead.stock - r.count);
-      addLog('图纸消耗', bead, -r.count, '图纸识别扣减');
-      okCount++;
-    });
-    save();
-    closeModal();
-    switchView('dashboard');
-    toast(`已扣减 ${okCount} 种颜色${skip ? `，跳过 ${skip} 种未匹配` : ''}`, 'success');
-  }
-
-  // 存为配方（不直接扣减）
-  function saveRecipeFromResult() {
-    const items = recognitionResult.filter(r => !r.removed && r.colorNumber && r.count > 0)
-      .map(r => ({ colorNumber: r.colorNumber, colorName: r.colorName, hex: r.hex, qty: r.count }));
-    if (!items.length) return toast('没有可保存的条目', 'warn');
-    const name = $('#recipe-name').value.trim() || ('图纸配方 ' + fmtTime(Date.now()));
-    state.recipes.unshift({ id: uid('rc'), name, createdAt: Date.now(), items });
-    save();
-    toast('已保存到配方库', 'success');
-    closeModal();
-    switchView('recipes');
-  }
 
   /* ===================== 14. 配方库 ===================== */
   function renderRecipes(v) {
@@ -3776,15 +2996,15 @@
         <!-- 个人信息 -->
         <section class="mk-card rounded-2xl shadow-soft p-5 lg:col-span-2">
           <h3 class="font-bold mb-4">👤 个人信息</h3>
-          <div class="flex flex-col sm:flex-row gap-4 items-start">
+          <div class="flex flex-row items-start gap-4">
             <div class="relative shrink-0">
-              <img id="settings-avatar-preview" src="${avatarUrl}" class="w-20 h-20 rounded-full object-cover bg-white border border-mk-sand shadow-soft">
-              <label class="absolute bottom-0 right-0 bg-white rounded-full p-1.5 shadow cursor-pointer hover:bg-mk-sand text-xs border border-mk-sand" title="更换头像">
+              <img id="settings-avatar-preview" src="${avatarUrl}" class="w-16 h-16 sm:w-20 sm:h-20 rounded-full object-cover bg-white border border-mk-sand shadow-soft">
+              <label class="absolute bottom-0 right-0 bg-white rounded-full p-1 shadow cursor-pointer hover:bg-mk-sand text-[10px] border border-mk-sand" title="更换头像">
                 📷
                 <input id="settings-avatar" type="file" accept="image/*" class="hidden">
               </label>
             </div>
-            <div class="flex-1 space-y-3 w-full max-w-md">
+            <div class="flex-1 space-y-3 w-full min-w-0 max-w-md">
               <label class="text-sm block">昵称<input id="settings-nickname" type="text" value="${escapeHtml(state.profile.nickname)}" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" placeholder="怎么称呼你"></label>
               <div class="text-sm text-mk-sub">邮箱：${emailText}</div>
               <div class="flex flex-wrap gap-2">
