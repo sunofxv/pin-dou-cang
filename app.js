@@ -153,8 +153,17 @@
     }
   }
   function save() {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
-    catch (e) { toast('保存失败：' + e.message, 'error'); }
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch (e) {
+      const isQuota = e && (e.name === 'QuotaExceededError' || /quota|exceeded|storage/i.test(e.message));
+      const approxKB = Math.round(JSON.stringify(state).length / 1024);
+      const msg = isQuota
+        ? '保存失败：本地存储空间不足（当前数据约 ' + approxKB + 'KB）。通常是图库图片过大，建议到「设置」压缩图库图片，或删除部分图片后再试。'
+        : '保存失败：' + e.message;
+      toast(msg, 'error', 6000);
+      console.error('save failed', e, 'state approx', approxKB + 'KB');
+    }
     scheduleSync();
   }
 
@@ -968,9 +977,9 @@
     const x1 = Math.min(w, Math.round((region.x + region.w) * w));
     const y1 = Math.min(h, Math.round((region.y + region.h) * h));
     const cw = Math.max(1, x1 - x0), fullCh = Math.max(1, y1 - y0);
-    // 只保留色块主体：剔除底部约 15%（色块【正下方】印的「数量」数字区），
-    // 让模型专注读色块【内部】的色号短码，避免把数量数字误当色号。
-    const ch = Math.round(fullCh * 0.85);
+    // 保留完整列高（含色块主体 + 色块【正下方】印的数量数字），
+    // prompt 会让模型分别读取「内部色号」与「下方数量」。
+    const ch = fullCh;
     // 每列宽度（含间隔），切出该列中心区
     const colW = cw / cols;
     const pad = colW * 0.08; // 两侧各剔除 8%，避开网格/分隔
@@ -3473,21 +3482,6 @@
         inp.onchange = () => { pendingItems[+inp.dataset.i].status = inp.checked ? 'made' : 'unmade'; };
       });
     };
-    fileInput.onchange = async () => {
-      const files = [...fileInput.files];
-      if (!files.length) return;
-      listEl.classList.remove('hidden');
-      listEl.innerHTML = '<div class="col-span-2 text-xs text-mk-sub">处理中…</div>';
-      pendingItems = [];
-      await Promise.all(files.map(async (f, idx) => {
-        try {
-          const img = await autoCropDataURL(await fitImageToDataURL(f, 1600));
-          const base = (f.name || ('图纸 ' + (idx + 1))).replace(/\.[^.]+$/, '');
-          pendingItems.push({ img, name: base, platform: '', author: '', status: 'unmade' });
-        } catch (e) { toast('图片读取失败：' + (f.name || ''), 'error'); }
-      }));
-      renderPreviewList();
-    };
     setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">取消</button>
       <button id="g-apply-all" class="px-4 py-2 rounded-xl bg-sky-100 text-sky-600 font-semibold" disabled>批量应用</button>
       <button id="g-save" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold">添加到图库</button>`);
@@ -3525,7 +3519,7 @@
       pendingItems = [];
       await Promise.all(files.map(async (f, idx) => {
         try {
-          const img = await autoCropDataURL(await fitImageToDataURL(f, 1600));
+          const img = await autoCropDataURL(await fitImageToDataURL(f, 1200));
           const base = (f.name || ('图纸 ' + (idx + 1))).replace(/\.[^.]+$/, '');
           pendingItems.push({ img, name: base, platform: '', author: '', status: 'unmade' });
         } catch (e) { toast('图片读取失败：' + (f.name || ''), 'error'); }
@@ -3563,7 +3557,7 @@
         canvas.width = w; canvas.height = h;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/jpeg', 0.88));
+        resolve(canvas.toDataURL('image/jpeg', 0.80));
       };
       img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('图片加载失败')); };
       img.src = url;
@@ -3629,11 +3623,49 @@
         const out = document.createElement('canvas');
         out.width = cw; out.height = ch;
         out.getContext('2d').drawImage(canvas, left, top, cw, ch, 0, 0, cw, ch);
-        resolve(out.toDataURL('image/jpeg', 0.92));
+        resolve(out.toDataURL('image/jpeg', 0.85));
       };
       img.onerror = () => reject(new Error('图片加载失败'));
       img.src = dataUrl;
     });
+  }
+  // 将 data URL 图片重新压缩到指定尺寸/质量（用于回收图库空间）
+  function compressDataURL(dataUrl, maxEdge = 1000, quality = 0.80) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
+        const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = () => reject(new Error('图片加载失败'));
+      img.src = dataUrl;
+    });
+  }
+  // 压缩图库中所有图片，减小 localStorage 占用
+  async function compressGalleryImages() {
+    const items = state.gallery.filter(g => g.image);
+    if (!items.length) return toast('图库中没有图片', 'info');
+    const totalBefore = items.reduce((s, g) => s + g.image.length, 0);
+    toast('开始压缩图库图片…', 'info', 1500);
+    let done = 0;
+    for (const g of items) {
+      try {
+        g.image = await compressDataURL(g.image, 1000, 0.80);
+        done++;
+      } catch (e) { console.warn('压缩失败', g.id, e); }
+    }
+    const totalAfter = state.gallery.filter(g => g.image).reduce((s, g) => s + g.image.length, 0);
+    save();
+    if (currentView === 'gallery') renderGallery($('#view'));
+    else if (currentView === 'settings') renderSettings($('#view'));
+    toast('已压缩 ' + done + '/' + items.length + ' 张图片，约节省 ' + Math.round((totalBefore - totalAfter) / 1024) + 'KB', 'success', 4000);
   }
   // 放大查看图库图片（支持滚轮缩放 / 双指缩放 / 拖拽平移）
   function openGalleryImageZoom(g) {
@@ -3721,6 +3753,8 @@
   function renderSettings(v) {
     const avatarUrl = getAvatarUrl() || generateDefaultAvatarSvg(getAvatarLetter());
     const emailText = currentUser ? escapeHtml(currentUser.email) : '未登录';
+    const galleryCount = state.gallery.filter(g => g.image).length;
+    const gallerySize = Math.round(state.gallery.reduce((s, g) => s + (g.image ? g.image.length : 0), 0) / 1024);
     v.innerHTML = `
       <div class="grid lg:grid-cols-2 gap-4">
         <!-- 个人信息 -->
@@ -3797,6 +3831,16 @@
           <p class="text-xs text-mk-sub mt-3">Excel 导出依赖 SheetJS（联网）；离线时自动改用 CSV。备份为完整 JSON，可用于换设备恢复。</p>
         </section>
 
+        <!-- 图库图片管理 -->
+        <section class="mk-card rounded-2xl shadow-soft p-5 lg:col-span-2">
+          <h3 class="font-bold mb-3">🖼️ 图库图片管理</h3>
+          <div class="flex flex-wrap items-center gap-3">
+            <button id="compress-gallery" class="px-4 py-2 rounded-xl bg-mk-sky text-mk-ink font-semibold">压缩图库图片</button>
+            <span class="text-xs text-mk-sub">当前图库 ${galleryCount} 张图片，约 ${gallerySize}KB（过大时会导致保存失败）</span>
+          </div>
+          <p class="text-xs text-mk-sub mt-2">压缩会将每张图限制在 1000px 内、JPEG 0.80 质量，可显著减小 localStorage 占用。建议上传时即使用此尺寸。</p>
+        </section>
+
         <!-- 账户与云端同步 -->
         <section class="mk-card rounded-2xl shadow-soft p-5 lg:col-span-2">
           <h3 class="font-bold mb-3">☁️ 账户与云端同步</h3>
@@ -3829,6 +3873,7 @@
     $('#restore').onclick = () => $('#restore-file').click();
     $('#restore-file').onchange = e => { if (e.target.files[0]) restoreAll(e.target.files[0]); };
     $('#reset').onclick = () => { if (confirm('将恢复为默认 221 色卡（每色 1000 颗），并清空所有日志、配方与自定义映射，且不可恢复。确定？')) { state = defaultState(); save(); toast('已恢复默认数据', 'success'); switchView('dashboard'); } };
+    $('#compress-gallery').onclick = compressGalleryImages;
 
     // 个人信息：头像上传、保存资料、修改密码
     settingsAvatarTemp = state.profile.avatar || '';
