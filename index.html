@@ -67,16 +67,18 @@
 <body class="font-sans text-mk-ink min-h-screen">
   <!-- 顶部品牌 + 导航 -->
   <header class="sticky top-0 z-30 bg-white/70 backdrop-blur border-b border-mk-sand">
-    <div class="max-w-6xl mx-auto px-4 py-2 sm:py-3 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
-      <div class="flex items-center gap-2 mr-0 sm:mr-2 shrink-0">
-        <img src="favicon.png" alt="拼豆豆仓" class="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-white object-cover shadow-soft" />
-        <div>
-          <div class="font-bold text-base sm:text-lg leading-none">拼豆豆仓</div>
-          <div class="hidden sm:block text-[11px] text-mk-sub">手作拼豆库存 · 图纸识别 · 配方库</div>
+    <div class="max-w-6xl mx-auto px-4 py-2 sm:py-3">
+      <div class="flex items-center justify-between gap-3">
+        <div class="flex items-center gap-2 shrink-0">
+          <img src="favicon.png" alt="拼豆豆仓" class="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-white object-cover shadow-soft" />
+          <div>
+            <div class="font-bold text-base sm:text-lg leading-none">拼豆豆仓</div>
+            <div class="hidden sm:block text-[11px] text-mk-sub">手作拼豆库存 · 图纸识别 · 配方库</div>
+          </div>
         </div>
+        <div id="header-user" class="shrink-0"></div>
       </div>
-      <nav id="nav" class="flex gap-1 sm:gap-1.5 overflow-x-auto -mx-1 px-1 w-full sm:flex-1"></nav>
-      <div id="header-user" class="shrink-0"></div>
+      <nav id="nav" class="flex gap-1 sm:gap-1.5 overflow-x-auto -mx-1 px-1 w-full mt-2 sm:mt-3"></nav>
     </div>
   </header>
 

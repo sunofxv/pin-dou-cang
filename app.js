@@ -878,7 +878,8 @@
   let navMoreDocClickBound = false;
 
   function renderNav() {
-    const visibleCount = 4;
+    // 窄屏（<380px，如 iPhone SE）只显示 3 个，避免「更多」按钮被挤到横向滚动区外
+    const visibleCount = (window.innerWidth < 380) ? 3 : 4;
     const visible = VIEWS.slice(0, visibleCount);
     const more = VIEWS.slice(visibleCount);
     const isCurrentHidden = more.some(v => v.key === currentView);
