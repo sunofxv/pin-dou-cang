@@ -5372,7 +5372,7 @@
       pct: Math.round(100 * x.n / Math.max(1, totalMapped)),
       r: x.rgb[0] | 0, g: x.rgb[1] | 0, b: x.rgb[2] | 0,
       beadCode: x.beadCode,
-      hex: rgbToHex(x.rgb)
+      hex: rgbToHex(x.rgb[0], x.rgb[1], x.rgb[2])
     }));
 
     const cells = [];
