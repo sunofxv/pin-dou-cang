@@ -4203,6 +4203,7 @@
     if (lockBlank) lockBlank.onchange = () => { pAspectLock = lockBlank.checked; };
     if (lockImage) lockImage.onchange = () => { pAspectLock = lockImage.checked; };
     // 纵横比联动：改 cols 同步改 rows，反之亦然
+    let _autoRegenTimer = null;
     const bindLock = (colsEl, rowsEl, mode) => {
       if (!colsEl || !rowsEl) return;
       const sync = (srcKey) => {
@@ -4222,6 +4223,22 @@
           else                                newCols = rv;
           colsEl.value = clamp(newCols);
         }
+        // 「input 改变 → 立刻重绘画布 title/格子（即便未生成也按新维度显示）」+ image 模式下
+        // 若已上传图，debounce 自动重算图纸，避免「改了网格忘记按生成」看到一片空白的踩坑
+        const newColsVal = parseInt(colsEl.value, 10);
+        const newRowsVal = parseInt(rowsEl.value, 10);
+        if (!isFinite(newColsVal) || !isFinite(newRowsVal)) return;
+        const dimsChanged = (newColsVal !== pCols || newRowsVal !== pRows);
+        pCols = newColsVal; pRows = newRowsVal;
+        ensurePatternCells();      // 维度变了就重置 pCells（不丢老 cells 内容，等 generate 再覆盖）
+        patternRenderCanvas();     // 立刻按新维度重画空白画布 + 更新 title
+        const titles = document.querySelectorAll('h3');
+        for (const t of titles) { if (/🧩\s*画布/.test(t.textContent)) t.textContent = `🧩 画布（${pCols} × ${pRows}）`; }
+        // 自动重算（仅 image 模式 + 已上传图 + 维度确实变了）
+        if (dimsChanged && mode === 'image' && pImage && state.beads && state.beads.length) {
+          clearTimeout(_autoRegenTimer);
+          _autoRegenTimer = setTimeout(() => patternRunGenerate({ fromAuto: true }), 280);
+        }
       };
       colsEl.addEventListener('input', () => sync('cols'));
       rowsEl.addEventListener('input', () => sync('rows'));
@@ -4240,6 +4257,7 @@
       const cv = $('#p-canvas'); if (cv) cv.style.cursor = on ? 'grab' : '';
     };
     if (panToggle) panToggle.onclick = () => { pTool = (pTool === 'pan') ? 'pen' : 'pan'; syncPanToggle(); };
+    $('#p-generate').onclick = () => patternRunGenerate({ fromAuto: false });
     // 真实板尺寸预设按钮（空白 / 图片两处共用）：一键把画布尺寸设为真实板
     $$('.preset-board').forEach(b => b.onclick = () => {
       const n = parseInt(b.dataset.preset, 10);
@@ -4317,64 +4335,8 @@
         if (e.dataTransfer.files[0]) patternLoadImage(e.dataTransfer.files[0]);
       };
     }
-    $('#p-generate').onclick = () => {
-      if (!pImage) return toast('请先上传参考图', 'warn');
-      // 色卡不足时的软提示：≥5 色才"出图", <5 色只建议先补色卡再生成
-      if (!state.beads || !state.beads.length) {
-        return toast('⚠️ 拼豆色卡为空\n请先到「色卡管理」添加一些色卡（黑色、白色、肉色等基础配色），再识别图纸', 'warn', 6000);
-      }
-      if (state.beads.length < 5) {
-        toast(`💡 当前只有 ${state.beads.length} 种色卡, 识别效果会非常粗糙（所有非白格都会映射到同一色号）\n建议先到「色卡管理」导入更多色号 (MARD 221 标准色), 或点下方「继续生成」强行预览`, 'info', 6000);
-      }
-      let c = parseInt($('#p-icols').value, 10) || 30, r = parseInt($('#p-irows').value, 10) || 30;
-      c = Math.min(150, Math.max(2, c)); r = Math.min(150, Math.max(2, r));
-      pCols = c; pRows = r; pHighlight = null;
-      patternPushUndo();
-      patternGenerateFromImage();
-      renderPattern(v);
-      // 反馈生成情况：多少格匹配到色、多少格空（剪裁区小于目标网格时空格会很多）
-      let filled = 0, empty = 0;
-      for (let rr = 0; rr < pCells.length; rr++) for (let cc = 0; cc < pCells[rr].length; cc++) {
-        if (pCells[rr][cc]) filled++; else empty++;
-      }
-      const total = pCols * pRows;
-      const beadCount = (state.beads && state.beads.length) || 0;
-      const detected = pLastDetectedColors || 0;
-      // 当前剪裁区比例（用于提示「把网格调到接近这个比例」）
-      const cropW = pImageCrop ? pImageCrop.w : (pImage ? pImage.naturalWidth : 1);
-      const cropH = pImageCrop ? pImageCrop.h : (pImage ? pImage.naturalHeight : 1);
-      const cropRatio = (cropW / cropH).toFixed(2);
-      const cellPxW = (cropW / pCols).toFixed(1), cellPxH = (cropH / pRows).toFixed(1);  // 每格对应原图多少像素
-      const reportLines = (pPaletteReport || []).slice(0, 8).map(x => {
-        const swatch = `■`;
-        return `${swatch} #${x.hex} (${x.r},${x.g},${x.b})  →  ${x.beadCode || '?'}  ${x.pct}%`;
-      }).join('\n');
-      const reportBlock = reportLines ? `\n📊 色彩映射（前 8 种）：\n${reportLines}` : '';
-
-      if (filled === 0) {
-        const tips = [];
-        if (beadCount < 5) tips.push(`① 色卡仅 ${beadCount} 种 — 至少加 5~10 种基础色`);
-        if (detected > beadCount * 2 && beadCount < 20) tips.push(`② 图中检测到 ${detected} 种主色, 但色卡只有 ${beadCount} 种 — 建议导入完整 MARD 221 色`);
-        if (detected === 1) tips.push(`③ 仅识别出 1 种主色 — 大部分区域被识别为白底, 把网格列/行调小（如 40×25）或点「✂️ 剪裁」框出内容区`);
-        else tips.push(`③ 目标网格 ${pCols}×${pRows}（比例 ${(pCols/pRows).toFixed(2)}:1）过大, 建议调到剪裁区比例 ${cropRatio}:1 — 每格像素越多, 识别越准`);
-        if (!pImageCrop || (pImageCrop.x === 0 && pImageCrop.y === 0 && pImageCrop.w >= (pImage.naturalWidth - 1) && pImageCrop.h >= (pImage.naturalHeight - 1))) {
-          tips.push(`④ 当前未剪裁, 整张图含大量白底 — 点「✂️ 剪裁」框出内容区`);
-        }
-        toast(`⚠️ 没匹配到任何色卡（共 ${total} 格全空）\n图检测到 ${detected} 种主色 / 你的色卡 ${beadCount} 种\n${tips.join('\n')}${reportBlock}`, 'warn', 12000);
-      } else if (empty / total > 0.5) {
-        const tips2 = [`已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格`];
-        if (detected > beadCount * 2 && beadCount < 20) tips2.push(`图检测到 ${detected} 种主色, 但色卡只有 ${beadCount} 种`);
-        if (cellPxW < 12 || cellPxH < 12) tips2.push(`每格仅约 ${cellPxW}×${cellPxH} 原图像素（<12px），识别精度受限 — 把网格调小到 30~40 列`);
-        else tips2.push(`建议把目标网格 ${pCols}×${pRows} 调到接近剪裁区比例 ${cropRatio}:1`);
-        toast(`⚠️ ${tips2.join('\n')}${reportBlock}\n🧭 坐标映射: 剪裁 ${cropW}×${cropH} → 画布 ${pCols}×${pRows}, 每格 ≈ ${cellPxW}×${cellPxH}px`, 'warn', 12000);
-      } else {
-        const okLines = [
-          `✅ 已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格（图中检测到 ${detected} 种主色）`,
-          `🧭 剪裁 ${cropW}×${cropH} → 画布 ${pCols}×${pRows}, 每格 ≈ ${cellPxW}×${cellPxH}px（hover 单元格查具体原图坐标段）`
-        ];
-        toast(okLines.join('\n') + reportBlock, 'success', 12000);
-      }
-    };
+    $('#p-generate').onclick = () => patternRunGenerate({ fromAuto: false });
+    // 真实板尺寸预设按钮（空白 / 图片两处共用）：一键把画布尺寸设为真实板
     // 点图放大弹窗（更宽敞的剪裁空间）
     const imgZoom = $('#p-img-zoom');
     const imgPreview = $('#p-img-preview');
@@ -5210,7 +5172,12 @@
     if (!pImage) return;
     const fullW = pImage.naturalWidth || pImage.width;
     const fullH = pImage.naturalHeight || pImage.height;
-    if (!fullW || !fullH) return;
+    if (!fullW || !fullH) {
+      // 图片尺寸读不到（缓存/未 onload），重置 pCells 为目标尺寸全空，避免留旧数据导致画布显示陈旧内容
+      pCells = Array.from({ length: pRows }, () => new Array(pCols).fill(null));
+      pLastDetectedColors = 0;
+      return;
+    }
     if (!state.beads || !state.beads.length) {
       pCells = Array.from({ length: pRows }, () => new Array(pCols).fill(null));
       pLastDetectedColors = 0;
@@ -5419,6 +5386,84 @@
       cells.push(outRow);
     }
     pCells = cells;
+  }
+  // 执行「图转图纸」生成（被点击按钮和 grid input 自动重算共用）。
+  // opts.fromAuto=true 时用于网格改变后的静默重算，仅弹简短提示，避免每次都刷「全空/成功」长诊断。
+  function patternRunGenerate(opts) {
+    const fromAuto = !!(opts && opts.fromAuto);
+    if (!pImage) return toast('请先上传参考图', 'warn');
+    // 色卡不足时的软提示：≥5 色才"出图", <5 色只建议先补色卡再生成
+    if (!state.beads || !state.beads.length) {
+      return toast('⚠️ 拼豆色卡为空\n请先到「色卡管理」添加一些色卡（黑色、白色、肉色等基础配色），再识别图纸', 'warn', 6000);
+    }
+    if (state.beads.length < 5 && !fromAuto) {
+      toast(`💡 当前只有 ${state.beads.length} 种色卡, 识别效果会非常粗糙（所有非白格都会映射到同一色号）\n建议先到「色卡管理」导入更多色号 (MARD 221 标准色), 或点下方「继续生成」强行预览`, 'info', 6000);
+    }
+    // input 空/非法时 fallback 到现有 pCols/pRows（避免被强行改成 30 抹掉用户之前填的尺寸）
+    let c = parseInt($('#p-icols').value, 10); if (!isFinite(c) || c < 2 || c > 150) c = pCols || 30;
+    let r = parseInt($('#p-irows').value, 10); if (!isFinite(r) || r < 2 || r > 150) r = pRows || 30;
+    c = Math.min(150, Math.max(2, c)); r = Math.min(150, Math.max(2, r));
+    pCols = c; pRows = r; pHighlight = null;
+    patternPushUndo();
+    patternGenerateFromImage();
+    // 局部刷新：画布 + BOM（不重渲整个 view，省一次 input 失焦）
+    patternRenderCanvas();
+    patternRenderBOM();
+    // 同步更新右上「画布（N×M）」标题（避免每次重新 renderPattern）
+    const titles = document.querySelectorAll('h3');
+    for (const t of titles) { if (/🧩\s*画布/.test(t.textContent)) t.textContent = `🧩 画布（${pCols} × ${pRows}）`; }
+    // 反馈生成情况：多少格匹配到色、多少格空（剪裁区小于目标网格时空格会很多）
+    let filled = 0, empty = 0;
+    for (let rr = 0; rr < pCells.length; rr++) for (let cc = 0; cc < pCells[rr].length; cc++) {
+      if (pCells[rr][cc]) filled++; else empty++;
+    }
+    const total = pCols * pRows;
+    const beadCount = (state.beads && state.beads.length) || 0;
+    const detected = pLastDetectedColors || 0;
+    // 当前剪裁区比例（用于提示「把网格调到接近这个比例」）
+    const cropW = pImageCrop ? pImageCrop.w : (pImage ? pImage.naturalWidth : 1);
+    const cropH = pImageCrop ? pImageCrop.h : (pImage ? pImage.naturalHeight : 1);
+    const cropRatio = (cropW / cropH).toFixed(2);
+    const cellPxW = (cropW / pCols).toFixed(1), cellPxH = (cropH / pRows).toFixed(1);
+    const reportLines = (pPaletteReport || []).slice(0, 8).map(x => {
+      const swatch = `■`;
+      return `${swatch} #${x.hex} (${x.r},${x.g},${x.b})  →  ${x.beadCode || '?'}  ${x.pct}%`;
+    }).join('\n');
+    const reportBlock = reportLines && !fromAuto ? `\n📊 色彩映射（前 8 种）：\n${reportLines}` : '';
+
+    if (fromAuto) {
+      // 静默场景：仅给一行简洁反馈
+      if (filled === 0) {
+        toast(`⚠️ ${pCols}×${pRows} 全空 — 检查色卡或缩小网格/调整剪裁`, 'warn', 4000);
+      } else {
+        toast(`🔄 自动重算 ${pCols}×${pRows}，${filled} 格匹配 / ${empty} 格空`, 'info', 2200);
+      }
+      return;
+    }
+
+    if (filled === 0) {
+      const tips = [];
+      if (beadCount < 5) tips.push(`① 色卡仅 ${beadCount} 种 — 至少加 5~10 种基础色`);
+      if (detected > beadCount * 2 && beadCount < 20) tips.push(`② 图中检测到 ${detected} 种主色, 但色卡只有 ${beadCount} 种 — 建议导入完整 MARD 221 色`);
+      if (detected === 1) tips.push(`③ 仅识别出 1 种主色 — 大部分区域被识别为白底, 把网格列/行调小（如 40×25）或点「✂️ 剪裁」框出内容区`);
+      else tips.push(`③ 目标网格 ${pCols}×${pRows}（比例 ${(pCols/pRows).toFixed(2)}:1）过大, 建议调到剪裁区比例 ${cropRatio}:1 — 每格像素越多, 识别越准`);
+      if (!pImageCrop || (pImageCrop.x === 0 && pImageCrop.y === 0 && pImageCrop.w >= (pImage.naturalWidth - 1) && pImageCrop.h >= (pImage.naturalHeight - 1))) {
+        tips.push(`④ 当前未剪裁, 整张图含大量白底 — 点「✂️ 剪裁」框出内容区`);
+      }
+      toast(`⚠️ 没匹配到任何色卡（共 ${total} 格全空）\n图检测到 ${detected} 种主色 / 你的色卡 ${beadCount} 种\n${tips.join('\n')}${reportBlock}`, 'warn', 12000);
+    } else if (empty / total > 0.5) {
+      const tips2 = [`已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格`];
+      if (detected > beadCount * 2 && beadCount < 20) tips2.push(`图检测到 ${detected} 种主色, 但色卡只有 ${beadCount} 种`);
+      if (cellPxW < 12 || cellPxH < 12) tips2.push(`每格仅约 ${cellPxW}×${cellPxH} 原图像素（<12px），识别精度受限 — 把网格调小到 30~40 列`);
+      else tips2.push(`建议把目标网格 ${pCols}×${pRows} 调到接近剪裁区比例 ${cropRatio}:1`);
+      toast(`⚠️ ${tips2.join('\n')}${reportBlock}\n🧭 坐标映射: 剪裁 ${cropW}×${cropH} → 画布 ${pCols}×${pRows}, 每格 ≈ ${cellPxW}×${cellPxH}px`, 'warn', 12000);
+    } else {
+      const okLines = [
+        `✅ 已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格（图中检测到 ${detected} 种主色）`,
+        `🧭 剪裁 ${cropW}×${cropH} → 画布 ${pCols}×${pRows}, 每格 ≈ ${cellPxW}×${cellPxH}px（hover 单元格查具体原图坐标段）`
+      ];
+      toast(okLines.join('\n') + reportBlock, 'success', 12000);
+    }
   }
   function patternExportPNG() {
     const safe = patternSafeName(pName);
