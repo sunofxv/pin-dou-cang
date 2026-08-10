@@ -903,13 +903,26 @@
       matchedBy: it.colorNumber ? 'VLM' : ''
     }));
   }
-  // 让视觉模型识别“图例区域”中的颜色色块：返回每个色块的 hex 与印的色号 code。
+  // 归一化单个图例条目：解析 hex / code / count，并防御模型把「内部色号」与「下方数量」互换
+  function normalizeLegendItem(c) {
+    c = c || {};
+    let hex = (c.hex || '').trim();
+    let code = (c.code || '').trim();
+    let count = parseInt(c.count, 10);
+    if (isNaN(count) || count < 0) count = 0;
+    // 模型有时把两者互换：code 拿到纯数字、count 拿到字母数字 -> 纠正
+    if (/^\d+$/.test(code) && /[A-Za-z]/.test(String(c.count != null ? c.count : ''))) {
+      const t = code; code = String(c.count).trim(); count = parseInt(t, 10) || 0;
+    }
+    return { hex, code, count };
+  }
+  // 让视觉模型识别“图例区域”中的颜色色块：返回每个色块的 hex、内部色号 code、以及下方数量 count。
   async function callLegendVisionAPI(dataUrl, apiKey, model, baseUrl) {
     const prompt = `你正在看一张拼豆(Perler/Hama)图纸的「颜色图例」区域：这是一排/一列整齐排列的纯色色块。
 
 每个色块的固定结构是：
 - 色块【内部】印有一行短码（如 "W123"、"R05"、"C25"），那是该颜色的「色号名称」。
-- 色块【正下方】另有一行数字，那是该颜色的「数量」，【绝对不是色号】。
+- 色块【正下方】另有一行数字，那是该颜色的「数量」（例如 12 表示需要 12 颗），不是色号。
 
 任务：识别图例中每一个「颜色色块」，从左到右、从上到下逐一列出。
 
@@ -917,15 +930,16 @@
 1. 只识别纯色填充的「色块」本身，忽略白色间隔、黑色网格线、边框、以及色块外的文字说明。
 2. hex 取该色块中心的「主体填充色」，不要取文字颜色、边框颜色或阴影。
 3. code 只取「色块内部印的色号短码」。绝对不要把色块【下方】的数量数字当成 code。看不清或没印字就填空字符串 ""，不要猜测或编造。
-4. 不要合并相近颜色——只要肉眼可区分的不同色块，就分别列出（含深浅不同的同色系）。
-5. 只返回一个 JSON，不要任何额外文字或 Markdown。
+4. count 取「色块正下方印的数量数字」（整数，如 12）；若下方没有数字就填 0。
+5. 不要合并相近颜色——只要肉眼可区分的不同色块，就分别列出（含深浅不同的同色系）。
+6. 只返回一个 JSON，不要任何额外文字或 Markdown。
 
 返回格式（示例）：
-{"colors":[{"hex":"#FFD700","code":"Y8"},{"hex":"#A52A2A","code":"BR3"}]}`;
+{"colors":[{"hex":"#FFD700","code":"Y8","count":12},{"hex":"#A52A2A","code":"BR3","count":3}]}`;
     const parsed = await callVLM(dataUrl, apiKey, model, prompt, baseUrl);
     const colors = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.colors) ? parsed.colors : []);
     return colors
-      .map(c => ({ hex: (c.hex || '').trim(), code: (c.code || '').trim() }))
+      .map(normalizeLegendItem)
       .filter(c => /^#?[0-9a-fA-F]{6}$/.test(c.hex) || /^#[0-9a-fA-F]{3}$/.test(c.hex));
   }
   // 单块模式：图例条已切成独立小图，每张只含一个色块。prompt 强调「只有一个色块」，
@@ -933,21 +947,21 @@
   async function callSingleLegendVisionAPI(dataUrl, apiKey, model, baseUrl) {
     const prompt = `这张图是从拼豆图纸颜色图例中裁剪出来的「单个色块」区域。
 
-结构说明：色块【内部】印有一行短码（如 "W123"、"R05"），那是「色号名称」；色块【正下方】可能另有一行数字，那是「数量」，【不是色号】。本图已尽量只保留色块主体。
+结构说明：色块【内部】印有一行短码（如 "W123"、"R05"），那是「色号名称」；色块【正下方】可能另有一行数字（如 12），那是「数量」（需要几颗），不是色号。
 
 任务：识别这个色块的属性。
 
 严格要求：
 1. hex 取该色块中心的「主体填充色」，不要取文字颜色、边框或阴影。
 2. code 只取「色块内部印的色号短码」（如 "C25"、"W1"）。绝对不要把任何位于色块【下方/边缘】的单独数字当成 code。看不清或没印字就填空字符串 ""，不要猜测编造。
-3. 只返回一个 JSON 对象，不要任何额外文字或 Markdown：{"hex":"#RRGGBB","code":"..."}`;
+3. count 取「色块正下方印的数量数字」（整数，如 12）；若下方没有数字就填 0。
+4. 只返回一个 JSON 对象，不要任何额外文字或 Markdown：{"hex":"#RRGGBB","code":"...","count":12}`;
     const parsed = await callVLM(dataUrl, apiKey, model, prompt, baseUrl);
-    // 兼容返回纯数组 [{}] 与对象 {hex,code} 两种形态
+    // 兼容返回纯数组 [{}] 与对象 {hex,code,count} 两种形态
     const obj = (Array.isArray(parsed) ? parsed[0] : parsed) || {};
-    const hex = (obj.hex || '').trim();
-    const code = (obj.code || '').trim();
-    if (!/^#?[0-9a-fA-F]{6}$/.test(hex) && !/^#[0-9a-fA-F]{3}$/.test(hex)) return { hex: '', code: '' };
-    return { hex, code };
+    const norm = normalizeLegendItem(obj);
+    if (!/^#?[0-9a-fA-F]{6}$/.test(norm.hex) && !/^#[0-9a-fA-F]{3}$/.test(norm.hex)) return { hex: '', code: '', count: 0 };
+    return norm;
   }
   // 将归一化区域裁剪为独立图片 dataURL（用于把图例区域单独发给视觉模型）
   function cropRegionToDataURL(img, region) {
@@ -1049,7 +1063,8 @@
         colorNumber = m.colorNumber || '';
         colorName = m.colorName || '';
       }
-      out.push({ r, g, b, hex: rgbToHex(r, g, b), colorNumber, colorName, count: 0 });
+      const count = (c.count && Number(c.count) > 0) ? Number(c.count) : 0;
+      out.push({ r, g, b, hex: rgbToHex(r, g, b), colorNumber, colorName, count });
     }
     out.estimatedCols = estimatedCols || out.length;
     return out;
@@ -2346,7 +2361,7 @@
 
             <!-- 图例识别：框选图例 → 解析颜色 → 生成色号清单 → 框选图案 → 统计用量 -->
             <div id="legend-options" class="${state.settings.recognizeMode === 'legend' ? '' : 'hidden'} space-y-2">
-              <p class="text-[11px] text-mk-sub"><b>第一步</b>：在图上拖拽框选<b>图例区域</b>（通常是图纸底部的色块条），点「解析图例」或「🤖 AI识别图例」生成色号清单（AI 走内置云端代理自动读色号，零配置更准）。<br><b>第二步</b>：再拖拽框选<b>图案区域</b>（不含图例），点「计算整图用量」统计每个色号需要多少颗。</p>
+              <p class="text-[11px] text-mk-sub"><b>第一步</b>：在图上拖拽框选<b>图例区域</b>（通常是图纸底部的色块条，每个色块内印色号、下方印数量），点「🤖 AI识别图例」即可自动读出色号与数量。<br>若图例下方已印数量，识别后可直接「存为配方 / 扣减库存」，<b>无需再框选图案</b>；若想按图案精确统计，可再框选<b>图案区域</b>点「计算整图用量」覆盖数量。</p>
               <div class="flex items-center justify-between text-sm bg-white/60 rounded-xl px-3 py-2">
                 <span>图例列数（色块个数）</span>
                 <span class="flex items-center gap-2">
@@ -2674,7 +2689,8 @@
         if (colsInput && !colsInput.value) colsInput.value = tempLegendMap.estimatedCols || '';
         drawEditor();
         renderRecognize(v);
-        toast(`AI 已识别 ${tempLegendMap.length} 个图例色（${cols > 1 ? '按列逐个识别' : '整条识别'}），请再框选图案区域后点「计算整图用量」`, tempLegendMap.length ? 'success' : 'warn');
+        const _hasCount = tempLegendMap.some(x => x.count > 0);
+        toast(`AI 已识别 ${tempLegendMap.length} 个图例色${_hasCount ? '（已读入色块下方数量，可直接「存为配方 / 扣减库存」）' : '，如需精确数量请再框选图案区域点「计算整图用量」'}`, tempLegendMap.length ? 'success' : 'warn');
       } catch (err) {
         console.error(err);
         toast('AI 识别失败：' + (err.message || err), 'error');
