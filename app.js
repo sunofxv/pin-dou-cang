@@ -3875,6 +3875,7 @@
   let pImgAspect = null;      // 已上传参考图的宽高比（naturalWidth / naturalHeight），用于锁定纵横比
   let pAspectLock = true;     // 设置列/行时是否锁定纵横比（空白 1:1、图片按原图比例）
   let pLastDetectedColors = 0; // 上次识别时图中检测到的非白主色数 (5-bit 量化后去重), 给 toast 用
+  let pPaletteReport = [];     // 上次识别的色彩映射报告: [{pct, r, g, b, hex, beadCode}, ...] (按占比降序)
   let pImageCrop = null;      // 剪裁区域：{x,y,w,h} 原图像素坐标；null = 不剪裁（整图）
   let pImageCropMode = false; // 是否处于剪裁编辑模式（可拖拽选区）
   let pImageCropDrag = null;  // {handle, startCrop, startX, startY, scale} 拖拽状态
@@ -4095,6 +4096,7 @@
             <p class="text-[11px] text-mk-sub mb-2">💡 选「✋ 拖动画布」工具，或按住 <b class="text-mk-ink">空格</b> / 鼠标 <b class="text-mk-ink">中键</b>，可平移画布；滚轮缩放只作用于画布，不影响下方用料清单。若浏览器已被意外缩放，按 <b class="text-mk-ink">Ctrl+0</b>（Mac：⌘+0）复位。点「📐 板数规划」可算此图需几块真实板、怎么拼。</p>
             <div id="p-canvas-wrap" class="overflow-hidden bg-mk-cream rounded-xl p-2 relative" style="max-height: 75vh;touch-action:none;">
               <canvas id="p-canvas" class="rounded-md" style="image-rendering:pixelated;touch-action:none;"></canvas>
+              <div id="p-cell-preview" class="absolute bottom-1 right-1 text-[11px] bg-black/60 text-white px-2 py-1 rounded-lg pointer-events-none hidden whitespace-nowrap leading-tight" style="backdrop-filter:blur(4px);"></div>
             </div>
           </section>
 
@@ -4275,8 +4277,14 @@
       const cropW = pImageCrop ? pImageCrop.w : (pImage ? pImage.naturalWidth : 1);
       const cropH = pImageCrop ? pImageCrop.h : (pImage ? pImage.naturalHeight : 1);
       const cropRatio = (cropW / cropH).toFixed(2);
+      const cellPxW = (cropW / pCols).toFixed(1), cellPxH = (cropH / pRows).toFixed(1);  // 每格对应原图多少像素
+      const reportLines = (pPaletteReport || []).slice(0, 8).map(x => {
+        const swatch = `■`;
+        return `${swatch} #${x.hex} (${x.r},${x.g},${x.b})  →  ${x.beadCode || '?'}  ${x.pct}%`;
+      }).join('\n');
+      const reportBlock = reportLines ? `\n📊 色彩映射（前 8 种）：\n${reportLines}` : '';
+
       if (filled === 0) {
-        // 针对性建议：色卡少 / 网格过大 / 裁剪区过大 / 内容区过小
         const tips = [];
         if (beadCount < 5) tips.push(`① 色卡仅 ${beadCount} 种 — 至少加 5~10 种基础色`);
         if (detected > beadCount * 2 && beadCount < 20) tips.push(`② 图中检测到 ${detected} 种主色, 但色卡只有 ${beadCount} 种 — 建议导入完整 MARD 221 色`);
@@ -4285,14 +4293,19 @@
         if (!pImageCrop || (pImageCrop.x === 0 && pImageCrop.y === 0 && pImageCrop.w >= (pImage.naturalWidth - 1) && pImageCrop.h >= (pImage.naturalHeight - 1))) {
           tips.push(`④ 当前未剪裁, 整张图含大量白底 — 点「✂️ 剪裁」框出内容区`);
         }
-        toast(`⚠️ 没匹配到任何色卡（共 ${total} 格全空）\n图检测到 ${detected} 种主色 / 你的色卡 ${beadCount} 种\n${tips.join('\n')}`, 'warn', 12000);
+        toast(`⚠️ 没匹配到任何色卡（共 ${total} 格全空）\n图检测到 ${detected} 种主色 / 你的色卡 ${beadCount} 种\n${tips.join('\n')}${reportBlock}`, 'warn', 12000);
       } else if (empty / total > 0.5) {
         const tips2 = [`已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格`];
         if (detected > beadCount * 2 && beadCount < 20) tips2.push(`图检测到 ${detected} 种主色, 但色卡只有 ${beadCount} 种`);
-        tips2.push(`空格过多, 建议把目标网格 ${pCols}×${pRows} 调到接近剪裁区比例 ${cropRatio}:1`);
-        toast(`⚠️ ${tips2.join('\n')}`, 'warn', 8000);
+        if (cellPxW < 12 || cellPxH < 12) tips2.push(`每格仅约 ${cellPxW}×${cellPxH} 原图像素（<12px），识别精度受限 — 把网格调小到 30~40 列`);
+        else tips2.push(`建议把目标网格 ${pCols}×${pRows} 调到接近剪裁区比例 ${cropRatio}:1`);
+        toast(`⚠️ ${tips2.join('\n')}${reportBlock}\n🧭 坐标映射: 剪裁 ${cropW}×${cropH} → 画布 ${pCols}×${pRows}, 每格 ≈ ${cellPxW}×${cellPxH}px`, 'warn', 12000);
       } else {
-        toast(`✅ 已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格（图中检测到 ${detected} 种主色）`, 'success');
+        const okLines = [
+          `✅ 已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格（图中检测到 ${detected} 种主色）`,
+          `🧭 剪裁 ${cropW}×${cropH} → 画布 ${pCols}×${pRows}, 每格 ≈ ${cellPxW}×${cellPxH}px（hover 单元格查具体原图坐标段）`
+        ];
+        toast(okLines.join('\n') + reportBlock, 'success', 12000);
       }
     };
     // 点图放大弹窗（更宽敞的剪裁空间）
@@ -4422,6 +4435,30 @@
     cv.style.transform = `translate(${pPanX}px, ${pPanY}px)`;
     cv.style.transformOrigin = '0 0';
   }
+  // hover 诊断: 显示当前 cell 对应的原图坐标段 + 色号 / 主色
+  function updateCellPreview(cell) {
+    const tip = $('#p-cell-preview'); if (!tip) return;
+    if (!cell) { tip.classList.add('hidden'); return; }
+    const { r, c } = cell;
+    // 当前 cell 对应的原图坐标段 (按 pImageCrop + pCols/pRows 等比例切分)
+    const cropW = pImageCrop ? pImageCrop.w : (pImage ? pImage.naturalWidth : 0);
+    const cropH = pImageCrop ? pImageCrop.h : (pImage ? pImage.naturalHeight : 0);
+    let imgX0 = 0, imgY0 = 0, imgX1 = 0, imgY1 = 0;
+    if (cropW && cropH) {
+      const cx = (pImageCrop ? pImageCrop.x : 0), cy = (pImageCrop ? pImageCrop.y : 0);
+      imgX0 = (cx + (c * cropW) / pCols) | 0;
+      imgY0 = (cy + (r * cropH) / pRows) | 0;
+      imgX1 = (cx + ((c + 1) * cropW) / pCols) | 0;
+      imgY1 = (cy + ((r + 1) * cropH) / pRows) | 0;
+    }
+    const num = (pCells[r] || [])[c];
+    const bead = num ? beadByNumber(num) : null;
+    const beadLabel = bead ? `${bead.colorNumber} ${bead.colorName || ''}`.trim() : (num ? `? ${num}` : '空');
+    const sw = bead ? bead.hex : null;
+    const swatch = sw ? `■` : '□';
+    tip.innerHTML = `${swatch} (${r + 1}, ${c + 1}) → 原图 [${imgX0},${imgY0} – ${imgX1},${imgY1}] · ${beadLabel}`;
+    tip.classList.remove('hidden');
+  }
   function patternAttachCanvas() {
     const cv = $('#p-canvas'); if (!cv) return;
     const wrap = $('#p-canvas-wrap');
@@ -4503,7 +4540,7 @@
     };
     // 悬浮提示：在 pan / 空格 / 中键可平移时显示 grab 手型，让用户知道这里可以拖
     cv.onmouseenter = () => { if (panMode()) cv.style.cursor = 'grab'; };
-    cv.onmouseleave = () => { cv.style.cursor = ''; };
+    cv.onmouseleave = () => { cv.style.cursor = ''; const tip = $('#p-cell-preview'); if (tip) tip.classList.add('hidden'); };
     cv.onmousemove = (e) => {
       if (pPanning && panMode()) {
         pPanX += (e.clientX - pLastPanX);
@@ -4513,6 +4550,8 @@
         return;
       }
       if (pDrawing && (pTool === 'pen' || pTool === 'eraser')) apply(getCell(e));
+      // hover 诊断: 显示当前 cell 对应的原图坐标段 + 色号 / 主色
+      updateCellPreview(getCell(e));
     };
     cv.ontouchstart = (e) => {
       if (e.touches.length >= 2) { pDrawing = false; pPanning = false; return; }
@@ -5105,14 +5144,11 @@
     const fullW = pImage.naturalWidth || pImage.width;
     const fullH = pImage.naturalHeight || pImage.height;
     if (!fullW || !fullH) return;
-    // 色卡为空检查已移至点击处（patternGenerateFromImage 调用前）— 这里不再重复提示,
-    // 但仍兜底防空指针, 以防外部直接调用
     if (!state.beads || !state.beads.length) {
       pCells = Array.from({ length: pRows }, () => new Array(pCols).fill(null));
       pLastDetectedColors = 0;
       return;
     }
-    // 按用户剪裁区域取像素；若未设剪裁或选区=整图，则退化为整图
     let sx = 0, sy = 0, sw = fullW, sh = fullH;
     if (pImageCrop && (pImageCrop.x > 0 || pImageCrop.y > 0 || pImageCrop.w < fullW || pImageCrop.h < fullH)) {
       sx = pImageCrop.x; sy = pImageCrop.y; sw = pImageCrop.w; sh = pImageCrop.h;
@@ -5120,33 +5156,37 @@
       sh = Math.max(2, Math.min(sh, fullH - sy));
     }
     const W = sw, H = sh;
-    // 直接取原图像素 — 不缩放,避免 Canvas 重新采样时把网格线/文字/相邻格颜色混合进每个像素
     const tmp = document.createElement('canvas');
     tmp.width = W; tmp.height = H;
     const tctx = tmp.getContext('2d');
     tctx.drawImage(pImage, sx, sy, sw, sh, 0, 0, W, H);
     const data = tctx.getImageData(0, 0, W, H).data;
 
-    // 噪点像素判定: 只过滤“白色上的极浅光晕”(极低饱和 + 极高亮度)。
-    // 关键修复: 之前 sat<0.06, lum 0.62-0.96 把设备银边/iPad 边框/真浅灰全当噪点丢了 →
-    //          整格被误判为「白底」→ 6% 阈值过严 → 全图 null. 改为只过滤 lum>0.88 的极浅像素,
-    //          真浅银(180~220) 仍能保留并进入最近色匹配.
-    //       不再过滤纯黑 —— 纯黑可能是真实黑色拼豆(H16 描边)，要保留给下方“多数投票”判断。
+    // 噪声过滤: 只过滤"近白"的极浅光晕（旧的设备银边/真浅灰(180~220) 应保留给下方饱和度判定）
     function isNoise(r, g, b) {
       const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
       const sat = mx === 0 ? 0 : (mx - mn) / mx;
       const lum = (mx + mn) / 2;
-      if (sat < 0.04 && lum > 0.88 && lum < 0.99) return true;  // 仅过滤"近白"的极浅灰
+      if (sat < 0.04 && lum > 0.88 && lum < 0.99) return true;  // 极浅的银边/光晕
       return false;
     }
+    // 像素分类 (HSL)
+    //   background: 饱和度极低 (sat < 0.10) — 白底/银底/灰底 都属此类
+    //   blackText  : 极深 (max < 40) — MARD221 黑文字/网格线 (排除, 当背景用)
+    //   colored    : 其他 — 真正的彩色拼豆像素
+    function isBackground(r, g, b) {
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      const sat = mx === 0 ? 0 : (mx - mn) / mx;
+      return sat < 0.10;
+    }
+    function isBlackish(r, g, b) { return r < 40 && g < 40 && b < 40; }
+    // 直方图条目: { n, sr, sg, sb, satSum, isColored }
+    const tmp_cells = [];
+    pPaletteReport = [];  // 调试报告: 全图每种 5bit 主色 → 色号 → 占比
 
-    // === 第一遍: 每 cell 采样本地代表 RGB (不直接映射,留作聚类) ===
-    const local = [];  // 每 cell: {r, c, rgb: [sr, sg, sb]} 或 null
-    const tmp_cells = [];  // 2D 数组 (用于第二遍)
-    // 内缩比例: 10% (保留 80% cell 区域, 避免 25% 过大把边角的 H29 标签吃掉)
-    const CROP = 0.10;
     for (let r = 0; r < pRows; r++) {
       const rowRgb = new Array(pCols).fill(null);
+      const rowCell = new Array(pCols).fill(null);  // cell 调试数据: {best, picked}
       for (let c = 0; c < pCols; c++) {
         const x0 = ((c * W) / pCols) | 0;
         const x1 = (((c + 1) * W) / pCols) | 0;
@@ -5154,94 +5194,153 @@
         const y1 = (((r + 1) * H) / pRows) | 0;
         if (x1 <= x0 || y1 <= y0) continue;
         const cw = x1 - x0, chh = y1 - y0;
-        const ix0 = (x0 + cw * CROP) | 0;
-        const ix1 = (x0 + cw * (1 - CROP)) | 0;
-        const iy0 = (y0 + chh * CROP) | 0;
-        const iy1 = (y0 + chh * (1 - CROP)) | 0;
+        // 边缘 cell 内缩少些，中心 cell 内缩多些 — 避免边缘 cell 错过彩色像素
+        const radial = Math.min(cw, chh);
+        const inset = Math.min(2, Math.floor(radial * 0.10));
+        const ix0 = x0 + inset, ix1 = x1 - inset;
+        const iy0 = y0 + inset, iy1 = y1 - inset;
         if (ix1 <= ix0 || iy1 <= iy0) continue;
 
-        const buckets = new Map();
+        // 3 类分桶: 全像素 / 彩色像素 / 背景像素
+        const allBuckets = new Map();      // 整体量化 (回退用)
+        const coloredBuckets = new Map();  // 只有彩色像素 (主色用)
+        const bgBuckets = new Map();       // 背景像素 (用于诊断)
+        let totalPx = 0, coloredPx = 0, bgPx = 0;
         for (let yy = iy0; yy < iy1; yy++) {
           const rowOff = yy * W * 4;
           for (let xx = ix0; xx < ix1; xx++) {
             const px = rowOff + (xx << 2);
             const dr = data[px], dg = data[px + 1], db = data[px + 2];
             if (isNoise(dr, dg, db)) continue;
+            totalPx++;
             const qr = dr >> 4, qg = dg >> 4, qb = db >> 4;
             const key = (qr << 8) | (qg << 4) | qb;
-            let bb = buckets.get(key);
-            if (!bb) { bb = { sr: 0, sg: 0, sb: 0, n: 0 }; buckets.set(key, bb); }
+            let bb = allBuckets.get(key);
+            if (!bb) { bb = { sr: 0, sg: 0, sb: 0, n: 0 }; allBuckets.set(key, bb); }
             bb.sr += dr; bb.sg += dg; bb.sb += db; bb.n++;
-          }
-        }
-        if (!buckets.size) continue;
-        const sorted = [...buckets.values()].sort((a, b) => b.n - a.n);
-        const best = sorted[0];
-        // 白底判定: 主桶为近白 → 可能是标签格(白底+色块)或纯白背景(无拼豆)
-        function isWhiteish(b) {
-          const ar = b.sr / b.n, ag = b.sg / b.n, ab = b.sb / b.n;
-          return ar > 232 && ag > 232 && ab > 232;
-        }
-        // 黑文字/网格线判定: 在白底 cell 中, 黑色是 MARD221 图纸的色号文字或网格线 (不是真实黑色拼豆).
-        // 真实黑色拼豆(H16)应是 cell 主色 (≥50% 像素), 走 else 分支; 此处只在白底格中排除小黑点.
-        function isBlackish(b) {
-          const ar = b.sr / b.n, ag = b.sg / b.n, ab = b.sb / b.n;
-          return ar < 70 && ag < 70 && ab < 70;
-        }
-        let totalN = 0;
-        for (const b of buckets.values()) totalN += b.n;
-        let chosen = null;
-        if (isWhiteish(best)) {
-          // 找最强非白桶 — 排除黑色噪点 (MARD221 类图纸的黑文字/网格线)
-          // 关键修复: 旧版选"非白桶"会选到黑色文字 (n > 彩色 n) → 整图变黑色
-          let bestNonWhite = null;
-          for (const b of sorted) {
-            if (isWhiteish(b) || isBlackish(b)) continue;
-            if (!bestNonWhite || b.n > bestNonWhite.n) bestNonWhite = b;
-          }
-          if (!bestNonWhite) {
-            // 兜底: cell 全是白+黑 (没彩色) — 走「黑底」分支用黑色, 避免整格被误判为空
-            // (用户没导入黑色色卡时仍会显示空, 但已尽力)
-            for (const b of sorted) {
-              if (!bestNonWhite || b.n > bestNonWhite.n) bestNonWhite = b;
+            if (isBackground(dr, dg, db)) {
+              bgPx++;
+              let bg = bgBuckets.get(key);
+              if (!bg) { bg = { sr: 0, sg: 0, sb: 0, n: 0 }; bgBuckets.set(key, bg); }
+              bg.sr += dr; bg.sg += dg; bg.sb += db; bg.n++;
+            } else {
+              coloredPx++;
+              let cb = coloredBuckets.get(key);
+              if (!cb) { cb = { sr: 0, sg: 0, sb: 0, n: 0 }; coloredBuckets.set(key, cb); }
+              cb.sr += dr; cb.sg += dg; cb.sb += db; cb.n++;
             }
-            if (!bestNonWhite) continue;
           }
-          const isStrong = bestNonWhite.n >= 3 || bestNonWhite.n >= totalN * 0.02;
-          if (!isStrong && bestNonWhite.n < 2) continue;  // 极弱信号（单像素 AA）→ 当噪点
-          chosen = bestNonWhite;             // 标签格/细线主导色块 → 用此色
-        } else {
-          chosen = best;           // 彩色格/黑底格 → 主色即代表色
         }
-        rowRgb[c] = [chosen.sr / chosen.n, chosen.sg / chosen.n, chosen.sb / chosen.n];
+        if (!totalPx) continue;
+
+        // === 决策算法 (3 档) ===
+        // 主桶定义: 5bit 量化后像素最多的桶
+        const allSorted = [...allBuckets.values()].sort((a, b) => b.n - a.n);
+        const bestAll = allSorted[0];
+        let chosen = null;
+        let colorRole = 'skip';  // 'colored' | 'bg' | 'skip' 用于诊断
+        if (coloredPx >= 2) {
+          // 情况 1: cell 有彩色像素 → 用最强彩色桶 (跳过纯黑噪点，黑色算彩色以保留 H16)
+          let bestColored = null;
+          for (const b of coloredBuckets.values()) {
+            // 关键: 即使是 black (sat=0) 也算彩色 — 否则真黑底格子会丢
+            // 唯一排除: 黑像素当"少数票"时不影响主色, 但当主色时保留
+            if (!bestColored || b.n > bestColored.n) bestColored = b;
+          }
+          // 如果"真正彩色(sat>0.10)的像素" ≥ 2px，用它
+          const realColoredCount = (() => {
+            let s = 0;
+            for (const b of coloredBuckets.values()) {
+              const ar = b.sr / b.n, ag = b.sg / b.n, ab = b.sb / b.n;
+              const mx = Math.max(ar, ag, ab), mn = Math.min(ar, ag, ab);
+              const sat = mx === 0 ? 0 : (mx - mn) / mx;
+              if (sat > 0.10) s += b.n;
+            }
+            return s;
+          })();
+          if (realColoredCount >= 2 && coloredPx / totalPx >= 0.10) {
+            // 真有色 cell — 用最强"真有色"桶
+            let bestRealColor = null;
+            for (const b of coloredBuckets.values()) {
+              const ar = b.sr / b.n, ag = b.sg / b.n, ab = b.sb / b.n;
+              const mx = Math.max(ar, ag, ab), mn = Math.min(ar, ag, ab);
+              const sat = mx === 0 ? 0 : (mx - mn) / mx;
+              if (sat < 0.10) continue;  // 跳过黑文字
+              if (!bestRealColor || b.n > bestRealColor.n) bestRealColor = b;
+            }
+            chosen = bestRealColor || bestColored;
+            colorRole = 'colored';
+          } else {
+            // 几乎全背景 (可能含银色/纯白 + 微弱彩色) → 用最强"真彩色"桶, 弱则空
+            if (bestColored.n >= 2) {
+              // 检查是否只是黑文字
+              const ar = bestColored.sr / bestColored.n, ag = bestColored.sg / bestColored.n, ab = bestColored.sb / bestColored.n;
+              const mx = Math.max(ar, ag, ab), mn = Math.min(ar, ag, ab);
+              const sat = mx === 0 ? 0 : (mx - mn) / mx;
+              if (sat > 0.10 && bestColored.n >= Math.max(2, totalPx * 0.02)) {
+                chosen = bestColored;  // 真有色像素
+                colorRole = 'colored';
+              } else {
+                chosen = null; colorRole = 'bg';  // 太弱 (黑文字/AA) → 跳过
+              }
+            } else {
+              chosen = null; colorRole = 'skip';
+            }
+          }
+        } else if (bestAll) {
+          // 情况 2: cell 全是背景 (如纯白/纯银 iPad 边) → 空 cell
+          chosen = null; colorRole = 'bg';
+        }
+        if (chosen) {
+          rowRgb[c] = [chosen.sr / chosen.n, chosen.sg / chosen.n, chosen.sb / chosen.n];
+        }
+        rowCell[c] = { totalPx, coloredPx, bgPx, colorRole };
       }
       tmp_cells.push(rowRgb);
+      // (调试数据存到全局外不再使用 — 用户不需看 cell-by-cell)
     }
 
-    // === 第二遍: 全局调色板 (5-bit 量化合并, 不做任何数量阈值过滤) ===
-    // 关键修复: 旧版按“≥1% 数量”过滤 → 黑色描边(H16 仅 18 颗)在大网格里被直接删掉，
-    //          边框整圈消失/错乱。现在保留所有出现的量化色，稀有但重要的颜色也能保住。
+    // === 第二遍: 全局调色板 (5-bit 量化合并) ===
     const beadLabs = state.beads.map(b => {
       const [br, bg, bb] = hexToRgb(b.hex);
       return rgbToLab(br, bg, bb);
     });
-    const paletteMap = new Map();  // 5-bit 量化 key → 色号
+    const paletteMap = new Map();  // 5bit key → 色号
     const detectedKeys = new Set();
+    const detectedAgg = new Map();  // 5bit key → { n, sr, sg, sb }
     for (const rowRgb of tmp_cells) {
       for (const rgb of rowRgb) {
         if (!rgb) continue;
         const qk = ((rgb[0] >> 3) << 10) | ((rgb[1] >> 3) << 5) | (rgb[2] >> 3);
         detectedKeys.add(qk);
+        let agg = detectedAgg.get(qk);
+        if (!agg) { agg = { n: 0, sr: 0, sg: 0, sb: 0 }; detectedAgg.set(qk, agg); }
+        agg.n++; agg.sr += rgb[0]; agg.sg += rgb[1]; agg.sb += rgb[2];
         if (!paletteMap.has(qk)) {
-          // 用感知色差(CIELAB ΔE)选最近色卡: 红/橙/黄/棕 等相近色不再张冠李戴
           paletteMap.set(qk, nearestOwnedColorLab(rgb[0], rgb[1], rgb[2], beadLabs));
         }
       }
     }
-    pLastDetectedColors = detectedKeys.size;   // 给 toast 反馈用：图中实际检测到几种主色
+    pLastDetectedColors = detectedKeys.size;
 
-    // === 第三遍: 每个 cell 用其量化色查全局调色板 → 色号 ===
-    // 同色量化 → 同色号，保证整图风格统一；不同色(即便 RGB 接近)也按真实色差分流。
+    // === 第三遍: 每 cell 量化 → 全局调色板 → 色号 ===
+    // 同时收集配色报告 (top 10 量化色)
+    const reportArr = [];
+    let totalMapped = 0;
+    for (const [qk, agg] of detectedAgg) {
+      const beadCode = paletteMap.get(qk);
+      const [br, bg, bb] = [agg.sr / agg.n, agg.sg / agg.n, agg.sb / agg.n];
+      reportArr.push({ qk, n: agg.n, rgb: [br, bg, bb], beadCode });
+      totalMapped += agg.n;
+    }
+    reportArr.sort((a, b) => b.n - a.n);
+    pPaletteReport = reportArr.map(x => ({
+      pct: Math.round(100 * x.n / Math.max(1, totalMapped)),
+      r: x.rgb[0] | 0, g: x.rgb[1] | 0, b: x.rgb[2] | 0,
+      beadCode: x.beadCode,
+      hex: rgbToHex(x.rgb)
+    }));
+
     const cells = [];
     for (const rowRgb of tmp_cells) {
       const outRow = [];
