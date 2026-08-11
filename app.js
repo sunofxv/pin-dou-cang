@@ -3476,12 +3476,18 @@
   // 用感知色差(CIELAB ΔE)找最近的自有色卡；beadLabs 为预计算的所有色卡 Lab
   function nearestOwnedColorLab(r, g, b, beadLabs) {
     const lab = rgbToLab(r, g, b);
-    let best = null, bestD = Infinity;
+    let best = null, bestD = Infinity, blackD = Infinity;
     for (let i = 0; i < state.beads.length; i++) {
+      const code = state.beads[i].colorNumber;
       const d = labDeltaE(lab, beadLabs[i]);
+      if (code === 'H7') { blackD = d; continue; }  // 记录黑色距离为兜底
       if (d < bestD) { bestD = d; best = state.beads[i]; }
     }
-    return best ? best.colorNumber : null;
+    if (!best) return null;
+    const mx = Math.max(r, g, b);
+    // 近黑(max<45)保留黑；暗而不黑(max>=45)且最近非黑比黑更近 → 改取最近非黑豆，削减"黑色块偏多"
+    if (bestD < blackD && mx >= 45) return best.colorNumber;
+    return 'H7';
   }
 
   function renderPattern(v) {
@@ -4715,63 +4721,29 @@
         }
         if (!totalPx) continue;
 
-        // === 决策算法 (3 档) ===
-        // 主桶定义: 5bit 量化后像素最多的桶
-        const allSorted = [...allBuckets.values()].sort((a, b) => b.n - a.n);
-        const bestAll = allSorted[0];
+        // === 决策算法：代表色 = 占格≥4%的彩色桶中「最高饱和度」者 ===
+        // 目的：细边/描边(如中间圆形边缘应为单一 c19)在 cell 内与白底 AA 混合时，
+        // 取"最饱和"的主色而非"最频繁"的混合均值，避免边缘被带成多种浅色。
         let chosen = null;
         let colorRole = 'skip';  // 'colored' | 'bg' | 'skip' 用于诊断
-        if (coloredPx >= 2) {
-          // 情况 1: cell 有彩色像素 → 用最强彩色桶 (跳过纯黑噪点，黑色算彩色以保留 H16)
-          let bestColored = null;
+        const minCount = Math.max(2, Math.round(totalPx * 0.04)); // 4% 门槛，抑制零星杂点喧宾夺主
+        if (coloredPx / totalPx >= 0.08) {
+          let top = null, satBest = null, satBestSat = -1;
           for (const b of coloredBuckets.values()) {
-            // 关键: 即使是 black (sat=0) 也算彩色 — 否则真黑底格子会丢
-            // 唯一排除: 黑像素当"少数票"时不影响主色, 但当主色时保留
-            if (!bestColored || b.n > bestColored.n) bestColored = b;
-          }
-          // 如果"真正彩色(sat>0.10)的像素" ≥ 2px，用它
-          const realColoredCount = (() => {
-            let s = 0;
-            for (const b of coloredBuckets.values()) {
+            if (!top || b.n > top.n) top = b;
+            if (b.n >= minCount) {
               const ar = b.sr / b.n, ag = b.sg / b.n, ab = b.sb / b.n;
               const mx = Math.max(ar, ag, ab), mn = Math.min(ar, ag, ab);
               const sat = mx === 0 ? 0 : (mx - mn) / mx;
-              if (sat > 0.10) s += b.n;
-            }
-            return s;
-          })();
-          if (realColoredCount >= 2 && coloredPx / totalPx >= 0.10) {
-            // 真有色 cell — 用最强"真有色"桶
-            let bestRealColor = null;
-            for (const b of coloredBuckets.values()) {
-              const ar = b.sr / b.n, ag = b.sg / b.n, ab = b.sb / b.n;
-              const mx = Math.max(ar, ag, ab), mn = Math.min(ar, ag, ab);
-              const sat = mx === 0 ? 0 : (mx - mn) / mx;
-              if (sat < 0.10) continue;  // 跳过黑文字
-              if (!bestRealColor || b.n > bestRealColor.n) bestRealColor = b;
-            }
-            chosen = bestRealColor || bestColored;
-            colorRole = 'colored';
-          } else {
-            // 几乎全背景 (可能含银色/纯白 + 微弱彩色) → 用最强"真彩色"桶, 弱则空
-            if (bestColored.n >= 2) {
-              // 检查是否只是黑文字
-              const ar = bestColored.sr / bestColored.n, ag = bestColored.sg / bestColored.n, ab = bestColored.sb / bestColored.n;
-              const mx = Math.max(ar, ag, ab), mn = Math.min(ar, ag, ab);
-              const sat = mx === 0 ? 0 : (mx - mn) / mx;
-              if (sat > 0.10 && bestColored.n >= Math.max(2, totalPx * 0.02)) {
-                chosen = bestColored;  // 真有色像素
-                colorRole = 'colored';
-              } else {
-                chosen = null; colorRole = 'bg';  // 太弱 (黑文字/AA) → 跳过
-              }
-            } else {
-              chosen = null; colorRole = 'skip';
+              if (sat > satBestSat) { satBestSat = sat; satBest = b; }
             }
           }
-        } else if (bestAll) {
-          // 情况 2: cell 全是背景 (如纯白/纯银 iPad 边) → 空 cell
-          chosen = null; colorRole = 'bg';
+          if (satBest) { chosen = satBest; colorRole = 'colored'; }
+          else if (top && top.n >= minCount) { chosen = top; colorRole = 'colored'; }
+          else if (top && top.n >= 2) { chosen = top; colorRole = 'colored'; }
+          else { colorRole = 'bg'; }
+        } else {
+          colorRole = 'bg';  // 彩色像素占比过低 → 视为背景(跳过)，避免白底零星彩点被当成色块
         }
         if (chosen) {
           rowRgb[c] = [chosen.sr / chosen.n, chosen.sg / chosen.n, chosen.sb / chosen.n];
