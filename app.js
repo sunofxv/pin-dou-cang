@@ -4966,6 +4966,14 @@
       return sat < 0.10;
     }
     function isBlackish(r, g, b) { return r < 40 && g < 40 && b < 40; }
+    // 近白(应填白色系如 H2): 高亮度且极低饱和 — 与浅灰底/银边区分开
+    function isNearWhite(r, g, b) {
+      const mx = Math.max(r, g, b);
+      if (mx < 240) return false;
+      const mn = Math.min(r, g, b);
+      const sat = mx === 0 ? 0 : (mx - mn) / mx;
+      return sat < 0.06;
+    }
     // 直方图条目: { n, sr, sg, sb, satSum, isColored }
     const tmp_cells = [];
     pPaletteReport = [];  // 调试报告: 全图每种 5bit 主色 → 色号 → 占比
@@ -5025,6 +5033,8 @@
         let chosen = null;
         let colorRole = 'skip';  // 'colored' | 'bg' | 'skip' 用于诊断
         const minCount = Math.max(2, Math.round(totalPx * 0.04)); // 4% 门槛，抑制零星杂点喧宾夺主
+        let bgTop = null;
+        for (const b of bgBuckets.values()) { if (!bgTop || b.n > bgTop.n) bgTop = b; }
         if (coloredPx / totalPx >= 0.08) {
           let top = null, satBest = null, satBestSat = -1;
           for (const b of coloredBuckets.values()) {
@@ -5041,7 +5051,13 @@
           else if (top && top.n >= 2) { chosen = top; colorRole = 'colored'; }
           else { colorRole = 'bg'; }
         } else {
-          colorRole = 'bg';  // 彩色像素占比过低 → 视为背景(跳过)，避免白底零星彩点被当成色块
+          // 彩色像素占比过低 → 可能是纯白底格子(应填白色系 H2) 或真背景
+          // 若白像素占绝大多数且主色近白 → 填最近白色系色号, 否则留空
+          if (bgTop && bgPx / totalPx >= 0.5 && isNearWhite(bgTop.sr / bgTop.n, bgTop.sg / bgTop.n, bgTop.sb / bgTop.n)) {
+            chosen = bgTop; colorRole = 'white';
+          } else {
+            colorRole = 'bg';  // 避免白底零星彩点/浅灰底被当成色块
+          }
         }
         if (chosen) {
           rowRgb[c] = [chosen.sr / chosen.n, chosen.sg / chosen.n, chosen.sb / chosen.n];
