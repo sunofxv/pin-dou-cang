@@ -2247,8 +2247,7 @@
       let resizeTarget = null, resizeHandle = null, resizeStartRegion = null, resizeStartPos = null;
       const CURSOR_MAP = { n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize', ne: 'nesw-resize', sw: 'nesw-resize', nw: 'nwse-resize', se: 'nwse-resize' };
 
-      cv.onmousedown = (e) => {
-        const p = canvasNorm(e, cv);
+      const pointerDown = (p) => {
         const hit = findResizeTarget(p.x, p.y);
         if (hit) {
           dragMode = 'resize';
@@ -2261,8 +2260,7 @@
         dragMode = 'create';
         dragging = true; dragStart = p; dragCurrent = p;
       };
-      cv.onmousemove = (e) => {
-        const p = canvasNorm(e, cv);
+      const pointerMove = (p) => {
         if (!dragMode) {
           const hit = findResizeTarget(p.x, p.y);
           cv.style.cursor = hit ? (CURSOR_MAP[hit.handle] || 'pointer') : 'crosshair';
@@ -2287,7 +2285,7 @@
         ctx.strokeRect(x, y, ww, hh);
         ctx.setLineDash([]);
       };
-      const endDrag = () => {
+      const pointerUp = () => {
         if (dragMode === 'resize') {
           dragMode = null;
           resizeTarget = null; resizeHandle = null; resizeStartRegion = null; resizeStartPos = null;
@@ -2317,8 +2315,27 @@
         cv.style.cursor = 'crosshair';
         drawEditor();
       };
-      cv.onmouseup = endDrag;
-      cv.onmouseleave = endDrag;
+      cv.onmousedown = (e) => pointerDown(canvasNorm(e, cv));
+      cv.onmousemove = (e) => pointerMove(canvasNorm(e, cv));
+      cv.onmouseup = pointerUp;
+      cv.onmouseleave = pointerUp;
+
+      // 触摸事件（移动端）：禁用默认手势以免拖拽触发页面滚动/缩放
+      cv.style.touchAction = 'none';
+      cv.addEventListener('touchstart', (e) => {
+        if (!e.touches || !e.touches.length) return;
+        e.preventDefault();
+        pointerDown(canvasNorm(e.touches[0], cv));
+      }, { passive: false });
+      cv.addEventListener('touchmove', (e) => {
+        if (!e.touches || !e.touches.length) return;
+        e.preventDefault();
+        pointerMove(canvasNorm(e.touches[0], cv));
+      }, { passive: false });
+      cv.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        pointerUp();
+      }, { passive: false });
     }
 
     $('#clear-region').onclick = () => {
