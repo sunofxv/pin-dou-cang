@@ -2010,30 +2010,102 @@
       ctx.drawImage(img, 0, 0, dw, dh);
       // 图例模式：图例区(紫)与图案区(绿)分别绘制
       if (state.settings.recognizeMode === 'legend') {
-        if (tempLegendRegion) {
-          ctx.strokeStyle = '#8b5cf6';
-          ctx.lineWidth = 2; ctx.setLineDash([6, 3]);
-          ctx.strokeRect(tempLegendRegion.x * dw, tempLegendRegion.y * dh, tempLegendRegion.w * dw, tempLegendRegion.h * dh);
-          ctx.setLineDash([]);
-          ctx.fillStyle = 'rgba(139,92,246,0.12)';
-          ctx.fillRect(tempLegendRegion.x * dw, tempLegendRegion.y * dh, tempLegendRegion.w * dw, tempLegendRegion.h * dh);
-          ctx.fillStyle = '#8b5cf6';
-          ctx.font = 'bold 12px sans-serif';
-          ctx.fillText('图例区域', (tempLegendRegion.x * dw) + 4, (tempLegendRegion.y * dh) + 14);
-        }
-        if (tempCropRegion) {
-          ctx.strokeStyle = '#10b981';
-          ctx.lineWidth = 2; ctx.setLineDash([]);
-          ctx.strokeRect(tempCropRegion.x * dw, tempCropRegion.y * dh, tempCropRegion.w * dw, tempCropRegion.h * dh);
-          ctx.fillStyle = 'rgba(16,185,129,0.12)';
-          ctx.fillRect(tempCropRegion.x * dw, tempCropRegion.y * dh, tempCropRegion.w * dw, tempCropRegion.h * dh);
-          ctx.fillStyle = '#10b981';
-          ctx.font = 'bold 12px sans-serif';
-          ctx.fillText('图案区域', (tempCropRegion.x * dw) + 4, (tempCropRegion.y * dh) + 14);
-        }
+        if (tempLegendRegion) drawRegionWithHandles(ctx, tempLegendRegion, dw, dh, '#8b5cf6', '图例区域');
+        if (tempCropRegion) drawRegionWithHandles(ctx, tempCropRegion, dw, dh, '#10b981', '图案区域');
       }
     };
     img.src = tempImage;
+  }
+
+  // 绘制选择框及其 8 个调整手柄（四边 + 四角）
+  function drawRegionWithHandles(ctx, region, dw, dh, color, label) {
+    const x = region.x * dw, y = region.y * dh, w = region.w * dw, h = region.h * dh;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.setLineDash(color === '#8b5cf6' ? [6, 3] : []);
+    ctx.strokeRect(x, y, w, h);
+    ctx.setLineDash([]);
+    ctx.fillStyle = color === '#8b5cf6' ? 'rgba(139,92,246,0.12)' : 'rgba(16,185,129,0.12)';
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = color;
+    ctx.font = 'bold 12px sans-serif';
+    ctx.fillText(label, x + 4, y + 14);
+
+    const s = 8, hs = s / 2;
+    const handles = [
+      { nx: 0, ny: 0 }, { nx: 0.5, ny: 0 }, { nx: 1, ny: 0 },
+      { nx: 1, ny: 0.5 }, { nx: 1, ny: 1 }, { nx: 0.5, ny: 1 },
+      { nx: 0, ny: 1 }, { nx: 0, ny: 0.5 }
+    ];
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    for (const handle of handles) {
+      const hx = x + handle.nx * w - hs;
+      const hy = y + handle.ny * h - hs;
+      ctx.fillRect(hx, hy, s, s);
+      ctx.strokeRect(hx, hy, s, s);
+    }
+  }
+
+  // 检测鼠标是否落在某个选择框的手柄上，返回 { target:'legend'|'crop', handle:'n'|'s'|... }
+  function findResizeTarget(normX, normY) {
+    const cv = $('#editor-canvas');
+    if (!cv) return null;
+    const dw = cv.width, dh = cv.height;
+    const threshold = Math.max(0.018, 10 / Math.min(dw, dh));
+    const candidates = [
+      { target: 'legend', region: tempLegendRegion },
+      { target: 'crop', region: tempCropRegion }
+    ];
+    const handleNames = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+    const handlePos = [
+      { nx: 0, ny: 0 }, { nx: 0.5, ny: 0 }, { nx: 1, ny: 0 },
+      { nx: 1, ny: 0.5 }, { nx: 1, ny: 1 }, { nx: 0.5, ny: 1 },
+      { nx: 0, ny: 1 }, { nx: 0, ny: 0.5 }
+    ];
+    for (const cand of candidates) {
+      const r = cand.region;
+      if (!r) continue;
+      for (let i = 0; i < handlePos.length; i++) {
+        const hx = r.x + handlePos[i].nx * r.w;
+        const hy = r.y + handlePos[i].ny * r.h;
+        if (Math.abs(normX - hx) <= threshold && Math.abs(normY - hy) <= threshold) {
+          return { target: cand.target, handle: handleNames[i] };
+        }
+      }
+    }
+    return null;
+  }
+
+  // 根据手柄和拖拽偏移量更新区域（保持对边/对角不动）
+  function applyResize(orig, handle, dx, dy) {
+    const min = 0.03;
+    let x = orig.x, y = orig.y, w = orig.w, h = orig.h;
+    if (handle.includes('e')) w = orig.w + dx;
+    if (handle.includes('w')) { x = orig.x + dx; w = orig.w - dx; }
+    if (handle.includes('s')) h = orig.h + dy;
+    if (handle.includes('n')) { y = orig.y + dy; h = orig.h - dy; }
+
+    // 限制在画布内
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > 1) w = 1 - x;
+    if (y + h > 1) h = 1 - y;
+
+    // 最小尺寸保护，且当拉过头时保持对边位置
+    if (w < min) {
+      if (handle.includes('w')) x = orig.x + orig.w - min;
+      w = min;
+    }
+    if (h < min) {
+      if (handle.includes('n')) y = orig.y + orig.h - min;
+      h = min;
+    }
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+
+    return { x, y, w, h };
   }
 
   // 将鼠标/画布坐标转换为归一化坐标
@@ -2047,7 +2119,7 @@
       <div class="grid md:grid-cols-2 gap-4">
         <section class="mk-card rounded-2xl shadow-soft p-5">
           <h2 class="text-xl font-bold mb-1">🖼️ 图纸识别（图例模式）</h2>
-          <p class="text-sm text-mk-sub mb-4">上传拼豆图纸，程序会自动定位底部的「颜色图例」条；定位不准时也可以手动拖拽框选。</p>
+          <p class="text-sm text-mk-sub mb-4">上传拼豆图纸，程序会自动定位底部的「颜色图例」条；定位不准时可拖拽边框/四角微调。</p>
 
           <label class="block border-2 border-dashed border-mk-brown rounded-2xl p-6 text-center cursor-pointer hover:bg-white/50 transition">
             <input id="img-input" type="file" accept="image/png,image/jpeg" class="hidden">
@@ -2059,7 +2131,7 @@
           <div id="preview" class="mt-4 ${tempImage ? '' : 'hidden'}">
             <div class="relative inline-block w-full">
               <canvas id="editor-canvas" class="w-full rounded-xl border border-mk-sand cursor-crosshair bg-white" style="max-height:360px;"></canvas>
-              <div id="editor-hint" class="text-[11px] text-mk-sub mt-1">${tempLegendRegion ? '已自动定位图例区域（紫框）。若定位不准，可直接拖拽重新框选。' : '在图上拖拽框选<b>图例区域</b>（通常是一整条横向排列的色块）。紫框=图例区，绿框=可选的图案区（用于精确统计用量）。'}</div>
+              <div id="editor-hint" class="text-[11px] text-mk-sub mt-1">${tempLegendRegion ? '已定位图例区域（紫框）。拖拽紫框/绿框的四边或四角可微调大小，在空白处拖拽可重新框选。' : '在图上拖拽框选<b>图例区域</b>（通常是一整条横向排列的色块）。紫框=图例区，绿框=可选的图案区；框好后可拖拽边框/四角微调大小。'}</div>
             </div>
             <div class="flex flex-wrap gap-2 mt-2">
               <button id="auto-legend-region" type="button" class="px-3 py-1.5 rounded-lg bg-mk-lav/70 text-mk-ink text-xs font-semibold hover:bg-mk-lav/90">🎯 自动框选图例区域</button>
@@ -2070,7 +2142,7 @@
           <div class="mt-4 space-y-3">
             <!-- 图例识别：自动/手动框选图例 → 解析颜色 → 生成色号清单 → 框选图案 → 统计用量 -->
             <div id="legend-options" class="space-y-2">
-              <p class="text-[11px] text-mk-sub"><b>第一步</b>：上传后程序会<b>自动定位</b>图纸底部的图例条（紫框）。若自动定位不准，可在图上拖拽重新框选。<br>点「🤖 AI识别图例」即可自动读出色号与数量；若图例下方已印数量，识别后可直接「存为配方 / 扣减库存」，<b>无需再框选图案</b>。</p>
+              <p class="text-[11px] text-mk-sub"><b>第一步</b>：上传后程序会<b>自动定位</b>图纸底部的图例条（紫框）。若定位不准，可拖拽紫框的四边/四角微调大小，或在空白处拖拽重新框选。<br>点「🤖 AI识别图例」即可自动读出色号与数量；若图例下方已印数量，识别后可直接「存为配方 / 扣减库存」，<b>无需再框选图案</b>。</p>
               <div class="flex items-center justify-between text-sm bg-white/60 rounded-xl px-3 py-2">
                 <span>图例列数（色块个数）</span>
                 <span class="flex items-center gap-2">
@@ -2122,7 +2194,7 @@
           <h3 class="font-bold mb-3">📋 使用说明</h3>
           <ol class="text-sm text-mk-ink/80 space-y-2 list-decimal list-inside">
             <li>上传图纸图片。</li>
-            <li>程序会<b>自动定位</b>底部的色块图例（紫框）。若定位不准，点「🎯 自动框选图例区域」重试，或在图上拖拽手动框选。</li>
+            <li>程序会<b>自动定位</b>底部的色块图例（紫框）。若定位不准，可拖拽紫框的四边/四角微调，或在空白处拖拽重新框选。</li>
             <li>填「图例列数」（色块个数，不填则自动估算），点「🤖 AI识别图例」——云端视觉自动读出色号与数量。</li>
             <li>若图例下方已印数量，识别后可直接「存为配方 / 扣减库存」，<b>无需框选图案</b>。</li>
             <li>若想按实际图案精确统计数量，可再框选<b>图案区域</b>（绿框）后点「计算整图用量」覆盖数量。</li>
@@ -2158,7 +2230,7 @@
             const colsInput = $('#legend-cols');
             if (colsInput && !colsInput.value && det.estimatedCols) colsInput.value = det.estimatedCols;
             drawEditor();
-            toast(`已自动定位图例区域（约 ${det.estimatedCols} 个色块），若不准可手动拖拽调整`, 'success');
+            toast(`已自动定位图例区域（约 ${det.estimatedCols} 个色块），可拖拽边框/四角微调`, 'success');
           }
         };
         img.src = tempImage;
@@ -2166,19 +2238,44 @@
       reader.readAsDataURL(file);
     };
 
-    // 编辑器画布事件（拖拽框选区域：图例区或图案区）
+    // 编辑器画布事件：拖拽新建框 / 拖拽手柄调整已有框
     const cv = $('#editor-canvas');
     if (cv && tempImage) {
       drawEditor();
+      let dragMode = null; // null | 'create' | 'resize'
       let dragging = false, dragStart = null, dragCurrent = null;
+      let resizeTarget = null, resizeHandle = null, resizeStartRegion = null, resizeStartPos = null;
+      const CURSOR_MAP = { n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize', ne: 'nesw-resize', sw: 'nesw-resize', nw: 'nwse-resize', se: 'nwse-resize' };
+
       cv.onmousedown = (e) => {
         const p = canvasNorm(e, cv);
+        const hit = findResizeTarget(p.x, p.y);
+        if (hit) {
+          dragMode = 'resize';
+          resizeTarget = hit.target;
+          resizeHandle = hit.handle;
+          resizeStartRegion = hit.target === 'legend' ? { ...tempLegendRegion } : { ...tempCropRegion };
+          resizeStartPos = p;
+          return;
+        }
+        dragMode = 'create';
         dragging = true; dragStart = p; dragCurrent = p;
       };
       cv.onmousemove = (e) => {
-        if (!dragging) return;
-        dragCurrent = canvasNorm(e, cv);
-        // 实时绘制拖拽框
+        const p = canvasNorm(e, cv);
+        if (!dragMode) {
+          const hit = findResizeTarget(p.x, p.y);
+          cv.style.cursor = hit ? (CURSOR_MAP[hit.handle] || 'pointer') : 'crosshair';
+        }
+        if (dragMode === 'resize') {
+          const r = applyResize(resizeStartRegion, resizeHandle, p.x - resizeStartPos.x, p.y - resizeStartPos.y);
+          if (resizeTarget === 'legend') tempLegendRegion = r;
+          else tempCropRegion = r;
+          drawEditor();
+          return;
+        }
+        if (dragMode !== 'create' || !dragging) return;
+        dragCurrent = p;
         drawEditor();
         const ctx = cv.getContext('2d');
         const dw = cv.width, dh = cv.height;
@@ -2191,6 +2288,13 @@
         ctx.setLineDash([]);
       };
       const endDrag = () => {
+        if (dragMode === 'resize') {
+          dragMode = null;
+          resizeTarget = null; resizeHandle = null; resizeStartRegion = null; resizeStartPos = null;
+          cv.style.cursor = 'crosshair';
+          drawEditor();
+          return;
+        }
         if (!dragging) return;
         dragging = false;
         if (dragStart && dragCurrent) {
@@ -2209,6 +2313,8 @@
           }
         }
         dragStart = null; dragCurrent = null;
+        dragMode = null;
+        cv.style.cursor = 'crosshair';
         drawEditor();
       };
       cv.onmouseup = endDrag;
@@ -2240,7 +2346,7 @@
         }
         drawEditor();
         renderRecognize(v);
-        toast(`已自动定位图例区域（约 ${det.estimatedCols} 个色块），若不准可手动拖拽调整`, 'success');
+        toast(`已自动定位图例区域（约 ${det.estimatedCols} 个色块），可拖拽边框/四角微调`, 'success');
       };
       img.src = tempImage;
     };
