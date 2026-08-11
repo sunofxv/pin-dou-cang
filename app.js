@@ -2347,49 +2347,71 @@
   // 自动检测图纸底部的横向颜色图例条，返回 { region: {x,y,w,h}, estimatedCols }
   // 失败时返回 null。region 坐标为相对于原图的归一化值（0~1）。
   function detectLegendRegion(img) {
-    const MAX_W = 900;
+    const MAX_W = 1200;
     const { w, h, ctx } = createAnalysisCanvas(img, MAX_W);
     const data = ctx.getImageData(0, 0, w, h).data;
 
     function isBg(r, g, b) { return r > 248 && g > 248 && b > 248; }
     function isText(r, g, b) { return r < 40 && g < 40 && b < 40; }
-    function isGray(r, g, b) { const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return mx - mn < 20 && mx > 60 && mx < 230; }
+    function isGray(r, g, b) { const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return mx - mn < 25 && mx > 50 && mx < 235; }
     function goodPx(r, g, b) { return !isBg(r, g, b) && !isText(r, g, b) && !isGray(r, g, b); }
 
-    // 1. 扫描底部 45% 区域，找有效像素密度最高的连续行
-    const yStart = Math.floor(h * 0.55);
-    const rowEnergy = [];
+    // 1. 扫描底部 50% 区域，逐行分析有效彩色段
+    const yStart = Math.floor(h * 0.50);
+    const rowInfos = [];
     for (let y = yStart; y < h; y++) {
-      let cnt = 0, run = 0, maxRun = 0;
+      let goodCount = 0;
+      const segments = [];
+      let inSeg = false, segStart = 0;
       for (let x = 0; x < w; x++) {
         const i = (y * w + x) * 4;
         const r = data[i], g = data[i + 1], b = data[i + 2];
-        if (goodPx(r, g, b)) { cnt++; run++; maxRun = Math.max(maxRun, run); }
-        else run = 0;
+        const ok = goodPx(r, g, b);
+        if (ok) {
+          goodCount++;
+          if (!inSeg) { inSeg = true; segStart = x; }
+        } else {
+          if (inSeg) {
+            if (x - segStart >= 2) segments.push({ x0: segStart, x1: x });
+            inSeg = false;
+          }
+        }
       }
-      // energy 综合密度和横向连续度
-      rowEnergy[y] = cnt + maxRun * 0.3;
+      if (inSeg && w - segStart >= 2) segments.push({ x0: segStart, x1: w });
+      rowInfos[y] = { goodCount, segments };
     }
 
-    let bestY = -1, bestE = 0;
+    // 2. 评分：有效像素比例 + 段数奖励（图例行应有多个小色块段）
+    let bestY = -1, bestScore = 0;
     for (let y = yStart; y < h; y++) {
-      if (rowEnergy[y] > bestE) { bestE = rowEnergy[y]; bestY = y; }
+      const info = rowInfos[y];
+      const ratio = info.goodCount / w;
+      const segScore = Math.min(info.segments.length, 10) * 0.06;
+      const multiSegBonus = info.segments.length >= 3 ? 0.12 : 0;
+      const score = ratio + segScore + multiSegBonus;
+      if (score > bestScore) { bestScore = score; bestY = y; }
     }
-    if (bestY < 0 || bestE < w * 0.08) return null;
+    if (bestY < 0 || bestScore < 0.06) return null;
 
-    // 2. 以 bestY 为中心向上下扩展，找出连续高密度条带
+    // 3. 以 bestY 为中心向上下扩展：连续多行都有 >=2 个段 或 较高有效像素比例
     let y0 = bestY, y1 = bestY;
-    const threshE = bestE * 0.22;
-    while (y0 > yStart && rowEnergy[y0] > threshE) y0--;
-    while (y1 < h - 1 && rowEnergy[y1] > threshE) y1++;
+    while (y0 > yStart && (rowInfos[y0].segments.length >= 2 || rowInfos[y0].goodCount / w > 0.03)) y0--;
+    while (y1 < h - 1 && (rowInfos[y1].segments.length >= 2 || rowInfos[y1].goodCount / w > 0.03)) y1++;
 
-    // 估算色块高度，并上下扩展以完整包含：色块主体 + 内部色号文字 + 下方数量数字
+    // 图例条带通常不高，确保至少 10px
     const stripH = y1 - y0 + 1;
+    if (stripH < 10) {
+      const extra = Math.ceil((10 - stripH) / 2);
+      y0 = Math.max(0, y0 - extra);
+      y1 = Math.min(h - 1, y1 + extra);
+    }
+
+    // 上下扩展包含色号文字与下方数量数字
     y0 = Math.max(0, y0 - Math.round(stripH * 0.5));
     y1 = Math.min(h - 1, y1 + Math.round(stripH * 1.3));
 
-    // 3. 在条带内做 x 方向投影，找出每个色块（连续彩色段）
-    const gapThresh = Math.max(3, Math.round(w * 0.004));
+    // 4. 在条带内做 x 方向投影，找出每个色块（连续彩色段）
+    const gapThresh = Math.max(2, Math.round(w * 0.003));
     const runs = [];
     let run = null;
     for (let x = 0; x < w; x++) {
@@ -2398,7 +2420,7 @@
         const i = (y * w + x) * 4;
         if (goodPx(data[i], data[i + 1], data[i + 2])) cnt++;
       }
-      if (cnt > 2) {
+      if (cnt > 0) {
         if (!run) run = { x0: x, x1: x, gap: 0 };
         else { run.x1 = x; run.gap = 0; }
       } else if (run) {
@@ -2408,15 +2430,15 @@
     }
     if (run) runs.push({ x0: run.x0, x1: run.x1 - run.gap });
 
-    const minBlockW = Math.max(6, Math.round(w * 0.012));
+    const minBlockW = Math.max(4, Math.round(w * 0.007));
     const validRuns = runs.filter(r => r.x1 - r.x0 + 1 >= minBlockW);
     if (validRuns.length < 3) return null; // 图例至少 3 个色块
 
-    // 4. 取第一个到最后一个有效块作为图例条宽度
+    // 5. 取第一个到最后一个有效块作为图例条宽度
     const firstX = validRuns[0].x0;
     const lastX = validRuns[validRuns.length - 1].x1;
     const stripW = lastX - firstX + 1;
-    if (stripW < w * 0.12) return null; // 图例至少占图宽 12%
+    if (stripW < w * 0.08) return null; // 图例至少占图宽 8%
 
     return {
       region: {
