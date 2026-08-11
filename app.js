@@ -118,7 +118,7 @@
       // 用户个人资料（昵称/头像），随 state 同步到云端
       profile: { nickname: '', avatar: '' },
       settings: {
-        enableVision: true, apiKey: '', model: 'glm-4v-plus', visionBaseUrl: '',
+        enableVision: true, apiKey: '', model: 'glm-4v-flash', visionBaseUrl: '',
         sampleTolerance: 48, scaleFactor: 1,
         // 识别模式：本应用仅保留「图例识别」一种模式——框选图纸色块图例，
         // 由云端视觉 AI 读取每个色块的色号与下方数量，直接生成色号清单并扣减库存。
@@ -148,6 +148,8 @@
       // 简单兜底，避免旧数据结构缺字段；settings 需深层补齐（向后兼容旧数据缺失的新增项如 replenishThreshold）
       const merged = Object.assign(defaultState(), parsed);
       merged.settings = Object.assign(defaultState().settings, parsed.settings || {});
+      // 迁移：glm-4v-plus 在智谱侧已不稳定/可能改名，统一切到稳定的 glm-4v-flash（免费、识别色号够用）
+      if (merged.settings.model === 'glm-4v-plus') merged.settings.model = 'glm-4v-flash';
       return merged;
     } catch (e) {
       console.warn('读取本地数据失败，使用默认数据', e);
@@ -647,10 +649,12 @@
     // 由 Vercel Serverless 函数（api/legend-vision.js）用服务端环境变量里的智谱 Key 转发。
     const viaProxy = !baseUrl || !baseUrl.trim() || baseUrl.trim().indexOf('/api/') === 0;
     if (viaProxy) {
+      // 代理模式统一走智谱（ZHIPU_API_KEY）。未显式给智谱模型时默认用稳定的 glm-4v-flash（免费、识别色号够用）。
+      const zhipuModel = (model && String(model).toLowerCase().startsWith('glm')) ? model : 'glm-4v-flash';
       const res = await fetch('/api/legend-vision', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: dataUrl, model: 'glm-4v-plus', prompt })
+        body: JSON.stringify({ image: dataUrl, model: zhipuModel, prompt })
       });
       if (!res.ok) {
         let msg = '代理服务返回 ' + res.status;
@@ -5014,12 +5018,13 @@
     if (!dataUrl) return Array.from({ length: pRows }, () => new Array(pCols).fill(null));
     // 1) 像素法结果作为 fallback（OCR 失败的格子用它兜底）
     const backupCells = patternGenerateFromImage();
-    // 2) 调视觉模型读 grid
+    // 2) 调视觉模型读 grid —— OCR 固定走智谱（若设置里选了其他智谱模型 glm-* 则用之，否则默认 glm-4v-flash）。
+    //    强制走同源代理（baseUrl=''），不直连，避免用户在设置里选的 OpenAI Key 干扰 OCR。
+    const ocrModel = (state.settings.model && state.settings.model.toLowerCase().startsWith('glm'))
+      ? state.settings.model : 'glm-4v-flash';
     const { grid, recognized } = await callGridVisionAPI(
       dataUrl, pRows, pCols,
-      state.settings.apiKey || '',
-      state.settings.model || 'glm-4v-plus',
-      state.settings.visionBaseUrl || ''
+      '', ocrModel, ''   // apiKey 空=代理不前端带 Key；baseUrl 空=同源代理(智谱)
     );
     // 3) 字符 → 色号查表（覆盖在 backup 之上）
     const ocrCells = applyGridToCells(grid);
@@ -5058,7 +5063,7 @@
     renderPaletteReportPanel();
     pLastDetectedColors = agg.size;
     // 5) 给调用方一个最终诊断（写到全局后面让 toast 显示）
-    pOcrMeta = { recognized, matchedByOCR, filledByFallback, unmatchedByOCR, model: state.settings.model || 'glm-4v-plus' };
+    pOcrMeta = { recognized, matchedByOCR, filledByFallback, unmatchedByOCR, model: ocrModel };
     return ocrCells;
   }
   // 执行「图转图纸」生成（被点击按钮和 grid input 自动重算共用）。
@@ -5087,8 +5092,9 @@
       try {
         cells = await patternGenerateFromImageOCR();
       } catch (err) {
-        // OCR 失败回退像素法并提示
-        toast(`⚠️ 格子 OCR 失败：${err.message || err} — 自动回退到像素法`, 'warn', 4500);
+        // OCR 失败：把智谱真实错误暴露出来（之前静默回退，让人误以为是没换成智谱）
+        console.error('[格子OCR] 智谱调用失败：', err);
+        toast(`⚠️ 格子 OCR 调用智谱失败：${(err && err.message) || err}\n已回退到像素法。请确认 Vercel 已配 ZHIPU_API_KEY（模型统一用 glm-4v-flash）`, 'warn', 6000);
         cells = patternGenerateFromImage();
       }
     } else {
@@ -5156,7 +5162,7 @@
       if (useOCR && pOcrMeta) {
         const om = pOcrMeta;
         const unmatchedHint = om.unmatchedByOCR > 0 ? ` · ${om.unmatchedByOCR} 格识别出色号但色卡未覆盖` : '';
-        toast(`✅ 格子 OCR ${pCols}×${pRows}：模型识别 ${om.recognized} 格 · 命中色卡 ${om.matchedByOCR}${unmatchedHint} · 像素兜底 ${om.filledByFallback}\n🧠 模型 ${om.model}（可在设置里切换 gpt-4o/ glm-4v-flash 等；OCR 失败会自动回退到像素法）`,
+        toast(`✅ 格子 OCR ${pCols}×${pRows}：模型识别 ${om.recognized} 格 · 命中色卡 ${om.matchedByOCR}${unmatchedHint} · 像素兜底 ${om.filledByFallback}\n🧠 模型 ${om.model}（OCR 固定走智谱；可在设置选其他 glm-* 模型）`,
               'success', 5000);
       } else {
         toast(`✅ 已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格（检测 ${detected} 种主色）\n🎨 hover 网格看具体色号；详细色彩映射在下方面板展开`, 'success', 4000);

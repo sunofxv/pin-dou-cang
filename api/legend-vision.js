@@ -50,7 +50,7 @@ module.exports = async (req, res) => {
       const upstream = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
-        body: JSON.stringify({ model: model || 'glm-4v-plus', messages })
+        body: JSON.stringify({ model: model || 'glm-4v-flash', messages })
       });
       if (!upstream.ok) {
         const txt = await upstream.text();
