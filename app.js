@@ -1958,29 +1958,30 @@
       <div class="grid md:grid-cols-2 gap-4">
         <section class="mk-card rounded-2xl shadow-soft p-5">
           <h2 class="text-xl font-bold mb-1">🖼️ 图纸识别（图例模式）</h2>
-          <p class="text-sm text-mk-sub mb-4">上传拼豆图纸，框选底部的「颜色图例」条，由云端视觉 AI 自动读出色号与数量。</p>
+          <p class="text-sm text-mk-sub mb-4">上传拼豆图纸，程序会自动定位底部的「颜色图例」条；定位不准时也可以手动拖拽框选。</p>
 
           <label class="block border-2 border-dashed border-mk-brown rounded-2xl p-6 text-center cursor-pointer hover:bg-white/50 transition">
             <input id="img-input" type="file" accept="image/png,image/jpeg" class="hidden">
             <div class="text-4xl">📤</div>
             <div class="mt-2 font-semibold">点击上传图纸图片</div>
-            <div class="text-xs text-mk-sub">框选图纸底部的色块图例（每个色块内印色号、下方印数量）</div>
+            <div class="text-xs text-mk-sub">自动识别图纸底部的色块图例（每个色块内印色号、下方印数量）</div>
           </label>
 
           <div id="preview" class="mt-4 ${tempImage ? '' : 'hidden'}">
             <div class="relative inline-block w-full">
               <canvas id="editor-canvas" class="w-full rounded-xl border border-mk-sand cursor-crosshair bg-white" style="max-height:360px;"></canvas>
-              <div id="editor-hint" class="text-[11px] text-mk-sub mt-1">在图上拖拽框选<b>图例区域</b>（通常是一整条横向排列的色块）。紫框=图例区，绿框=可选的图案区（用于精确统计用量）。</div>
+              <div id="editor-hint" class="text-[11px] text-mk-sub mt-1">${tempLegendRegion ? '已自动定位图例区域（紫框）。若定位不准，可直接拖拽重新框选。' : '在图上拖拽框选<b>图例区域</b>（通常是一整条横向排列的色块）。紫框=图例区，绿框=可选的图案区（用于精确统计用量）。'}</div>
             </div>
             <div class="flex flex-wrap gap-2 mt-2">
+              <button id="auto-legend-region" type="button" class="px-3 py-1.5 rounded-lg bg-mk-lav/70 text-mk-ink text-xs font-semibold hover:bg-mk-lav/90">🎯 自动框选图例区域</button>
               <button id="clear-region" type="button" class="px-3 py-1.5 rounded-lg bg-white border border-mk-sand text-mk-sub text-xs hover:bg-mk-sand/30">↺ 重新框选</button>
             </div>
           </div>
 
           <div class="mt-4 space-y-3">
-            <!-- 图例识别：框选图例 → 解析颜色 → 生成色号清单 → 框选图案 → 统计用量 -->
+            <!-- 图例识别：自动/手动框选图例 → 解析颜色 → 生成色号清单 → 框选图案 → 统计用量 -->
             <div id="legend-options" class="space-y-2">
-              <p class="text-[11px] text-mk-sub"><b>第一步</b>：在图上拖拽框选<b>图例区域</b>（通常是图纸底部的色块条，每个色块内印色号、下方印数量），点「🤖 AI识别图例」即可自动读出色号与数量。<br>若图例下方已印数量，识别后可直接「存为配方 / 扣减库存」，<b>无需再框选图案</b>；若想按图案精确统计，可再框选<b>图案区域</b>点「计算整图用量」覆盖数量。</p>
+              <p class="text-[11px] text-mk-sub"><b>第一步</b>：上传后程序会<b>自动定位</b>图纸底部的图例条（紫框）。若自动定位不准，可在图上拖拽重新框选。<br>点「🤖 AI识别图例」即可自动读出色号与数量；若图例下方已印数量，识别后可直接「存为配方 / 扣减库存」，<b>无需再框选图案</b>。</p>
               <div class="flex items-center justify-between text-sm bg-white/60 rounded-xl px-3 py-2">
                 <span>图例列数（色块个数）</span>
                 <span class="flex items-center gap-2">
@@ -2032,14 +2033,14 @@
           <h3 class="font-bold mb-3">📋 使用说明</h3>
           <ol class="text-sm text-mk-ink/80 space-y-2 list-decimal list-inside">
             <li>上传图纸图片。</li>
-            <li>在图上拖拽框选<b>底部色块图例</b>区域（每个色块内印色号、下方印数量）。</li>
+            <li>程序会<b>自动定位</b>底部的色块图例（紫框）。若定位不准，点「🎯 自动框选图例区域」重试，或在图上拖拽手动框选。</li>
             <li>填「图例列数」（色块个数，不填则自动估算），点「🤖 AI识别图例」——云端视觉自动读出色号与数量。</li>
             <li>若图例下方已印数量，识别后可直接「存为配方 / 扣减库存」，<b>无需框选图案</b>。</li>
-            <li>若想按实际图案精确统计数量，可再框选<b>图案区域</b>后点「计算整图用量」覆盖数量。</li>
+            <li>若想按实际图案精确统计数量，可再框选<b>图案区域</b>（绿框）后点「计算整图用量」覆盖数量。</li>
             <li>校对色号/数量后，确认扣减库存或存为配方。</li>
           </ol>
           <div class="mt-4 p-3 rounded-xl bg-mk-lemon/50 text-xs text-mk-ink/70">
-            💡 本应用只保留「图例识别」一种模式：框选色块图例、由云端视觉读取每个色块的色号与下方数量，直接生成色号清单。已移除智能识别/格子采样/像素聚类等旧模式。
+            💡 本应用只保留「图例识别」一种模式：自动/手动框选色块图例、由云端视觉读取每个色块的色号与下方数量，直接生成色号清单。已移除智能识别/格子采样/像素聚类等旧模式。
           </div>
         </section>
       </div>`;
@@ -2059,6 +2060,19 @@
         tempLegendMap = [];
         tempLegendRegion = null;
         renderRecognize(v);
+        // 上传后自动尝试定位图例条
+        const img = new Image();
+        img.onload = () => {
+          const det = detectLegendRegion(img);
+          if (det && det.region) {
+            tempLegendRegion = det.region;
+            const colsInput = $('#legend-cols');
+            if (colsInput && !colsInput.value && det.estimatedCols) colsInput.value = det.estimatedCols;
+            drawEditor();
+            toast(`已自动定位图例区域（约 ${det.estimatedCols} 个色块），若不准可手动拖拽调整`, 'success');
+          }
+        };
+        img.src = tempImage;
       };
       reader.readAsDataURL(file);
     };
@@ -2083,7 +2097,7 @@
         const y = Math.min(dragStart.y, dragCurrent.y) * dh;
         const ww = Math.abs(dragCurrent.x - dragStart.x) * dw;
         const hh = Math.abs(dragCurrent.y - dragStart.y) * dh;
-        ctx.strokeStyle = '#10b981'; ctx.lineWidth = 2; ctx.setLineDash([4, 3]);
+        ctx.strokeStyle = tempLegendRegion ? '#10b981' : '#8b5cf6'; ctx.lineWidth = 2; ctx.setLineDash([4, 3]);
         ctx.strokeRect(x, y, ww, hh);
         ctx.setLineDash([]);
       };
@@ -2096,7 +2110,12 @@
           const w = Math.abs(dragCurrent.x - dragStart.x);
           const h = Math.abs(dragCurrent.y - dragStart.y);
           if (w > 0.03 && h > 0.03) {
-            tempCropRegion = { x, y, w, h };
+            // 尚未定位图例区时，拖拽用于框选图例；已定位图例后，拖拽用于框选图案区
+            if (!tempLegendRegion) {
+              tempLegendRegion = { x, y, w, h };
+            } else {
+              tempCropRegion = { x, y, w, h };
+            }
             tempDetectedVLines = []; tempDetectedHLines = [];
           }
         }
@@ -2108,20 +2127,49 @@
     }
 
     $('#clear-region').onclick = () => {
+      tempLegendRegion = null;
       tempCropRegion = null;
       tempDetectedVLines = []; tempDetectedHLines = [];
       tempDetectedFramePx = null;
       drawEditor();
     };
-    $('#parse-legend').onclick = () => {
+    $('#auto-legend-region').onclick = () => {
       if (!tempImage) return toast('请先上传图片', 'error');
-      if (!tempCropRegion) return toast('请先在图上框选图例区域', 'error');
-      const colsInput = $('#legend-cols');
-      const cols = colsInput ? parseInt(colsInput.value, 10) : 0;
       const img = new Image();
       img.onload = () => {
-        tempLegendMap = parseLegendRegion(img, tempCropRegion, { cols });
-        tempLegendRegion = tempCropRegion;   // 锁定图例区，图案区留给第二步框选
+        const det = detectLegendRegion(img);
+        if (!det || !det.region) {
+          toast('未能在图片底部自动定位到图例条，请手动拖拽框选', 'warn');
+          return;
+        }
+        tempLegendRegion = det.region;
+        tempCropRegion = null;
+        tempDetectedVLines = []; tempDetectedHLines = [];
+        const colsInput = $('#legend-cols');
+        if (colsInput && (!colsInput.value || parseInt(colsInput.value, 10) <= 0) && det.estimatedCols) {
+          colsInput.value = det.estimatedCols;
+        }
+        drawEditor();
+        renderRecognize(v);
+        toast(`已自动定位图例区域（约 ${det.estimatedCols} 个色块），若不准可手动拖拽调整`, 'success');
+      };
+      img.src = tempImage;
+    };
+    $('#parse-legend').onclick = () => {
+      if (!tempImage) return toast('请先上传图片', 'error');
+      const img = new Image();
+      img.onload = () => {
+        let region = tempLegendRegion;
+        if (!region && tempCropRegion) region = tempCropRegion;
+        if (!region) {
+          const det = detectLegendRegion(img);
+          if (det && det.region) { region = det.region; tempLegendRegion = region; }
+        }
+        if (!region) return toast('未能自动定位图例区域，请在图上拖拽框选图例条', 'warn');
+        const colsInput = $('#legend-cols');
+        const cols = colsInput ? parseInt(colsInput.value, 10) : 0;
+        tempLegendMap = parseLegendRegion(img, region, { cols });
+        tempLegendRegion = region;   // 锁定图例区，图案区留给第二步框选
         tempCropRegion = null;
         tempDetectedVLines = []; tempDetectedHLines = [];
         if (colsInput && (!cols || cols <= 0)) colsInput.value = tempLegendMap.estimatedCols || '';
@@ -2131,13 +2179,12 @@
       };
       img.src = tempImage;
     };
-    // AI 识别图例：把框选的图例区域裁剪后发给视觉大模型，自动读出色块颜色与印的色号
+    // AI 识别图例：把图例区域裁剪后发给视觉大模型，自动读出色块颜色与印的色号
     const aiLegendBtn = $('#ai-parse-legend');
     if (aiLegendBtn) aiLegendBtn.onclick = async () => {
       const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
       if (!viaProxy && !(state.settings.enableVision && state.settings.apiKey)) return toast('当前无法使用云端视觉：请使用内置代理（API 地址留空）或先在设置填写 API Key 与端点', 'warn', 4000);
       if (!tempImage) return toast('请先上传图片', 'error');
-      if (!tempCropRegion) return toast('请先在图上框选图例区域', 'error');
       // 读取图例列数：用户填了就用它做「按列逐个识别」，否则整条一次识别
       const colsInput = $('#legend-cols');
       const cols = colsInput && colsInput.value ? parseInt(colsInput.value, 10) : 0;
@@ -2147,8 +2194,15 @@
       aiLegendBtn.textContent = cols > 1 ? `⏳ 逐列识别 ${cols} 块…` : '⏳ AI识别中…';
       try {
         const img = await loadImage(tempImage);
-        tempLegendMap = await aiParseLegend(img, tempCropRegion, baseUrl, cols);
-        tempLegendRegion = tempCropRegion;   // 锁定图例区，图案区留给第二步框选
+        let region = tempLegendRegion;
+        if (!region && tempCropRegion) region = tempCropRegion;
+        if (!region) {
+          const det = detectLegendRegion(img);
+          if (det && det.region) { region = det.region; tempLegendRegion = region; }
+        }
+        if (!region) return toast('未能自动定位图例区域，请在图上拖拽框选图例条', 'warn');
+        tempLegendMap = await aiParseLegend(img, region, baseUrl, cols);
+        tempLegendRegion = region;   // 锁定图例区，图案区留给第二步框选
         tempCropRegion = null;
         tempDetectedVLines = []; tempDetectedHLines = [];
         if (colsInput && !colsInput.value) colsInput.value = tempLegendMap.estimatedCols || '';
@@ -2288,6 +2342,91 @@
       if (it) { it.count = a.qty; total += a.qty; }
     });
     return { total, matched: acc.size };
+  }
+
+  // 自动检测图纸底部的横向颜色图例条，返回 { region: {x,y,w,h}, estimatedCols }
+  // 失败时返回 null。region 坐标为相对于原图的归一化值（0~1）。
+  function detectLegendRegion(img) {
+    const MAX_W = 900;
+    const { w, h, ctx } = createAnalysisCanvas(img, MAX_W);
+    const data = ctx.getImageData(0, 0, w, h).data;
+
+    function isBg(r, g, b) { return r > 248 && g > 248 && b > 248; }
+    function isText(r, g, b) { return r < 40 && g < 40 && b < 40; }
+    function isGray(r, g, b) { const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return mx - mn < 20 && mx > 60 && mx < 230; }
+    function goodPx(r, g, b) { return !isBg(r, g, b) && !isText(r, g, b) && !isGray(r, g, b); }
+
+    // 1. 扫描底部 45% 区域，找有效像素密度最高的连续行
+    const yStart = Math.floor(h * 0.55);
+    const rowEnergy = [];
+    for (let y = yStart; y < h; y++) {
+      let cnt = 0, run = 0, maxRun = 0;
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        if (goodPx(r, g, b)) { cnt++; run++; maxRun = Math.max(maxRun, run); }
+        else run = 0;
+      }
+      // energy 综合密度和横向连续度
+      rowEnergy[y] = cnt + maxRun * 0.3;
+    }
+
+    let bestY = -1, bestE = 0;
+    for (let y = yStart; y < h; y++) {
+      if (rowEnergy[y] > bestE) { bestE = rowEnergy[y]; bestY = y; }
+    }
+    if (bestY < 0 || bestE < w * 0.08) return null;
+
+    // 2. 以 bestY 为中心向上下扩展，找出连续高密度条带
+    let y0 = bestY, y1 = bestY;
+    const threshE = bestE * 0.22;
+    while (y0 > yStart && rowEnergy[y0] > threshE) y0--;
+    while (y1 < h - 1 && rowEnergy[y1] > threshE) y1++;
+
+    // 估算色块高度，并上下扩展以完整包含：色块主体 + 内部色号文字 + 下方数量数字
+    const stripH = y1 - y0 + 1;
+    y0 = Math.max(0, y0 - Math.round(stripH * 0.5));
+    y1 = Math.min(h - 1, y1 + Math.round(stripH * 1.3));
+
+    // 3. 在条带内做 x 方向投影，找出每个色块（连续彩色段）
+    const gapThresh = Math.max(3, Math.round(w * 0.004));
+    const runs = [];
+    let run = null;
+    for (let x = 0; x < w; x++) {
+      let cnt = 0;
+      for (let y = y0; y <= y1; y++) {
+        const i = (y * w + x) * 4;
+        if (goodPx(data[i], data[i + 1], data[i + 2])) cnt++;
+      }
+      if (cnt > 2) {
+        if (!run) run = { x0: x, x1: x, gap: 0 };
+        else { run.x1 = x; run.gap = 0; }
+      } else if (run) {
+        run.gap++;
+        if (run.gap > gapThresh) { runs.push({ x0: run.x0, x1: run.x1 - run.gap }); run = null; }
+      }
+    }
+    if (run) runs.push({ x0: run.x0, x1: run.x1 - run.gap });
+
+    const minBlockW = Math.max(6, Math.round(w * 0.012));
+    const validRuns = runs.filter(r => r.x1 - r.x0 + 1 >= minBlockW);
+    if (validRuns.length < 3) return null; // 图例至少 3 个色块
+
+    // 4. 取第一个到最后一个有效块作为图例条宽度
+    const firstX = validRuns[0].x0;
+    const lastX = validRuns[validRuns.length - 1].x1;
+    const stripW = lastX - firstX + 1;
+    if (stripW < w * 0.12) return null; // 图例至少占图宽 12%
+
+    return {
+      region: {
+        x: Math.max(0, firstX / w),
+        y: Math.max(0, y0 / h),
+        w: Math.min(1, stripW / w),
+        h: Math.min(1, (y1 - y0 + 1) / h)
+      },
+      estimatedCols: validRuns.length
+    };
   }
 
   // 解析用户框选的图例区域：自动估算列数，按列采样色块中心颜色，再映射到标准色号
