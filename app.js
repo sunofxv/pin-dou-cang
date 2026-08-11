@@ -126,7 +126,9 @@
         gridCols: 0, gridRows: 0,
         // 单元格高宽比（仅图例用量统计时的兜底参考，默认 0.555）。
         cellAspect: 0.555,
-        // 全局补货阈值：库存低于此值即触发“低库存/需补货”预警（可在设置中调整，默认 100）。
+        // 「图片转图纸」默认走像素法；若图纸已是带色号字符的成品，可开启 → 调云端视觉逐格读字符
+        gridOCREnabled: false,
+        // 全局补货阈值：库存低于此值即触发"低库存/需补货"预警（可在设置中调整，默认 100）。
         // 单个色号在「豆子仓库」里可单独设置覆盖值（阈值填 0 = 使用此全局值）。
         replenishThreshold: 100
       }
@@ -726,6 +728,89 @@
       .map(normalizeLegendItem)
       .filter(c => /^#?[0-9a-fA-F]{6}$/.test(c.hex) || /^#[0-9a-fA-F]{3}$/.test(c.hex));
   }
+  // 让视觉模型识别「整张拼豆图纸」的每个格子：返回 rows×cols 二维字符色号数组。
+  // 用于"反解析已有图纸"——精准读取每个格子中央印的色号，比像素法稳得多。
+  // 返回 { grid: string[rows][cols], rows, cols, matched?, totalChars? }
+  async function callGridVisionAPI(dataUrl, rows, cols, apiKey, model, baseUrl) {
+    rows = Math.max(2, rows | 0); cols = Math.max(2, cols | 0);
+    const prompt = `你正在看一张拼豆(Perler/Hama) 拼豆图纸，它已经被等分为 ${rows} 行 × ${cols} 列的网格（总共 ${rows * cols} 个格子）。
+每个格子中央通常印着一个色号短码（字母+数字，例如 "B12"、"H5"、"C25"、"W1"、"M3" 等），表示该格子应填的拼豆颜色。
+少数格子是空白的——表示该位置不应放豆子（通常是背景 / 镂空）。
+
+任务：逐格读取中央印的色号字符，输出一个 ${rows} 行 × ${cols} 列的二维数组 grid。
+
+严格要求：
+1. grid 必须是 ${rows} 行 × ${cols} 列，**严格等于**这个维度；多了少了都不要。
+2. 字符大小写不限，按原样输出（例如 'b12' 与 'B12' 都可以，识别后归一化处理）。
+3. 单元格里有印字的就输出该色号字符串；空白（没印字的格子）输出空字符串 ""。
+4. 看不清或不确定的格子用 "?" 输出，不要猜测编造。
+5. 同时返回 rows=${rows}、cols=${cols} 这两个字段（便于校验）。
+6. **只**输出一个 JSON 对象，不要任何额外文字、Markdown 代码块或解释：
+{"grid":[["B12","","H5","..."], [...], ...],"rows":${rows},"cols":${cols}}`;
+    const parsed = await callVLM(dataUrl, apiKey, model, prompt, baseUrl);
+    // 兼容多种返回形态（直接 grid / {grid, rows, cols}）
+    let rawGrid = null, rawRows = rows, rawCols = cols;
+    if (Array.isArray(parsed)) {
+      rawGrid = parsed;
+    } else if (parsed && typeof parsed === 'object') {
+      rawGrid = Array.isArray(parsed.grid) ? parsed.grid : null;
+      if (Number.isInteger(parsed.rows)) rawRows = parsed.rows;
+      if (Number.isInteger(parsed.cols)) rawCols = parsed.cols;
+    }
+    if (!rawGrid || !rawGrid.length) throw new Error('模型未返回 grid 数组');
+    // 防御性：截断 / 补全到目标 rows × cols；每行截断到 cols 长度
+    const grid = [];
+    let nonEmpty = 0;
+    for (let r = 0; r < rawRows; r++) {
+      const srcRow = Array.isArray(rawGrid[r]) ? rawGrid[r] : [];
+      const outRow = new Array(rawCols).fill('');
+      for (let c = 0; c < rawCols; c++) {
+        let v = srcRow[c];
+        if (v === null || v === undefined) v = '';
+        v = String(v).replace(/[\s\u3000]+/g, '').replace(/^[-—]+|[-—]+$/g, '').trim();
+        if (v && v !== '?') nonEmpty++;
+        outRow[c] = v || '';
+      }
+      grid.push(outRow);
+    }
+    // 如果模型返回的行/列与请求不一致, 裁剪或补空
+    while (grid.length < rawRows) grid.push(new Array(rawCols).fill(''));
+    return { grid, rows: rawRows, cols: rawCols, recognized: nonEmpty };
+  }
+
+  // 把 OCR 字符数组查 state.beads 写回 pCells（已有色彩保留；有字符则查色号；无字符留 null）。
+  // 返回统计 {matched, unmatched, empty, usedFallback, fallbackFilled}
+  //   matched    - 字符命中色卡（含已有色彩被覆盖）
+  //   unmatched  - 识别到字符但色卡里没有该色号（用户可补色卡）
+  //   empty      - 模型判为空 / "?"（保持原像素结果或 null）
+  //   usedFallback - 多少个原本空的格子被像素法兜底填充
+  function applyGridToCells(grid) {
+    const cells = Array.from({ length: pRows }, () => new Array(pCols).fill(null));
+    const stats = { matched: 0, unmatched: 0, empty: 0, fallbackFilled: 0 };
+    const unrecognizedCodes = new Map();  // 色号 → 次数（提示补色卡）
+    for (let r = 0; r < pRows; r++) {
+      const rowArr = (grid && grid[r]) || [];
+      for (let c = 0; c < pCols; c++) {
+        const codeRaw = rowArr[c];
+        const code = codeRaw == null ? '' : String(codeRaw).trim();
+        if (!code || code === '?') { stats.empty++; continue; }
+        const bead = beadByCode(code);   // beadByCode 已忽略大小写
+        if (bead && bead.colorNumber) {
+          cells[r][c] = bead.colorNumber;
+          stats.matched++;
+        } else {
+          // 字符识别成功但色卡没有此色号 → 不覆盖，仍留 null（用统计给"补色卡"建议）
+          cells[r][c] = null;
+          stats.unmatched++;
+          unrecognizedCodes.set(code, (unrecognizedCodes.get(code) || 0) + 1);
+        }
+      }
+    }
+    stats.unrecognizedCodes = Array.from(unrecognizedCodes.entries())
+      .sort((a, b) => b[1] - a[1]).slice(0, 12);  // 取前 12 个用于诊断
+    return cells;
+  }
+
   // 单块模式：图例条已切成独立小图，每张只含一个色块。prompt 强调「只有一个色块」，
   // 让模型专注读出该块主体色与印字，避免把间隔/边框当色块。
   async function callSingleLegendVisionAPI(dataUrl, apiKey, model, baseUrl) {
@@ -2356,8 +2441,8 @@
     function isGray(r, g, b) { const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return mx - mn < 25 && mx > 50 && mx < 235; }
     function goodPx(r, g, b) { return !isBg(r, g, b) && !isText(r, g, b) && !isGray(r, g, b); }
 
-    // 1. 扫描底部 50% 区域，逐行分析有效彩色段
-    const yStart = Math.floor(h * 0.50);
+    // 1. 只扫描底部 30% 区域（图例通常位于图纸最底部）
+    const yStart = Math.floor(h * 0.70);
     const rowInfos = [];
     for (let y = yStart; y < h; y++) {
       let goodCount = 0;
@@ -2378,45 +2463,58 @@
         }
       }
       if (inSeg && w - segStart >= 2) segments.push({ x0: segStart, x1: w });
-      rowInfos[y] = { goodCount, segments };
+      const ratio = goodCount / w;
+      const segScore = Math.min(segments.length, 10) * 0.06;
+      const multiSegBonus = segments.length >= 3 ? 0.12 : 0;
+      const score = ratio + segScore + multiSegBonus;
+      rowInfos[y] = { goodCount, segments, ratio, score };
     }
 
     // 2. 评分：有效像素比例 + 段数奖励（图例行应有多个小色块段）
     let bestY = -1, bestScore = 0;
     for (let y = yStart; y < h; y++) {
-      const info = rowInfos[y];
-      const ratio = info.goodCount / w;
-      const segScore = Math.min(info.segments.length, 10) * 0.06;
-      const multiSegBonus = info.segments.length >= 3 ? 0.12 : 0;
-      const score = ratio + segScore + multiSegBonus;
-      if (score > bestScore) { bestScore = score; bestY = y; }
+      if (rowInfos[y].score > bestScore) { bestScore = rowInfos[y].score; bestY = y; }
     }
-    if (bestY < 0 || bestScore < 0.06) return null;
+    if (bestY < 0 || bestScore < 0.20) return null;
 
-    // 3. 以 bestY 为中心向上下扩展：连续多行都有 >=2 个段 或 较高有效像素比例
-    let y0 = bestY, y1 = bestY;
-    while (y0 > yStart && (rowInfos[y0].segments.length >= 2 || rowInfos[y0].goodCount / w > 0.03)) y0--;
-    while (y1 < h - 1 && (rowInfos[y1].segments.length >= 2 || rowInfos[y1].goodCount / w > 0.03)) y1++;
+    // 3. 从 bestY 向上下严格扩展「核心色块条带」：要求同时段数多且比例高，
+    //    避免把图案主体或底部水印/文字误扩进来。
+    const coreSegThresh = 3;
+    const coreRatioThresh = 0.45;
+    const scoreRatioThresh = 0.55;
+    const minScoreThresh = 0.30;
+    const maxExpandUp = Math.round(h * 0.05);
+    const maxExpandDown = Math.round(h * 0.05);
 
-    // 图例条带通常不高，确保至少 10px
-    const stripH = y1 - y0 + 1;
-    if (stripH < 10) {
-      const extra = Math.ceil((10 - stripH) / 2);
-      y0 = Math.max(0, y0 - extra);
-      y1 = Math.min(h - 1, y1 + extra);
+    let coreY0 = bestY, coreY1 = bestY;
+    while (coreY0 > Math.max(yStart, bestY - maxExpandUp)) {
+      const r = rowInfos[coreY0 - 1];
+      const good = (r.segments.length >= coreSegThresh && r.ratio >= coreRatioThresh) ||
+                   (r.score >= bestScore * scoreRatioThresh && r.score >= minScoreThresh);
+      if (!good) break;
+      coreY0--;
+    }
+    while (coreY1 < Math.min(h - 1, bestY + maxExpandDown)) {
+      const r = rowInfos[coreY1 + 1];
+      const good = (r.segments.length >= coreSegThresh && r.ratio >= coreRatioThresh) ||
+                   (r.score >= bestScore * scoreRatioThresh && r.score >= minScoreThresh);
+      if (!good) break;
+      coreY1++;
     }
 
-    // 上下扩展包含色号文字与下方数量数字
-    y0 = Math.max(0, y0 - Math.round(stripH * 0.5));
-    y1 = Math.min(h - 1, y1 + Math.round(stripH * 1.3));
+    // 保底核心高度
+    if (coreY1 - coreY0 + 1 < 8) {
+      coreY0 = Math.max(yStart, bestY - 8);
+      coreY1 = Math.min(h - 1, bestY + 8);
+    }
 
-    // 4. 在条带内做 x 方向投影，找出每个色块（连续彩色段）
+    // 4. 在核心条带内做 x 方向投影，取最长连续彩色带作为图例主体
     const gapThresh = Math.max(2, Math.round(w * 0.003));
     const runs = [];
     let run = null;
     for (let x = 0; x < w; x++) {
       let cnt = 0;
-      for (let y = y0; y <= y1; y++) {
+      for (let y = coreY0; y <= coreY1; y++) {
         const i = (y * w + x) * 4;
         if (goodPx(data[i], data[i + 1], data[i + 2])) cnt++;
       }
@@ -2432,22 +2530,59 @@
 
     const minBlockW = Math.max(4, Math.round(w * 0.007));
     const validRuns = runs.filter(r => r.x1 - r.x0 + 1 >= minBlockW);
-    if (validRuns.length < 3) return null; // 图例至少 3 个色块
+    if (validRuns.length < 1) return null;
 
-    // 5. 取第一个到最后一个有效块作为图例条宽度
-    const firstX = validRuns[0].x0;
-    const lastX = validRuns[validRuns.length - 1].x1;
-    const stripW = lastX - firstX + 1;
-    if (stripW < w * 0.08) return null; // 图例至少占图宽 8%
+    const mainRun = validRuns.reduce((a, b) => (b.x1 - b.x0 > a.x1 - a.x0 ? b : a), { x0: 0, x1: -1 });
+    const stripW = mainRun.x1 - mainRun.x0 + 1;
+    if (stripW < w * 0.08) return null;
+
+    // 5. 在主体内按饱和度能量峰估算列数（色块间隙很小时比简单 run 更稳）
+    const energy = new Array(w).fill(0);
+    for (let x = mainRun.x0; x <= mainRun.x1; x++) {
+      let sum = 0, cnt = 0;
+      for (let y = coreY0; y <= coreY1; y++) {
+        const i = (y * w + x) * 4;
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        if (goodPx(r, g, b)) { sum += Math.max(r, g, b) - Math.min(r, g, b); cnt++; }
+      }
+      energy[x] = cnt ? sum / cnt : 0;
+    }
+    const smooth = energy.map((v, i) => {
+      let sum = 0, n = 0;
+      for (let d = -2; d <= 2; d++) if (energy[i + d] !== undefined) { sum += energy[i + d]; n++; }
+      return sum / n;
+    });
+
+    const peaks = [];
+    for (let x = mainRun.x0 + 3; x <= mainRun.x1 - 3; x++) {
+      if (smooth[x] > smooth[x - 1] && smooth[x] > smooth[x + 1] && smooth[x] > 5) peaks.push(x);
+    }
+    const mergeDist = 8;
+    const groups = [];
+    for (const p of peaks) {
+      const last = groups[groups.length - 1];
+      if (last && p - last[last.length - 1] < mergeDist) last.push(p);
+      else groups.push([p]);
+    }
+    let estimatedCols = groups.length;
+    const fallbackCols = Math.max(3, Math.round(stripW / 28));
+    if (estimatedCols < 3) estimatedCols = fallbackCols;
+    if (estimatedCols > 60) estimatedCols = 60;
+
+    // 6. 最终 region：核心条带 + 有限上下扩展（包含色号/数量文字，但避免包含底部水印）
+    const coreH = coreY1 - coreY0 + 1;
+    const vertExpand = Math.min(Math.round(coreH * 0.6), 22);
+    const y0 = Math.max(yStart, coreY0 - vertExpand);
+    const y1 = Math.min(h - 1, coreY1 + vertExpand);
 
     return {
       region: {
-        x: Math.max(0, firstX / w),
+        x: Math.max(0, mainRun.x0 / w),
         y: Math.max(0, y0 / h),
         w: Math.min(1, stripW / w),
         h: Math.min(1, (y1 - y0 + 1) / h)
       },
-      estimatedCols: validRuns.length
+      estimatedCols
     };
   }
 
@@ -3409,6 +3544,7 @@
   let pAspectLock = true;     // 设置列/行时是否锁定纵横比（空白 1:1、图片按原图比例）
   let pLastDetectedColors = 0; // 上次识别时图中检测到的非白主色数 (5-bit 量化后去重), 给 toast 用
   let pPaletteReport = [];     // 上次识别的色彩映射报告: [{pct, r, g, b, hex, beadCode}, ...] (按占比降序)
+  let pOcrMeta = null;         // OCR 模式诊断: {recognized, matchedByOCR, filledByFallback, unmatchedByOCR, model}
   let pImageCrop = null;      // 剪裁区域：{x,y,w,h} 原图像素坐标；null = 不剪裁（整图）
   let pImageCropMode = false; // 是否处于剪裁编辑模式（可拖拽选区）
   let pImageCropDrag = null;  // {handle, startCrop, startX, startY, scale} 拖拽状态
@@ -3594,6 +3730,12 @@
             <label class="flex items-center gap-2 text-xs mt-2 text-mk-sub select-none">
               <input id="p-aspect-image" type="checkbox" ${pAspectLock ? 'checked' : ''} class="accent-mk-rose"> 🔒 锁定纵横比${pImgAspect ? `（原图 ${pImgAspect.toFixed(2)}:1，改一项另一项自动按比例）` : '（上传图后按原图比例，先传图更准）'}
             </label>
+            <div class="mt-3 mb-1 text-xs text-mk-sub font-semibold">🔠 识别模式</div>
+            <div class="flex flex-wrap gap-1 text-[11px]">
+              <button class="pmode-recog px-2.5 py-1.5 rounded-xl border ${!state.settings.gridOCREnabled ? 'bg-mk-rose text-white border-mk-rose' : 'bg-white/70 text-mk-sub border-mk-sand'}" data-mode="pixel" title="按像素聚类（默认；适合彩色照片/手绘）">🎨 像素法</button>
+              <button class="pmode-recog px-2.5 py-1.5 rounded-xl border ${state.settings.gridOCREnabled ? 'bg-mk-rose text-white border-mk-rose' : 'bg-white/70 text-mk-sub border-mk-sand'}" data-mode="gridOCR" title="调云端视觉读每格字符（适合「已有图纸」、反解析；走 /api/legend-vision 代理）">🔠 格子 OCR</button>
+            </div>
+            <p class="text-[10px] text-mk-sub mt-1">${state.settings.gridOCREnabled ? '🧠 OCR 模式：模型读每格中央色号字符，反解析图纸最准确；OCR 失败格子自动用像素法兜底' : '🎨 像素法：按 cell 内主色聚类，适合照片/插画。已有图纸请切到「格子 OCR」'}</p>
             <button id="p-generate" class="w-full mt-3 px-3 py-2 rounded-xl bg-mk-rose text-white text-sm font-semibold shadow-soft">✨ 生成拼豆图纸</button>
             <p class="text-[11px] text-mk-sub mt-2">生成后自动按色值匹配你仓库里已有的色卡并填入画布，可继续手动微调。</p>
           </section>
@@ -3673,6 +3815,13 @@
 
     // 模式切换
     $$('.pmode-btn').forEach(b => b.onclick = () => { pMode = b.dataset.mode; if (pMode === 'blank') pTool = 'pen'; renderPattern(v); });
+    // 识别模式切换（像素法 vs 格子 OCR）
+    $$('.pmode-recog').forEach(b => b.onclick = () => {
+      state.settings.gridOCREnabled = b.dataset.mode === 'gridOCR';
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) {}
+      renderPattern(v);
+      toast(state.settings.gridOCREnabled ? '🔠 已切换到「格子 OCR」模式：识别模式将从「每格中央印的色号字符」反解析图纸' : '🎨 已切换到「像素法」模式（默认）：按 cell 颜色聚类', 'info', 2800);
+    });
     // 锁定纵横比 checkbox
     const lockBlank = $('#p-aspect-blank');
     const lockImage = $('#p-aspect-image');
@@ -4827,11 +4976,95 @@
       }
       cells.push(outRow);
     }
-    pCells = cells;
+    return cells;   // 主路径调用方负责写 pCells；OCR 路径把它当 fallback 使用
+  }
+  // 把 pImage (含 pImageCrop 选区) 画成模型可读的高分辨率图（短边 ≈ min(行数,列数)×35 像素，
+  // 上限 1800），提升视觉模型对网格中字符色号的读取准确率。
+  function getPatternDataUrlForOCR() {
+    if (!pImage) return null;
+    const fullW = pImage.naturalWidth || pImage.width;
+    const fullH = pImage.naturalHeight || pImage.height;
+    if (!fullW || !fullH) return null;
+    let sx = 0, sy = 0, sw = fullW, sh = fullH;
+    if (pImageCrop && (pImageCrop.x > 0 || pImageCrop.y > 0 || pImageCrop.w < fullW || pImageCrop.h < fullH)) {
+      sx = pImageCrop.x; sy = pImageCrop.y; sw = pImageCrop.w; sh = pImageCrop.h;
+      sw = Math.max(2, Math.min(sw, fullW - sx));
+      sh = Math.max(2, Math.min(sh, fullH - sy));
+    }
+    const short = Math.min(sw, sh);
+    const target = Math.min(1800, Math.max(800, Math.min(pRows, pCols) * 35));
+    const scale = target / short;
+    const outW = Math.max(2, Math.round(sw * scale));
+    const outH = Math.max(2, Math.round(sh * scale));
+    const cnv = document.createElement('canvas');
+    cnv.width = outW; cnv.height = outH;
+    const ctx = cnv.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, outW, outH);
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(pImage, sx, sy, sw, sh, 0, 0, outW, outH);
+    return cnv.toDataURL('image/jpeg', 0.92);
+  }
+  // 「格子 OCR」主路径：调视觉模型读每格中央字符 → 查色卡 → 写 cells。
+  // 对 OCR 失败 / 色卡未覆盖 / 模型判为空的格子，回退到像素法（用同一网格坐标）。
+  async function patternGenerateFromImageOCR() {
+    if (!pImage) return Array.from({ length: pRows }, () => new Array(pCols).fill(null));
+    if (!state.beads || !state.beads.length) return Array.from({ length: pRows }, () => new Array(pCols).fill(null));
+    const dataUrl = getPatternDataUrlForOCR();
+    if (!dataUrl) return Array.from({ length: pRows }, () => new Array(pCols).fill(null));
+    // 1) 像素法结果作为 fallback（OCR 失败的格子用它兜底）
+    const backupCells = patternGenerateFromImage();
+    // 2) 调视觉模型读 grid
+    const { grid, recognized } = await callGridVisionAPI(
+      dataUrl, pRows, pCols,
+      state.settings.apiKey || '',
+      state.settings.model || 'glm-4v-plus',
+      state.settings.visionBaseUrl || ''
+    );
+    // 3) 字符 → 色号查表（覆盖在 backup 之上）
+    const ocrCells = applyGridToCells(grid);
+    let matchedByOCR = 0, filledByFallback = 0, unmatchedByOCR = 0;
+    for (let r = 0; r < pRows; r++) {
+      for (let c = 0; c < pCols; c++) {
+        if (ocrCells[r][c]) { matchedByOCR++; continue; }
+        if (backupCells[r] && backupCells[r][c]) { ocrCells[r][c] = backupCells[r][c]; filledByFallback++; continue; }
+        ocrCells[r][c] = null;
+        unmatchedByOCR++;
+      }
+    }
+    // 4) 报告：基于最终 cells 按色号统计占比（OCR 模式主导）
+    const agg = new Map();   // colorNumber → { n, r, g, b }
+    for (let r = 0; r < pRows; r++) for (let c = 0; c < pCols; c++) {
+      const code = ocrCells[r][c]; if (!code) continue;
+      const bead = beadByNumber(code);
+      let rrr = 204, ggg = 204, bbb = 204;
+      if (bead && bead.hex) {
+        const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(bead.hex);
+        if (m) { rrr = parseInt(m[1], 16); ggg = parseInt(m[2], 16); bbb = parseInt(m[3], 16); }
+      }
+      let a = agg.get(code);
+      if (!a) { a = { n: 0, r: rrr, g: ggg, b: bbb }; agg.set(code, a); }
+      a.n++;
+    }
+    const arr = Array.from(agg.entries());   // [[code, {n,r,g,b}], ...]
+    const tot = arr.reduce((s, [, x]) => s + x.n, 0);
+    arr.sort((a, b) => b[1].n - a[1].n);
+    pPaletteReport = arr.slice(0, 12).map(([code, x]) => ({
+      pct: Math.round(100 * x.n / Math.max(1, tot)),
+      r: x.r, g: x.g, b: x.b,
+      beadCode: code,
+      hex: rgbToHex(x.r, x.g, x.b)
+    }));
+    renderPaletteReportPanel();
+    pLastDetectedColors = agg.size;
+    // 5) 给调用方一个最终诊断（写到全局后面让 toast 显示）
+    pOcrMeta = { recognized, matchedByOCR, filledByFallback, unmatchedByOCR, model: state.settings.model || 'glm-4v-plus' };
+    return ocrCells;
   }
   // 执行「图转图纸」生成（被点击按钮和 grid input 自动重算共用）。
   // opts.fromAuto=true 时用于网格改变后的静默重算，仅弹简短提示，避免每次都刷「全空/成功」长诊断。
-  function patternRunGenerate(opts) {
+  // async 因为 OCR 模式会 await 视觉模型
+  async function patternRunGenerate(opts) {
     const fromAuto = !!(opts && opts.fromAuto);
     if (!pImage) return toast('请先上传参考图', 'warn');
     // 色卡不足时的软提示：≥5 色才"出图", <5 色只建议先补色卡再生成
@@ -4847,8 +5080,21 @@
     c = Math.min(150, Math.max(2, c)); r = Math.min(150, Math.max(2, r));
     pCols = c; pRows = r; pHighlight = null;
     patternPushUndo();
-    patternGenerateFromImage();
-    // 局部刷新：画布 + BOM（不重渲整个 view，省一次 input 失焦）
+    // 模式分派：像素法 vs 格子 OCR
+    const useOCR = !!(state.settings && state.settings.gridOCREnabled);
+    let cells;
+    if (useOCR) {
+      try {
+        cells = await patternGenerateFromImageOCR();
+      } catch (err) {
+        // OCR 失败回退像素法并提示
+        toast(`⚠️ 格子 OCR 失败：${err.message || err} — 自动回退到像素法`, 'warn', 4500);
+        cells = patternGenerateFromImage();
+      }
+    } else {
+      cells = patternGenerateFromImage();
+    }
+    pCells = cells;
     patternRenderCanvas();
     patternRenderBOM();
     // 同步更新右上「画布（N×M）」标题（避免每次重新 renderPattern）
@@ -4891,16 +5137,30 @@
       if (!pImageCrop || (pImageCrop.x === 0 && pImageCrop.y === 0 && pImageCrop.w >= (pImage.naturalWidth - 1) && pImageCrop.h >= (pImage.naturalHeight - 1))) {
         tips.push(`④ 当前未剪裁, 整张图含大量白底 — 点「✂️ 剪裁」框出内容区`);
       }
-      toast(`⚠️ 没匹配到任何色卡（${total} 格全空）\n图检测到 ${detected} 种主色 / 你的色卡 ${beadCount} 种\n${tips.join('\n')}${paletteSummary}`, 'warn', 6000);
+      // OCR 模式下附加诊断
+      const ocrWarn = (useOCR && pOcrMeta)
+        ? `\n🧠 OCR：模型识别 ${pOcrMeta.recognized} 格，命中色卡 ${pOcrMeta.matchedByOCR}${pOcrMeta.unmatchedByOCR ? ' · ' + pOcrMeta.unmatchedByOCR + ' 格识别出色号但色卡未覆盖' : ''}`
+        : '';
+      toast(`⚠️ 没匹配到任何色卡（${total} 格全空）\n图检测到 ${detected} 种主色 / 你的色卡 ${beadCount} 种\n${tips.join('\n')}${ocrWarn}${paletteSummary}`, 'warn', 6000);
     } else if (empty / total > 0.5) {
       const tips2 = [`匹配 ${filled} / 空 ${empty}（${total} 格），检测 ${detected} 种主色`];
       if (detected > beadCount * 2 && beadCount < 20) tips2.push(`色卡 ${beadCount} 种 < 检测 ${detected} 种 — 颜色卡里导入更多`);
       if (cellPxW < 12 || cellPxH < 12) tips2.push(`每格仅 ${cellPxW}×${cellPxH}px（<12），识别精度受限 — 把网格调小到 30~40 列`);
       else tips2.push(`建议把 ${pCols}×${pRows} 调到接近剪裁比例 ${cropRatio}:1`);
-      toast(`⚠️ ${tips2.join('\n')}${paletteSummary}`, 'warn', 5000);
+      const ocrHint = (useOCR && pOcrMeta)
+        ? `\n🧠 OCR：识别 ${pOcrMeta.recognized} 格 · 命中色卡 ${pOcrMeta.matchedByOCR}${pOcrMeta.unmatchedByOCR ? ' · ' + pOcrMeta.unmatchedByOCR + ' 格色卡未覆盖' : ''} · 像素兜底 ${pOcrMeta.filledByFallback}`
+        : '';
+      toast(`⚠️ ${tips2.join('\n')}${ocrHint}${paletteSummary}`, 'warn', 5000);
     } else {
-      // 成功路径：2 行 + 紧凑摘要
-      toast(`✅ 已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格（检测 ${detected} 种主色）\n🎨 hover 网格看具体色号；详细色彩映射在下方面板展开`, 'success', 4000);
+      // 成功路径：2 行 + 紧凑摘要（OCR 模式下额外展示识别/命中/兜底/未匹配数）
+      if (useOCR && pOcrMeta) {
+        const om = pOcrMeta;
+        const unmatchedHint = om.unmatchedByOCR > 0 ? ` · ${om.unmatchedByOCR} 格识别出色号但色卡未覆盖` : '';
+        toast(`✅ 格子 OCR ${pCols}×${pRows}：模型识别 ${om.recognized} 格 · 命中色卡 ${om.matchedByOCR}${unmatchedHint} · 像素兜底 ${om.filledByFallback}\n🧠 模型 ${om.model}（可在设置里切换 gpt-4o/ glm-4v-flash 等；OCR 失败会自动回退到像素法）`,
+              'success', 5000);
+      } else {
+        toast(`✅ 已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格（检测 ${detected} 种主色）\n🎨 hover 网格看具体色号；详细色彩映射在下方面板展开`, 'success', 4000);
+      }
     }
   }
   // 渲染"色彩映射"详情面板（BOM 下方的折叠区），只展示识别到的主色 + 占色卡号 + 占比。
