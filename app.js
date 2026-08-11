@@ -5132,6 +5132,76 @@
     ctx.drawImage(pImage, sx, sy, sw, sh, 0, 0, outW, outH);
     return cnv.toDataURL('image/jpeg', 0.92);
   }
+  // OCR 模式最后兜底：对 OCR + 原像素法都没填上的格子，若 cell 内有非白像素，用 cell 主色就近填一格色卡。
+  // （图纸作者把"白底=不放豆"时此格仍留空；图纸把白当"放白豆但没印字符"时此格会被填上对应浅色/W1。）
+  function fillBlankByCellColor(cells) {
+    if (!pImage || !state.beads || !state.beads.length) return 0;
+    const fullW = pImage.naturalWidth || pImage.width;
+    const fullH = pImage.naturalHeight || pImage.height;
+    if (!fullW || !fullH) return 0;
+    let sx = 0, sy = 0, sw = fullW, sh = fullH;
+    if (pImageCrop && (pImageCrop.x > 0 || pImageCrop.y > 0 || pImageCrop.w < fullW || pImageCrop.h < fullH)) {
+      sx = pImageCrop.x; sy = pImageCrop.y; sw = pImageCrop.w; sh = pImageCrop.h;
+      sw = Math.max(2, Math.min(sw, fullW - sx));
+      sh = Math.max(2, Math.min(sh, fullH - sy));
+    }
+    // 中等分辨率分析画布（看清 cell 主色即可）
+    const short = Math.min(sw, sh);
+    const scale = Math.min(1, Math.max(0.5, 600 / Math.max(short, 1)));
+    const outW = Math.max(2, Math.round(sw * scale));
+    const outH = Math.max(2, Math.round(sh * scale));
+    const cnv = document.createElement('canvas');
+    cnv.width = outW; cnv.height = outH;
+    const ctx = cnv.getContext('2d');
+    ctx.imageSmoothingQuality = 'medium';
+    ctx.drawImage(pImage, sx, sy, sw, sh, 0, 0, outW, outH);
+    let imgData;
+    try { imgData = ctx.getImageData(0, 0, outW, outH); } catch (_) { return 0; }
+    const data = imgData.data;
+    // 预计算所有有效色卡的 Lab（避免每 cell 重算）
+    const labCache = [];
+    for (let i = 0; i < state.beads.length; i++) {
+      const b = state.beads[i];
+      const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(b.hex || '');
+      if (!m) continue;
+      labCache.push({ idx: i, lab: rgbToLab(parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)) });
+    }
+    function quickNearest(r, g, b) {
+      const lab = rgbToLab(r, g, b);
+      let best = null, bestD = Infinity;
+      for (let k = 0; k < labCache.length; k++) {
+        const d = labDeltaE(lab, labCache[k].lab);
+        if (d < bestD) { bestD = d; best = state.beads[labCache[k].idx]; }
+      }
+      return best ? best.colorNumber : null;
+    }
+    let filled = 0;
+    const cellW = outW / pCols, cellH = outH / pRows;
+    for (let r = 0; r < pRows; r++) {
+      for (let c = 0; c < pCols; c++) {
+        if (cells[r][c]) continue;
+        const x0 = Math.max(0, Math.floor(c * cellW));
+        const x1 = Math.min(outW, Math.floor((c + 1) * cellW));
+        const y0 = Math.max(0, Math.floor(r * cellH));
+        const y1 = Math.min(outH, Math.floor((r + 1) * cellH));
+        let sr = 0, sg = 0, sb = 0, n = 0;
+        for (let y = y0; y < y1; y++) {
+          for (let x = x0; x < x1; x++) {
+            const off = (y * outW + x) * 4;
+            const R = data[off], G = data[off + 1], B = data[off + 2];
+            if (R >= 250 && G >= 250 && B >= 250) continue;  // 近白跳过
+            sr += R; sg += G; sb += B; n++;
+          }
+        }
+        if (n >= 2) {
+          const R = Math.round(sr / n), G = Math.round(sg / n), B = Math.round(sb / n);
+          const code = quickNearest(R, G, B);
+          if (code) { cells[r][c] = code; filled++; }
+        }
+      }
+    }
+    return filled;
+  }
   // 「格子 OCR」主路径：调视觉模型读每格中央字符 → 查色卡 → 写 cells。
   // 对 OCR 失败 / 色卡未覆盖 / 模型判为空的格子，回退到像素法（用同一网格坐标）。
   async function patternGenerateFromImageOCR() {
@@ -5160,6 +5230,8 @@
         unmatchedByOCR++;
       }
     }
+    // 3.5) 最后兜底：OCR + 像素法都没填上的格子，若 cell 内有非白像素，用主色就近填色卡
+    const filledByPixel = fillBlankByCellColor(ocrCells);
     // 4) 报告：基于最终 cells 按色号统计占比（OCR 模式主导）
     const agg = new Map();   // colorNumber → { n, r, g, b }
     for (let r = 0; r < pRows; r++) for (let c = 0; c < pCols; c++) {
@@ -5186,7 +5258,7 @@
     renderPaletteReportPanel();
     pLastDetectedColors = agg.size;
     // 5) 给调用方一个最终诊断（写到全局后面让 toast 显示）
-    pOcrMeta = { recognized, matchedByOCR, filledByFallback, unmatchedByOCR, model: ocrModel };
+    pOcrMeta = { recognized, matchedByOCR, filledByFallback, filledByPixel, unmatchedByOCR, model: ocrModel };
     return ocrCells;
   }
   // 执行「图转图纸」生成（被点击按钮和 grid input 自动重算共用）。
@@ -5268,7 +5340,7 @@
       }
       // OCR 模式下附加诊断
       const ocrWarn = (useOCR && pOcrMeta)
-        ? `\n🧠 OCR：模型识别 ${pOcrMeta.recognized} 格，命中色卡 ${pOcrMeta.matchedByOCR}${pOcrMeta.unmatchedByOCR ? ' · ' + pOcrMeta.unmatchedByOCR + ' 格识别出色号但色卡未覆盖' : ''}`
+        ? `\n🧠 OCR：识别 ${pOcrMeta.recognized} · 命中 ${pOcrMeta.matchedByOCR}${pOcrMeta.unmatchedByOCR ? ' · ' + pOcrMeta.unmatchedByOCR + ' 格未覆盖' : ''} · cell 主色补 ${pOcrMeta.filledByPixel || 0}`
         : '';
       toast(`⚠️ 没匹配到任何色卡（${total} 格全空）\n图检测到 ${detected} 种主色 / 你的色卡 ${beadCount} 种\n${tips.join('\n')}${ocrWarn}${paletteSummary}`, 'warn', 6000);
     } else if (empty / total > 0.5) {
@@ -5277,7 +5349,7 @@
       if (cellPxW < 12 || cellPxH < 12) tips2.push(`每格仅 ${cellPxW}×${cellPxH}px（<12），识别精度受限 — 把网格调小到 30~40 列`);
       else tips2.push(`建议把 ${pCols}×${pRows} 调到接近剪裁比例 ${cropRatio}:1`);
       const ocrHint = (useOCR && pOcrMeta)
-        ? `\n🧠 OCR：识别 ${pOcrMeta.recognized} 格 · 命中色卡 ${pOcrMeta.matchedByOCR}${pOcrMeta.unmatchedByOCR ? ' · ' + pOcrMeta.unmatchedByOCR + ' 格色卡未覆盖' : ''} · 像素兜底 ${pOcrMeta.filledByFallback}`
+        ? `\n🧠 OCR：识别 ${pOcrMeta.recognized} · 命中 ${pOcrMeta.matchedByOCR}${pOcrMeta.unmatchedByOCR ? ' · ' + pOcrMeta.unmatchedByOCR + ' 格未覆盖' : ''} · 兜底 ${pOcrMeta.filledByFallback} · cell补 ${pOcrMeta.filledByPixel || 0}`
         : '';
       toast(`⚠️ ${tips2.join('\n')}${ocrHint}${paletteSummary}`, 'warn', 5000);
     } else {
@@ -5285,7 +5357,7 @@
       if (useOCR && pOcrMeta) {
         const om = pOcrMeta;
         const unmatchedHint = om.unmatchedByOCR > 0 ? ` · ${om.unmatchedByOCR} 格识别出色号但色卡未覆盖` : '';
-        toast(`✅ 格子 OCR ${pCols}×${pRows}：模型识别 ${om.recognized} 格 · 命中色卡 ${om.matchedByOCR}${unmatchedHint} · 像素兜底 ${om.filledByFallback}\n🧠 模型 ${om.model}（OCR 固定走智谱；可在设置选其他 glm-* 模型）`,
+        toast(`✅ 格子 OCR ${pCols}×${pRows}：识别 ${om.recognized} · 命中色卡 ${om.matchedByOCR}${unmatchedHint} · 像素兜底 ${om.filledByFallback} · cell主色补 ${om.filledByPixel}\n🧠 模型 ${om.model}（OCR 固定走智谱；空格子按 cell 主色就近填充）`,
               'success', 5000);
       } else {
         toast(`✅ 已生成 ${pCols}×${pRows}，匹配 ${filled} 格 / 空 ${empty} 格（检测 ${detected} 种主色）\n🎨 hover 网格看具体色号；详细色彩映射在下方面板展开`, 'success', 4000);
