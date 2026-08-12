@@ -954,12 +954,16 @@
     const minBlockW = Math.max(4, Math.round(rw * 0.007));
     const validRuns = runs.filter(r => r.x1 - r.x0 + 1 >= minBlockW);
     if (!validRuns.length) return region;
-    const mainRun = validRuns.reduce((a, b) => (b.x1 - b.x0 > a.x1 - a.x0 ? b : a), validRuns[0]);
+    // 取所有有效段的并集作为图例主体宽度，避免只保留最长段而切掉左右边缘色块
+    const firstX = validRuns[0].x0;
+    const lastX = validRuns[validRuns.length - 1].x1;
+    const stripW = lastX - firstX + 1;
+    if (stripW < (x1 - x0) * 0.3) return region; // 精修后宽度过小则放弃
 
     const topMargin = Math.max(1, Math.round(coreH * 0.15));
     const bottomMargin = Math.max(Math.round(coreH * 1.4), 16);
-    const rx0 = x0 + mainRun.x0;
-    const rx1 = x0 + mainRun.x1;
+    const rx0 = x0 + firstX;
+    const rx1 = x0 + lastX;
     const ry0 = Math.max(0, y0 + coreY0 - topMargin);
     const ry1 = Math.min(h - 1, Math.max(y0 + coreY1 + 1, y0 + coreY1 + bottomMargin));
     return { x: rx0 / w, y: ry0 / h, w: (rx1 - rx0 + 1) / w, h: (ry1 - ry0 + 1) / h };
@@ -1021,27 +1025,118 @@
       img.src = src;
     });
   }
-  // 用视觉大模型识别图例：先精修区域，再自动估算列数，按列切成单个小图并发识别。
-  // 如果估算失败或列数异常，则退回整张图例识别。
+  // 在图例区域内用饱和度能量峰检测每个色块的中心与左右边界，返回 [{x0,x1,center}]（像素坐标，相对 region 内部）
+  function detectLegendBlocks(img, region) {
+    const { canvas, w, h, ctx } = createAnalysisCanvas(img, 1600);
+    const x0 = Math.max(0, Math.round(region.x * w));
+    const x1 = Math.min(w, Math.round((region.x + region.w) * w));
+    const y0 = Math.max(0, Math.round(region.y * h));
+    const y1 = Math.min(h, Math.round((region.y + region.h) * h));
+    const rw = Math.max(1, x1 - x0), rh = Math.max(1, y1 - y0);
+    if (rw < 20 || rh < 4) return [];
+    const data = ctx.getImageData(x0, y0, rw, rh).data;
+    function isBg(r, g, b) { return r > 248 && g > 248 && b > 248; }
+    function isText(r, g, b) { return r < 40 && g < 40 && b < 40; }
+    function isGray(r, g, b) { const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return mx - mn < 25 && mx > 50 && mx < 235; }
+    function goodPx(r, g, b) { return !isBg(r, g, b) && !isText(r, g, b) && !isGray(r, g, b); }
+
+    // 1) 找到色块主体行（y 方向彩色饱和度能量最大）
+    let bestY = 0, bestEnergy = 0;
+    for (let y = 0; y < rh; y++) {
+      let e = 0;
+      for (let x = 0; x < rw; x++) {
+        const i = (y * rw + x) * 4;
+        const [r, g, b] = [data[i], data[i + 1], data[i + 2]];
+        if (goodPx(r, g, b)) e += Math.max(r, g, b) - Math.min(r, g, b);
+      }
+      if (e > bestEnergy) { bestEnergy = e; bestY = y; }
+    }
+    const coreHalfH = Math.max(2, Math.floor(rh * 0.18));
+    const ys = Math.max(0, bestY - coreHalfH), ye = Math.min(rh - 1, bestY + coreHalfH);
+
+    // 2) 在主体行附近做 x 方向饱和度能量
+    const energy = new Array(rw).fill(0);
+    for (let x = 0; x < rw; x++) {
+      let sum = 0, cnt = 0;
+      for (let y = ys; y <= ye; y++) {
+        const i = (y * rw + x) * 4;
+        const [r, g, b] = [data[i], data[i + 1], data[i + 2]];
+        if (goodPx(r, g, b)) { sum += Math.max(r, g, b) - Math.min(r, g, b); cnt++; }
+      }
+      energy[x] = cnt ? sum / cnt : 0;
+    }
+    const smooth = energy.map((v, i) => {
+      let s = 0, n = 0;
+      for (let d = -2; d <= 2; d++) if (energy[i + d] !== undefined) { s += energy[i + d]; n++; }
+      return s / n;
+    });
+
+    // 3) 找饱和度峰（每个峰对应一个色块中心）
+    const peaks = [];
+    for (let x = 3; x < rw - 3; x++) {
+      if (smooth[x] > smooth[x - 1] && smooth[x] > smooth[x + 1] && smooth[x] > 8) peaks.push(x);
+    }
+    const mergeDist = Math.max(4, Math.round(rw * 0.012));
+    const groups = [];
+    for (const p of peaks) {
+      const last = groups[groups.length - 1];
+      if (last && p - last[last.length - 1] < mergeDist) last.push(p);
+      else groups.push([p]);
+    }
+    if (groups.length < 2) return [];
+
+    // 4) 根据相邻峰中心取中点作为每个色块的左右边界
+    const centers = groups.map(g => Math.round(g.reduce((a, b) => a + b, 0) / g.length));
+    const blocks = [];
+    for (let i = 0; i < centers.length; i++) {
+      const left = i === 0 ? 0 : Math.round((centers[i - 1] + centers[i]) / 2);
+      const right = i === centers.length - 1 ? rw - 1 : Math.round((centers[i] + centers[i + 1]) / 2);
+      blocks.push({ x0: left, x1: right, center: centers[i] });
+    }
+    return blocks;
+  }
+  // 把图例区域内一个色块边界（像素坐标，相对 region 内部）裁剪为独立小图
+  function cropBlockToDataURL(img, region, bx0, bx1) {
+    const { canvas, w, h } = createAnalysisCanvas(img, 1600);
+    const x0 = Math.max(0, Math.round(region.x * w));
+    const y0 = Math.max(0, Math.round(region.y * h));
+    const x1 = Math.min(w, Math.round((region.x + region.w) * w));
+    const y1 = Math.min(h, Math.round((region.y + region.h) * h));
+    // 在边界内缩 5%，避免混入相邻色块边缘/分隔线；保底 1px
+    const pad = Math.max(1, Math.round((bx1 - bx0) * 0.05));
+    const cx0 = Math.min(x1 - 1, x0 + bx0 + pad);
+    const cx1 = Math.max(cx0 + 1, x0 + bx1 - pad);
+    const cy0 = y0;
+    const cy1 = y1;
+    const cw = Math.max(1, cx1 - cx0), ch = Math.max(1, cy1 - cy0);
+    const upscale = Math.max(1, Math.ceil(700 / Math.min(cw, ch)));
+    const c = document.createElement('canvas');
+    c.width = Math.min(cw * upscale, 1600);
+    c.height = Math.min(ch * upscale, 1600);
+    c.getContext('2d').drawImage(canvas, cx0, cy0, cw, ch, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.92);
+  }
+  // 用视觉大模型识别图例：先精修区域，再用饱和度能量峰定位每个色块，
+  // 按实际色块边界裁剪成单个小图并发识别；失败则退回整张图例识别。
   async function aiParseLegend(img, region, baseUrl) {
     const refined = refineLegendRegion(img, region);
-    const cols = estimateLegendCols(img, refined);
-    if (cols >= 2 && cols <= 60) {
+    const blocks = detectLegendBlocks(img, refined);
+    if (blocks.length >= 2 && blocks.length <= 60) {
       const results = [];
-      for (let i = 0; i < cols; i++) {
+      for (const b of blocks) {
         try {
-          const dataUrl = cropColumnToDataURL(img, refined, i, cols);
+          const dataUrl = cropBlockToDataURL(img, refined, b.x0, b.x1);
           if (!dataUrl || dataUrl.length < 400) { results.push({ hex: '', code: '', count: 0 }); continue; }
           const raw = await callSingleLegendVisionAPI(dataUrl, state.settings.apiKey, state.settings.model, baseUrl);
           results.push(raw);
         } catch (e) {
-          console.warn('图例第' + (i + 1) + '列识别失败：', e.message);
+          console.warn('图例色块识别失败：', e.message);
           results.push({ hex: '', code: '', count: 0 });
         }
       }
       const valid = results.filter(r => r.hex && /^#?[0-9a-fA-F]{6}$/.test(r.hex));
-      if (valid.length >= Math.max(2, Math.floor(cols * 0.5))) {
-        return buildLegendFromColors(results, cols);
+      if (valid.length >= Math.max(2, Math.floor(blocks.length * 0.4))) {
+        return buildLegendFromColors(results, blocks.length);
       }
     }
     // fallback：整张图例一次识别
@@ -1623,6 +1718,7 @@
 
     $('#wh-add').onclick = openAddBead;
     $('#wh-filter').onclick = () => { whFilterLow = !whFilterLow; renderWarehouse(v); };
+    let focusColor = null; // 提升到函数作用域：否则下方 if(focusColor) 会因块级作用域 ReferenceError
     const whSearchInput = $('#wh-search');
     if (whSearchInput) {
       // 实时搜索：重渲染后重新聚焦到末尾，避免每次输入丢失光标
@@ -1634,7 +1730,7 @@
       };
       // 进仓库不再自动聚焦搜索框：移动端会自动弹软键盘并把视图滚到顶部（最早「跳到搜索框」的根因）；
       // 输入时的光标保持已在 oninput 中处理
-      const focusColor = (opts && opts.focusColor) || pendingWarehouseColor;
+      focusColor = (opts && opts.focusColor) || pendingWarehouseColor;
     }
     const whSearchClear = $('#wh-search-clear');
     if (whSearchClear) whSearchClear.onclick = () => { whSearch = ''; renderWarehouse(v); };
@@ -4333,10 +4429,6 @@
         if (e.dataTransfer.files[0]) patternLoadImage(e.dataTransfer.files[0]);
       };
     }
-    $('#p-generate').onclick = () => patternRunGenerate({ fromAuto: false });
-    const aiRedrawBtn = $('#p-ai-redraw');
-    if (aiRedrawBtn) aiRedrawBtn.onclick = () => patternAiRedraw();
-    // 真实板尺寸预设按钮（空白 / 图片两处共用）：一键把画布尺寸设为真实板
     // 点图放大弹窗（更宽敞的剪裁空间）
     const imgZoom = $('#p-img-zoom');
     const imgPreview = $('#p-img-preview');
