@@ -2140,7 +2140,7 @@
               <p class="text-[11px] text-mk-sub"><b>第一步</b>：上传后程序会<b>自动定位</b>图纸底部的图例条（紫框）。若定位不准，可拖拽紫框的四边/四角微调大小，或在空白处拖拽重新框选。<br>点「🤖 AI识别图例」读出色号与数量；识别后若调整了紫框，可点「🔄 重新解析」按新框重新识别。若图例下方已印数量，识别后可直接「存为配方 / 扣减库存」，<b>无需再框选图案</b>。</p>
               <div class="flex items-center justify-between text-sm bg-white/60 rounded-xl px-3 py-2">
                 <span class="text-xs text-mk-sub">自动定位图例后，点右侧按钮重新识别（会根据当前紫框重新读取色号与数量）：</span>
-                <button id="parse-legend" type="button" class="px-3 py-1.5 rounded-lg bg-mk-lav/70 text-mk-ink text-xs font-semibold hover:bg-mk-lav/90">${tempLegendMap.length ? '🔄 重新解析' : '🎨 解析图例'}</button>
+                <button id="parse-legend" type="button" class="px-3 py-1.5 rounded-lg bg-mk-lav/70 text-mk-ink text-xs font-semibold hover:bg-mk-lav/90 whitespace-nowrap">${tempLegendMap.length ? '🔄 重新解析' : '🎨 解析图例'}</button>
               </div>
               ${(() => {
                 const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
@@ -2401,6 +2401,15 @@
       const field = e.target.dataset.field;
       if (tempLegendMap[idx] && field) {
         tempLegendMap[idx][field] = (field === 'count') ? Math.max(0, parseInt(e.target.value, 10) || 0) : e.target.value;
+        if (field === 'colorNumber') {
+          const bead = beadByCode(e.target.value);
+          if (bead) {
+            tempLegendMap[idx].hex = bead.hex;
+            tempLegendMap[idx].colorName = bead.colorName;
+            const swatch = item.querySelector('.swatch');
+            if (swatch) swatch.style.backgroundColor = bead.hex;
+          }
+        }
       }
     };
 
