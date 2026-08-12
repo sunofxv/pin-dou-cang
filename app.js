@@ -1178,15 +1178,30 @@
   async function aiParseLegend(img, region, baseUrl) {
     const refined = refineLegendRegion(img, region);
     const blocks = detectLegendBlocks(img, refined);
+    // 快速路径：如果用户上传的是「已经裁好的图例条带」（区域高度 < 150px 原图像素），
+    // 直接整张发给视觉模型，跳过容易过切的色块切分。
+    const regionPixelH = (region.h || 0) * (img.naturalHeight || img.height || 1);
+    const isCroppedStrip = regionPixelH > 10 && regionPixelH < 150;
+    const wholeDataUrl = cropRegionToDataURL(img, refined);
+    if (isCroppedStrip && wholeDataUrl && wholeDataUrl.length >= 500) {
+      try {
+        const raw = await callLegendVisionAPI(wholeDataUrl, state.settings.apiKey, state.settings.model, baseUrl);
+        if (raw && raw.length >= 2) return buildLegendFromColors(raw, raw.length);
+      } catch (e) { console.warn('裁剪图例条带整张识别失败：', e.message); }
+    }
     // 第一路径：整张图例识别。经过 refine 后区域只保留色块条带 + 数量，
     // 完整上下文让模型更不容易把 A11 误读成 A17，也不易遗漏边缘色块。
-    const wholeDataUrl = cropRegionToDataURL(img, refined);
     if (wholeDataUrl && wholeDataUrl.length >= 500) {
       try {
         const wholeRaw = await callLegendVisionAPI(wholeDataUrl, state.settings.apiKey, state.settings.model, baseUrl);
-        const expected = Math.max(2, Math.floor((blocks.length || wholeRaw.length || 2) * 0.55));
+        // 当色块切分明显过切（如 >2 倍整张识别结果）时，直接采信整张识别，避免被错误 blocks 拖下水。
+        const suspiciousBlocks = blocks.length > 0 && blocks.length > (wholeRaw.length || 0) * 2;
+        const expected = Math.max(2, Math.floor((Math.min(blocks.length, (wholeRaw.length || 0) * 2) || wholeRaw.length || 2) * 0.45));
         if (wholeRaw && wholeRaw.length >= expected) {
           return buildLegendFromColors(wholeRaw, blocks.length || wholeRaw.length);
+        }
+        if (suspiciousBlocks && wholeRaw && wholeRaw.length >= 3) {
+          return buildLegendFromColors(wholeRaw, wholeRaw.length);
         }
       } catch (e) { console.warn('整张图例识别失败，尝试分组识别：', e.message); }
     }
