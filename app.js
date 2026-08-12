@@ -722,7 +722,9 @@
 3. code 只取「色块内部印的色号短码」。绝对不要把色块【下方】的数量数字当成 code。看不清或没印字就填空字符串 ""，不要猜测或编造。
 4. count 取「色块正下方印的数量数字」（整数，如 12）；若下方没有数字就填 0。
 5. 不要合并相近颜色——只要肉眼可区分的不同色块，就分别列出（含深浅不同的同色系）。
-6. 只返回一个 JSON，不要任何额外文字或 Markdown。
+6. 图片顶部可能还有图纸的网格/行号等无关内容，请忽略；只识别最底部那排彩色圆角矩形色块。
+7. 每个色块只输出一条记录，不要重复、不要遗漏。
+8. 只返回一个 JSON，不要任何额外文字或 Markdown。
 
 返回格式（示例）：
 {"colors":[{"hex":"#FFD700","code":"Y8","count":12},{"hex":"#A52A2A","code":"BR3","count":3}]}`;
@@ -881,6 +883,135 @@
     c.getContext('2d').drawImage(canvas, cx0, y0, ccw, ch, 0, 0, c.width, c.height);
     return c.toDataURL('image/jpeg', 0.92);
   }
+
+  // 在 region 内部精修图例条带：切除上方的行号/网格，保留色块主体 + 下方数量。
+  // 返回归一化 region，失败时返回原 region。
+  function refineLegendRegion(img, region) {
+    const { canvas, w, h, ctx } = createAnalysisCanvas(img, 1600);
+    const x0 = Math.max(0, Math.round(region.x * w));
+    const x1 = Math.min(w, Math.round((region.x + region.w) * w));
+    const y0 = Math.max(0, Math.round(region.y * h));
+    const y1 = Math.min(h, Math.round((region.y + region.h) * h));
+    const rw = Math.max(1, x1 - x0), rh = Math.max(1, y1 - y0);
+    if (rw < 20 || rh < 10) return region;
+    const data = ctx.getImageData(x0, y0, rw, rh).data;
+    function isBg(r, g, b) { return r > 248 && g > 248 && b > 248; }
+    function isText(r, g, b) { return r < 40 && g < 40 && b < 40; }
+    function isGray(r, g, b) { const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return mx - mn < 25 && mx > 50 && mx < 235; }
+    function goodPx(r, g, b) { return !isBg(r, g, b) && !isText(r, g, b) && !isGray(r, g, b); }
+
+    const rowInfos = [];
+    for (let y = 0; y < rh; y++) {
+      let goodCount = 0;
+      const segments = [];
+      let inSeg = false, segStart = 0;
+      for (let x = 0; x < rw; x++) {
+        const i = (y * rw + x) * 4;
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        const ok = goodPx(r, g, b);
+        if (ok) {
+          goodCount++;
+          if (!inSeg) { inSeg = true; segStart = x; }
+        } else {
+          if (inSeg) { if (x - segStart >= 2) segments.push({ x0: segStart, x1: x }); inSeg = false; }
+        }
+      }
+      if (inSeg && rw - segStart >= 2) segments.push({ x0: segStart, x1: rw });
+      const ratio = goodCount / rw;
+      const segScore = Math.min(segments.length, 10) * 0.06;
+      const multiSegBonus = segments.length >= 3 ? 0.12 : 0;
+      rowInfos[y] = { ratio, score: ratio + segScore + multiSegBonus, segments };
+    }
+    let bestY = 0, bestScore = 0;
+    for (let y = 0; y < rh; y++) if (rowInfos[y].score > bestScore) { bestScore = rowInfos[y].score; bestY = y; }
+    if (bestScore < 0.05) return region;
+
+    let coreY0 = bestY, coreY1 = bestY;
+    while (coreY0 > 0 && (rowInfos[coreY0 - 1].segments.length >= 2 || rowInfos[coreY0 - 1].ratio > 0.15)) coreY0--;
+    while (coreY1 < rh - 1 && (rowInfos[coreY1 + 1].segments.length >= 2 || rowInfos[coreY1 + 1].ratio > 0.15)) coreY1++;
+    const coreH = coreY1 - coreY0 + 1;
+    if (coreH < 4) return region;
+
+    // x 方向主彩色带
+    const gapThresh = Math.max(2, Math.round(rw * 0.003));
+    const runs = [];
+    let run = null;
+    for (let x = 0; x < rw; x++) {
+      let cnt = 0;
+      for (let y = coreY0; y <= coreY1; y++) {
+        const i = (y * rw + x) * 4;
+        if (goodPx(data[i], data[i + 1], data[i + 2])) cnt++;
+      }
+      if (cnt > 0) {
+        if (!run) run = { x0: x, x1: x, gap: 0 };
+        else { run.x1 = x; run.gap = 0; }
+      } else if (run) {
+        run.gap++;
+        if (run.gap > gapThresh) { runs.push({ x0: run.x0, x1: run.x1 - run.gap }); run = null; }
+      }
+    }
+    if (run) runs.push({ x0: run.x0, x1: run.x1 - run.gap });
+    const minBlockW = Math.max(4, Math.round(rw * 0.007));
+    const validRuns = runs.filter(r => r.x1 - r.x0 + 1 >= minBlockW);
+    if (!validRuns.length) return region;
+    const mainRun = validRuns.reduce((a, b) => (b.x1 - b.x0 > a.x1 - a.x0 ? b : a), validRuns[0]);
+
+    const topMargin = Math.max(1, Math.round(coreH * 0.15));
+    const bottomMargin = Math.max(Math.round(coreH * 1.4), 16);
+    const rx0 = x0 + mainRun.x0;
+    const rx1 = x0 + mainRun.x1;
+    const ry0 = Math.max(0, y0 + coreY0 - topMargin);
+    const ry1 = Math.min(h - 1, Math.max(y0 + coreY1 + 1, y0 + coreY1 + bottomMargin));
+    return { x: rx0 / w, y: ry0 / h, w: (rx1 - rx0 + 1) / w, h: (ry1 - ry0 + 1) / h };
+  }
+
+  // 在 region 内部按饱和度能量峰估算图例色块列数（用户无需手动填写）。
+  function estimateLegendCols(img, region) {
+    const { canvas, w, h, ctx } = createAnalysisCanvas(img, 1600);
+    const x0 = Math.max(0, Math.round(region.x * w));
+    const x1 = Math.min(w, Math.round((region.x + region.w) * w));
+    const y0 = Math.max(0, Math.round(region.y * h));
+    const y1 = Math.min(h, Math.round((region.y + region.h) * h));
+    const rw = Math.max(1, x1 - x0), rh = Math.max(1, y1 - y0);
+    if (rw < 20 || rh < 4) return 0;
+    const data = ctx.getImageData(x0, y0, rw, rh).data;
+    function isBg(r, g, b) { return r > 248 && g > 248 && b > 248; }
+    function isText(r, g, b) { return r < 40 && g < 40 && b < 40; }
+    function isGray(r, g, b) { const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return mx - mn < 25 && mx > 50 && mx < 235; }
+    function goodPx(r, g, b) { return !isBg(r, g, b) && !isText(r, g, b) && !isGray(r, g, b); }
+
+    const energy = new Array(rw).fill(0);
+    for (let x = 0; x < rw; x++) {
+      let sum = 0, cnt = 0;
+      for (let y = 0; y < rh; y++) {
+        const i = (y * rw + x) * 4;
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        if (goodPx(r, g, b)) { sum += Math.max(r, g, b) - Math.min(r, g, b); cnt++; }
+      }
+      energy[x] = cnt ? sum / cnt : 0;
+    }
+    const smooth = energy.map((v, i) => {
+      let s = 0, n = 0;
+      for (let d = -2; d <= 2; d++) if (energy[i + d] !== undefined) { s += energy[i + d]; n++; }
+      return s / n;
+    });
+    const peaks = [];
+    for (let x = 3; x < rw - 3; x++) {
+      if (smooth[x] > smooth[x - 1] && smooth[x] > smooth[x + 1] && smooth[x] > 5) peaks.push(x);
+    }
+    const mergeDist = Math.max(4, Math.round(rw * 0.015));
+    const groups = [];
+    for (const p of peaks) {
+      const last = groups[groups.length - 1];
+      if (last && p - last[last.length - 1] < mergeDist) last.push(p);
+      else groups.push([p]);
+    }
+    let cols = groups.length;
+    if (cols < 2) cols = Math.max(2, Math.round(rw / 30));
+    if (cols > 80) cols = 80;
+    return cols;
+  }
+
   // 异步加载图片为 HTMLImageElement
   function loadImage(src) {
     return new Promise((resolve, reject) => {
