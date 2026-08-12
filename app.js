@@ -977,9 +977,9 @@
     ).join('');
     $('#nav').innerHTML =
       visible.map(v =>
-        `<button class="nav-btn px-2 sm:px-3 py-1 sm:py-1.5 rounded-xl text-xs sm:text-sm font-semibold text-mk-sub whitespace-nowrap ${v.key === currentView ? 'active' : 'hover:bg-white/60'}" data-view="${v.key}">${v.label}</button>`
+        `<button class="nav-btn flex-1 sm:flex-none px-2 sm:px-3 py-1 sm:py-1.5 rounded-xl text-xs sm:text-sm font-semibold text-mk-sub whitespace-nowrap ${v.key === currentView ? 'active' : 'hover:bg-white/60'}" data-view="${v.key}">${v.label}</button>`
       ).join('') +
-      (more.length ? `<div class="relative sm:hidden">
+      (more.length ? `<div class="relative sm:hidden flex-none">
         <button id="nav-more" class="px-2 py-1 sm:py-1.5 rounded-xl text-xs sm:text-sm font-semibold text-mk-sub whitespace-nowrap ${isCurrentHidden ? 'active' : 'hover:bg-white/60'}">更多</button>
         <div id="nav-more-menu" class="absolute right-0 top-full mt-1 w-28 py-1 rounded-xl bg-white shadow-soft border border-mk-sand hidden z-50">${moreMenuHtml}</div>
       </div>` : '') +
