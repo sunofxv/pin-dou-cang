@@ -838,9 +838,29 @@
     if (!/^#?[0-9a-fA-F]{6}$/.test(norm.hex) && !/^#[0-9a-fA-F]{3}$/.test(norm.hex)) return { hex: '', code: '', count: 0 };
     return norm;
   }
+  // 分组模式：把相邻 2~3 个色块一起发给模型，保留左右上下文，显著降低"A11↔A17"等孤立误读。
+  async function callGroupLegendVisionAPI(dataUrl, apiKey, model, baseUrl, groupSize) {
+    const prompt = `这张图是从拼豆图纸颜色图例中裁剪出来的「连续 ${groupSize} 个色块」，它们从左到右依次排列。
+
+结构说明：每个色块【内部】印有一行短码（如 "A11"、"C25"），那是「色号名称」；每个色块【正下方】另有一行数字（如 12），那是「数量」（需要几颗），不是色号。
+
+任务：从左到右依次识别这 ${groupSize} 个色块，返回一个 JSON 数组，数组长度必须严格等于 ${groupSize}。
+
+严格要求：
+1. 数组元素顺序必须对应图中从左到右的色块顺序，不要遗漏、不要重复。
+2. 每个元素包含 hex、code、count 三个字段。
+3. hex 取该色块中心的「主体填充色」，不要取文字颜色、边框或阴影。
+4. code 只取「色块内部印的色号短码」（如 "A11"、"C25"）。绝对不要把色块【下方】的数量数字当成 code。看不清或没印字就填空字符串 ""，不要猜测编造。
+5. count 取「该色块正下方印的数量数字」（整数，如 12）；若下方没有数字就填 0。
+6. 只返回一个 JSON 数组，不要任何额外文字或 Markdown：
+[{"hex":"#RRGGBB","code":"A11","count":12},{"hex":"#RRGGBB","code":"C25","count":5},...]`;
+    const parsed = await callVLM(dataUrl, apiKey, model, prompt, baseUrl);
+    const arr = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.colors) ? parsed.colors : []);
+    return arr.map(normalizeLegendItem).filter(c => /^#?[0-9a-fA-F]{6}$/.test(c.hex) || /^#[0-9a-fA-F]{3}$/.test(c.hex));
+  }
   // 将归一化区域裁剪为独立图片 dataURL（用于把图例区域单独发给视觉模型）
   function cropRegionToDataURL(img, region) {
-    const { canvas, w, h } = createAnalysisCanvas(img, 1600);
+    const { canvas, w, h } = createAnalysisCanvas(img, 2400);
     const x0 = Math.max(0, Math.round(region.x * w));
     const y0 = Math.max(0, Math.round(region.y * h));
     const x1 = Math.min(w, Math.round((region.x + region.w) * w));
@@ -860,7 +880,7 @@
   // region 为归一化的图例区域；index 从 0 开始；返回单个色块的 dataURL，剔除左右边界各 8%
   // 以避开网格线/分隔，避免把相邻色块边缘混入。
   function cropColumnToDataURL(img, region, index, cols) {
-    const { canvas, w, h } = createAnalysisCanvas(img, 1600);
+    const { canvas, w, h } = createAnalysisCanvas(img, 2400);
     const x0 = Math.max(0, Math.round(region.x * w));
     const y0 = Math.max(0, Math.round(region.y * h));
     const x1 = Math.min(w, Math.round((region.x + region.w) * w));
@@ -887,7 +907,7 @@
   // 在 region 内部精修图例条带：切除上方的行号/网格，保留色块主体 + 下方数量。
   // 返回归一化 region，失败时返回原 region。
   function refineLegendRegion(img, region) {
-    const { canvas, w, h, ctx } = createAnalysisCanvas(img, 1600);
+    const { canvas, w, h, ctx } = createAnalysisCanvas(img, 2400);
     const x0 = Math.max(0, Math.round(region.x * w));
     const x1 = Math.min(w, Math.round((region.x + region.w) * w));
     const y0 = Math.max(0, Math.round(region.y * h));
@@ -971,7 +991,7 @@
 
   // 在 region 内部按饱和度能量峰估算图例色块列数（用户无需手动填写）。
   function estimateLegendCols(img, region) {
-    const { canvas, w, h, ctx } = createAnalysisCanvas(img, 1600);
+    const { canvas, w, h, ctx } = createAnalysisCanvas(img, 2400);
     const x0 = Math.max(0, Math.round(region.x * w));
     const x1 = Math.min(w, Math.round((region.x + region.w) * w));
     const y0 = Math.max(0, Math.round(region.y * h));
@@ -1027,7 +1047,7 @@
   }
   // 在图例区域内用饱和度能量峰检测每个色块的中心与左右边界，返回 [{x0,x1,center}]（像素坐标，相对 region 内部）
   function detectLegendBlocks(img, region) {
-    const { canvas, w, h, ctx } = createAnalysisCanvas(img, 1600);
+    const { canvas, w, h, ctx } = createAnalysisCanvas(img, 2400);
     const x0 = Math.max(0, Math.round(region.x * w));
     const x1 = Math.min(w, Math.round((region.x + region.w) * w));
     const y0 = Math.max(0, Math.round(region.y * h));
@@ -1074,9 +1094,9 @@
     // 3) 找饱和度峰（每个峰对应一个色块中心）
     const peaks = [];
     for (let x = 3; x < rw - 3; x++) {
-      if (smooth[x] > smooth[x - 1] && smooth[x] > smooth[x + 1] && smooth[x] > 8) peaks.push(x);
+      if (smooth[x] > smooth[x - 1] && smooth[x] > smooth[x + 1] && smooth[x] > 6) peaks.push(x);
     }
-    const mergeDist = Math.max(4, Math.round(rw * 0.012));
+    const mergeDist = Math.max(3, Math.round(rw * 0.008));
     const groups = [];
     for (const p of peaks) {
       const last = groups[groups.length - 1];
@@ -1086,7 +1106,20 @@
     if (groups.length < 2) return [];
 
     // 4) 根据相邻峰中心取中点作为每个色块的左右边界
-    const centers = groups.map(g => Math.round(g.reduce((a, b) => a + b, 0) / g.length));
+    let centers = groups.map(g => Math.round(g.reduce((a, b) => a + b, 0) / g.length));
+    // 过滤末尾异常远的噪声中心（如文字/空白被误当成色块），避免后续分组/识别引入垃圾
+    if (centers.length > 3) {
+      const gaps = [];
+      for (let i = 1; i < centers.length; i++) gaps.push(centers[i] - centers[i - 1]);
+      const med = medianOf(gaps);
+      const cutoff = Math.max(med * 2.5, med + 60);
+      let keep = centers.length;
+      for (let i = gaps.length - 1; i >= 0; i--) {
+        if (gaps[i] > cutoff) keep = i + 1;
+        else break;
+      }
+      if (keep < centers.length) centers = centers.slice(0, keep);
+    }
     const blocks = [];
     for (let i = 0; i < centers.length; i++) {
       const left = i === 0 ? 0 : Math.round((centers[i - 1] + centers[i]) / 2);
@@ -1097,7 +1130,7 @@
   }
   // 把图例区域内一个色块边界（像素坐标，相对 region 内部）裁剪为独立小图
   function cropBlockToDataURL(img, region, bx0, bx1) {
-    const { canvas, w, h } = createAnalysisCanvas(img, 1600);
+    const { canvas, w, h } = createAnalysisCanvas(img, 2400);
     const x0 = Math.max(0, Math.round(region.x * w));
     const y0 = Math.max(0, Math.round(region.y * h));
     const x1 = Math.min(w, Math.round((region.x + region.w) * w));
@@ -1116,34 +1149,81 @@
     c.getContext('2d').drawImage(canvas, cx0, cy0, cw, ch, 0, 0, c.width, c.height);
     return c.toDataURL('image/jpeg', 0.92);
   }
+  // 把图例区域中连续多个色块（blocks[start..end]）一起裁剪为一张图，
+  // 保留相邻色块上下文，帮助模型纠正单个小图中的色号误读（如 A11↔A17）。
+  function cropGroupToDataURL(img, region, blocks, start, end) {
+    const { canvas, w, h } = createAnalysisCanvas(img, 2400);
+    const x0 = Math.max(0, Math.round(region.x * w));
+    const y0 = Math.max(0, Math.round(region.y * h));
+    const x1 = Math.min(w, Math.round((region.x + region.w) * w));
+    const y1 = Math.min(h, Math.round((region.y + region.h) * h));
+    const bx0 = blocks[start].x0;
+    const bx1 = blocks[end].x1;
+    // 在组合边界内缩 2%，避免混入相邻块边缘/分隔线
+    const pad = Math.max(1, Math.round((bx1 - bx0) * 0.02));
+    const cx0 = Math.min(x1 - 1, x0 + bx0 + pad);
+    const cx1 = Math.max(cx0 + 1, x0 + bx1 - pad);
+    const cy0 = y0;
+    const cy1 = y1;
+    const cw = Math.max(1, cx1 - cx0), ch = Math.max(1, cy1 - cy0);
+    const upscale = Math.max(1, Math.ceil(900 / Math.min(cw, ch)));
+    const c = document.createElement('canvas');
+    c.width = Math.min(cw * upscale, 2000);
+    c.height = Math.min(ch * upscale, 2000);
+    c.getContext('2d').drawImage(canvas, cx0, cy0, cw, ch, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.92);
+  }
   // 用视觉大模型识别图例：先精修区域，再用饱和度能量峰定位每个色块，
   // 按实际色块边界裁剪成单个小图并发识别；失败则退回整张图例识别。
   async function aiParseLegend(img, region, baseUrl) {
     const refined = refineLegendRegion(img, region);
     const blocks = detectLegendBlocks(img, refined);
+    // 第一路径：整张图例识别。经过 refine 后区域只保留色块条带 + 数量，
+    // 完整上下文让模型更不容易把 A11 误读成 A17，也不易遗漏边缘色块。
+    const wholeDataUrl = cropRegionToDataURL(img, refined);
+    if (wholeDataUrl && wholeDataUrl.length >= 500) {
+      try {
+        const wholeRaw = await callLegendVisionAPI(wholeDataUrl, state.settings.apiKey, state.settings.model, baseUrl);
+        const expected = Math.max(2, Math.floor((blocks.length || wholeRaw.length || 2) * 0.55));
+        if (wholeRaw && wholeRaw.length >= expected) {
+          return buildLegendFromColors(wholeRaw, blocks.length || wholeRaw.length);
+        }
+      } catch (e) { console.warn('整张图例识别失败，尝试分组识别：', e.message); }
+    }
+    // 第二路径：分组识别（2~3 个色块一组），兼顾上下文与分辨率。
     if (blocks.length >= 2 && blocks.length <= 60) {
       const results = [];
-      for (const b of blocks) {
+      const groupSize = 3;
+      for (let i = 0; i < blocks.length; i += groupSize) {
+        const end = Math.min(blocks.length - 1, i + groupSize - 1);
+        const actualSize = end - i + 1;
         try {
-          const dataUrl = cropBlockToDataURL(img, refined, b.x0, b.x1);
-          if (!dataUrl || dataUrl.length < 400) { results.push({ hex: '', code: '', count: 0 }); continue; }
-          const raw = await callSingleLegendVisionAPI(dataUrl, state.settings.apiKey, state.settings.model, baseUrl);
-          results.push(raw);
+          const dataUrl = cropGroupToDataURL(img, refined, blocks, i, end);
+          if (!dataUrl || dataUrl.length < 500) {
+            for (let k = i; k <= end; k++) results.push({ hex: '', code: '', count: 0 });
+            continue;
+          }
+          const raw = await callGroupLegendVisionAPI(dataUrl, state.settings.apiKey, state.settings.model, baseUrl, actualSize);
+          for (let k = i; k <= end; k++) {
+            const item = raw[k - i] || { hex: '', code: '', count: 0 };
+            results.push(item);
+          }
         } catch (e) {
-          console.warn('图例色块识别失败：', e.message);
-          results.push({ hex: '', code: '', count: 0 });
+          console.warn('图例分组识别失败：', e.message);
+          for (let k = i; k <= end; k++) results.push({ hex: '', code: '', count: 0 });
         }
       }
       const valid = results.filter(r => r.hex && /^#?[0-9a-fA-F]{6}$/.test(r.hex));
-      if (valid.length >= Math.max(2, Math.floor(blocks.length * 0.4))) {
+      if (valid.length >= Math.max(2, Math.floor(blocks.length * 0.5))) {
         return buildLegendFromColors(results, blocks.length);
       }
     }
-    // fallback：整张图例一次识别
-    const dataUrl = cropRegionToDataURL(img, refined);
-    if (!dataUrl || dataUrl.length < 500) throw new Error('裁剪出的图例区为空/过小，请重新框选图例区域');
-    const raw = await callLegendVisionAPI(dataUrl, state.settings.apiKey, state.settings.model, baseUrl);
-    return buildLegendFromColors(raw, raw.length || undefined);
+    // 最终 fallback：整张识别（即使数量偏少也采用，避免空结果）
+    if (wholeDataUrl && wholeDataUrl.length >= 500) {
+      const raw = await callLegendVisionAPI(wholeDataUrl, state.settings.apiKey, state.settings.model, baseUrl);
+      return buildLegendFromColors(raw, blocks.length || raw.length || undefined);
+    }
+    throw new Error('裁剪出的图例区为空/过小，请重新框选图例区域');
   }
   // 把模型返回的 [{hex,code}] 映射为标准色号清单
   function buildLegendFromColors(raw, estimatedCols) {
