@@ -1205,9 +1205,15 @@
     if (!v) { switchView(key); return; }
     const cls = dir === 'next' ? 'view-from-right' : 'view-from-left';
     v.classList.add(cls);
-    switchView(key); // 渲染新内容（此时 #view 仍带偏移，作为动画起点）
-    // 双 rAF：确保浏览器先以偏移态绘制一帧，再过渡归位，滑动动画才生效
-    requestAnimationFrame(() => requestAnimationFrame(() => v.classList.remove('view-from-right', 'view-from-left')));
+    try {
+      switchView(key); // 渲染新内容（此时 #view 仍带偏移，作为动画起点）
+    } finally {
+      // 双 rAF：确保浏览器先以偏移态绘制一帧，再过渡归位，滑动动画才生效；
+      // 再用 setTimeout 兜底强制移除动画类——杜绝「渲染异常/rAF 被节流」导致 #view 永久
+      // 停留在偏移/透明态而整页空白的隐患
+      requestAnimationFrame(() => requestAnimationFrame(() => v.classList.remove('view-from-right', 'view-from-left')));
+      setTimeout(() => v.classList.remove('view-from-right', 'view-from-left'), 380);
+    }
   }
   function enableSwipeNavigation() {
     const main = document.querySelector('main');
@@ -4074,6 +4080,9 @@
               <button id="p-crop-clear" class="text-xs px-2.5 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-mk-sub ${pImageCrop ? '' : 'hidden'}" title="清除剪裁（识别整张图）">✕ 不剪裁</button>
               <span class="text-[11px] text-mk-sub self-center">${pImageCropMode ? '💡 拖 4 角/4 边缩放，拖中间移动' : (pImageCrop ? '📌 已剪裁（深色区不识别）' : '📌 默认识别整张图')}</span>
             </div>
+            ${pImage ? `
+            <button id="p-ai-redraw" class="w-full mt-2 px-3 py-2 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white text-sm font-semibold shadow-soft">🤖 AI 重绘成拼豆风</button>
+            <p class="text-[10px] text-mk-sub mt-1">把照片交给 97api 重绘成纯色像素风，再用像素法自动出图。需 Vercel 已配置 <code>PINDOU_API_KEY</code>。</p>` : ''}
             <h3 class="font-bold mb-2 mt-4">🎯 目标网格</h3>
             <div class="flex flex-wrap gap-2 mb-2">
               <button class="preset-board px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-white/70 text-mk-sub border border-mk-sand" data-preset="29">标准 29</button>
@@ -4245,6 +4254,8 @@
     };
     if (panToggle) panToggle.onclick = () => { pTool = (pTool === 'pan') ? 'pen' : 'pan'; syncPanToggle(); };
     $('#p-generate').onclick = () => patternRunGenerate({ fromAuto: false });
+    const aiRedrawBtn = $('#p-ai-redraw');
+    if (aiRedrawBtn) aiRedrawBtn.onclick = () => patternAiRedraw();
     // 真实板尺寸预设按钮（空白 / 图片两处共用）：一键把画布尺寸设为真实板
     $$('.preset-board').forEach(b => b.onclick = () => {
       const n = parseInt(b.dataset.preset, 10);
@@ -4323,6 +4334,8 @@
       };
     }
     $('#p-generate').onclick = () => patternRunGenerate({ fromAuto: false });
+    const aiRedrawBtn = $('#p-ai-redraw');
+    if (aiRedrawBtn) aiRedrawBtn.onclick = () => patternAiRedraw();
     // 真实板尺寸预设按钮（空白 / 图片两处共用）：一键把画布尺寸设为真实板
     // 点图放大弹窗（更宽敞的剪裁空间）
     const imgZoom = $('#p-img-zoom');
@@ -4934,6 +4947,53 @@
       img.src = ev.target.result;
     };
     reader.readAsDataURL(file);
+  }
+
+  // AI 重绘：把当前源图发给 /api/image-gen（97api 图生图），结果回写成 pImage 并自动出图
+  async function patternAiRedraw() {
+    if (!pImage || !pImage.src) { toast('请先上传一张参考图', 'warn'); return; }
+    const btn = $('#p-ai-redraw');
+    const oldText = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '🤖 重绘中…(可能数十秒)'; }
+    try {
+      const src = pDownscaleDataURL(pImage, 1024); // 降采样减小上行体积与耗时
+      const res = await fetch('/api/image-gen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: src })
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j.image) throw new Error(j.error || ('HTTP ' + res.status));
+      const img = new Image();
+      await new Promise((ok, err) => {
+        img.onload = ok;
+        img.onerror = () => err(new Error('重绘图加载失败'));
+        img.src = j.image;
+      });
+      pImage = img;
+      if (img.naturalWidth && img.naturalHeight) pImgAspect = img.naturalWidth / img.naturalHeight;
+      pImageCrop = { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
+      pImageCropMode = false;
+      const v = $('#view'); if (v) renderPattern(v);
+      toast('✅ AI 重绘完成，自动生成图纸', 'success');
+      patternRunGenerate({ fromAuto: false });
+    } catch (e) {
+      toast('AI 重绘失败：' + e.message, 'error', 5000);
+    } finally {
+      const b2 = $('#p-ai-redraw');
+      if (b2) { b2.disabled = false; b2.textContent = oldText; }
+    }
+  }
+  // 把 Image 降采样到 maxDim 以内，返回 dataURL（减少上行体积）
+  function pDownscaleDataURL(img, maxDim) {
+    const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+    if (!w || !h) return img.src;
+    const scale = Math.min(1, maxDim / Math.max(w, h));
+    if (scale >= 1) return img.src;
+    const cw = Math.round(w * scale), ch = Math.round(h * scale);
+    const c = document.createElement('canvas'); c.width = cw; c.height = ch;
+    c.getContext('2d').drawImage(img, 0, 0, cw, ch);
+    return c.toDataURL('image/png');
   }
 
   // 在大窗口里预览图片 + 剪裁（不受左侧卡片宽度限制，操作更方便）
