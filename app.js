@@ -2145,11 +2145,8 @@
             <div id="legend-options" class="space-y-2">
               <p class="text-[11px] text-mk-sub"><b>第一步</b>：上传后程序会<b>自动定位</b>图纸底部的图例条（紫框）。若定位不准，可拖拽紫框的四边/四角微调大小，或在空白处拖拽重新框选。<br>点「🤖 AI识别图例」即可自动读出色号与数量；若图例下方已印数量，识别后可直接「存为配方 / 扣减库存」，<b>无需再框选图案</b>。</p>
               <div class="flex items-center justify-between text-sm bg-white/60 rounded-xl px-3 py-2">
-                <span>图例列数（色块个数）</span>
-                <span class="flex items-center gap-2">
-                  <input id="legend-cols" type="number" min="1" max="60" value="${tempLegendMap.estimatedCols || ''}" placeholder="自动" class="w-20 px-2 py-1 rounded-lg bg-white border border-mk-sand text-sm">
-                  <button id="parse-legend" type="button" class="px-3 py-1.5 rounded-lg bg-mk-lav/70 text-mk-ink text-xs font-semibold hover:bg-mk-lav/90">🎨 解析图例</button>
-                </span>
+                <span class="text-xs text-mk-sub">自动定位图例后，点右侧按钮解析色号：</span>
+                <button id="parse-legend" type="button" class="px-3 py-1.5 rounded-lg bg-mk-lav/70 text-mk-ink text-xs font-semibold hover:bg-mk-lav/90">🎨 解析图例</button>
               </div>
               ${(() => {
                 const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
@@ -2158,21 +2155,17 @@
               })()}
               <div id="legend-list" class="${tempLegendMap.length ? '' : 'hidden'}">
                 <div class="flex items-center justify-between mb-1">
-                  <div class="text-xs text-mk-sub">已解析色号清单${tempLegendMap.some(x => x.count > 0) ? '（含数量）' : ''}（色号/名称可点击编辑）：</div>
+                  <div class="text-xs text-mk-sub">已解析色号清单${tempLegendMap.some(x => x.count > 0) ? '（含数量）' : ''}（色号/数量可点击编辑）：</div>
                   <button id="clear-legend" type="button" class="text-xs text-rose-400 hover:underline">清空图例</button>
                 </div>
-                <div id="legend-items" class="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-52 overflow-auto pr-1">
+                <div id="legend-items" class="flex flex-col gap-1.5 max-h-52 overflow-auto pr-1">
                   ${tempLegendMap.map((it, i) => `
-                    <div class="legend-item p-2 rounded-xl bg-white border border-mk-sand" data-i="${i}">
-                      <div class="flex items-center gap-2 mb-1.5">
-                        <span class="w-6 h-6 rounded-full swatch shrink-0" style="background:${it.hex}"></span>
-                        <input type="text" data-field="colorNumber" value="${escapeHtml(it.colorNumber)}" placeholder="色号" class="w-full px-2 py-1 rounded-lg bg-mk-sand/30 border border-mk-sand/50 text-sm font-semibold">
-                      </div>
-                      <input type="text" data-field="colorName" value="${escapeHtml(it.colorName)}" placeholder="颜色名" class="w-full px-2 py-1 rounded-lg bg-white border border-mk-sand text-xs">
-                      <div class="mt-1.5 flex items-center gap-1">
-                        <span class="text-[11px] text-mk-sub">数量</span>
-                        <input type="number" min="0" data-field="count" value="${it.count || 0}" class="w-16 px-1.5 py-1 rounded-lg bg-white border border-mk-sand text-xs">
-                        <span class="text-[11px] text-mk-sub">颗</span>
+                    <div class="legend-item flex items-center gap-2 p-1.5 rounded-lg bg-white border border-mk-sand" data-i="${i}">
+                      <span class="w-5 h-5 rounded-full swatch shrink-0" style="background:${it.hex}"></span>
+                      <input type="text" data-field="colorNumber" value="${escapeHtml(it.colorNumber)}" placeholder="色号" class="flex-1 min-w-0 px-2 py-1 rounded bg-mk-sand/30 border border-mk-sand/50 text-xs font-semibold">
+                      <div class="flex items-center gap-1 shrink-0">
+                        <input type="number" min="0" data-field="count" value="${it.count || 0}" class="w-14 px-1 py-0.5 rounded bg-white border border-mk-sand text-xs text-right">
+                        <span class="text-[10px] text-mk-sub">颗</span>
                       </div>
                     </div>
                   `).join('')}
@@ -2196,7 +2189,7 @@
           <ol class="text-sm text-mk-ink/80 space-y-2 list-decimal list-inside">
             <li>上传图纸图片。</li>
             <li>程序会<b>自动定位</b>底部的色块图例（紫框）。若定位不准，可拖拽紫框的四边/四角微调，或在空白处拖拽重新框选。</li>
-            <li>填「图例列数」（色块个数，不填则自动估算），点「🤖 AI识别图例」——云端视觉自动读出色号与数量。</li>
+            <li>点「🤖 AI识别图例」——云端视觉自动读出色号与数量（程序会自动估算色块个数并逐列识别）。</li>
             <li>若图例下方已印数量，识别后可直接「存为配方 / 扣减库存」，<b>无需框选图案</b>。</li>
             <li>若想按实际图案精确统计数量，可再框选<b>图案区域</b>（绿框）后点「计算整图用量」覆盖数量。</li>
             <li>校对色号/数量后，确认扣减库存或存为配方。</li>
@@ -2229,8 +2222,7 @@
           const det = detectLegendRegion(img);
           if (det && det.region) {
             tempLegendRegion = det.region;
-            const colsInput = $('#legend-cols');
-            if (colsInput && !colsInput.value && det.estimatedCols) colsInput.value = det.estimatedCols;
+            tempLegendEstimatedCols = det.estimatedCols || 0;
             drawEditor();
             toast(`已自动定位图例区域（约 ${det.estimatedCols} 个色块），可拖拽边框/四角微调`, 'success');
           }
@@ -2359,10 +2351,7 @@
         tempLegendRegion = det.region;
         tempCropRegion = null;
         tempDetectedVLines = []; tempDetectedHLines = [];
-        const colsInput = $('#legend-cols');
-        if (colsInput && (!colsInput.value || parseInt(colsInput.value, 10) <= 0) && det.estimatedCols) {
-          colsInput.value = det.estimatedCols;
-        }
+        tempLegendEstimatedCols = det.estimatedCols || 0;
         drawEditor();
         renderRecognize(v);
         toast(`已自动定位图例区域（约 ${det.estimatedCols} 个色块），可拖拽边框/四角微调`, 'success');
@@ -2380,13 +2369,11 @@
           if (det && det.region) { region = det.region; tempLegendRegion = region; }
         }
         if (!region) return toast('未能自动定位图例区域，请在图上拖拽框选图例条', 'warn');
-        const colsInput = $('#legend-cols');
-        const cols = colsInput ? parseInt(colsInput.value, 10) : 0;
-        tempLegendMap = parseLegendRegion(img, region, { cols });
+        tempLegendMap = parseLegendRegion(img, region, { cols: tempLegendEstimatedCols || 0 });
         tempLegendRegion = region;   // 锁定图例区，图案区留给第二步框选
         tempCropRegion = null;
         tempDetectedVLines = []; tempDetectedHLines = [];
-        if (colsInput && (!cols || cols <= 0)) colsInput.value = tempLegendMap.estimatedCols || '';
+        if (tempLegendMap.estimatedCols) tempLegendEstimatedCols = tempLegendMap.estimatedCols;
         drawEditor();
         renderRecognize(v);
         toast(`已解析 ${tempLegendMap.length} 个图例色，请再框选图案区域后点「计算整图用量」`, tempLegendMap.length ? 'success' : 'warn');
@@ -2399,9 +2386,8 @@
       const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
       if (!viaProxy && !(state.settings.enableVision && state.settings.apiKey)) return toast('当前无法使用云端视觉：请使用内置代理（API 地址留空）或先在设置填写 API Key 与端点', 'warn', 4000);
       if (!tempImage) return toast('请先上传图片', 'error');
-      // 读取图例列数：用户填了就用它做「按列逐个识别」，否则整条一次识别
-      const colsInput = $('#legend-cols');
-      const cols = colsInput && colsInput.value ? parseInt(colsInput.value, 10) : 0;
+      // 使用自动估算的列数做「按列逐个识别」，未估算到则整条一次识别
+      const cols = tempLegendEstimatedCols || 0;
       const baseUrl = state.settings.visionBaseUrl || '';
       aiLegendBtn.disabled = true;
       const oldText = aiLegendBtn.textContent;
@@ -2419,7 +2405,7 @@
         tempLegendRegion = region;   // 锁定图例区，图案区留给第二步框选
         tempCropRegion = null;
         tempDetectedVLines = []; tempDetectedHLines = [];
-        if (colsInput && !colsInput.value) colsInput.value = tempLegendMap.estimatedCols || '';
+        if (tempLegendMap.estimatedCols) tempLegendEstimatedCols = tempLegendMap.estimatedCols;
         drawEditor();
         renderRecognize(v);
         const _hasCount = tempLegendMap.some(x => x.count > 0);
@@ -2434,6 +2420,7 @@
     $('#clear-legend').onclick = () => {
       tempLegendMap = [];
       tempLegendRegion = null;
+      tempLegendEstimatedCols = 0;
       renderRecognize(v);
     };
     // 图例清单编辑事件（事件委托）
