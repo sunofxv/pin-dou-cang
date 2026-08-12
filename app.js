@@ -719,11 +719,11 @@
 严格要求（务必遵守）：
 1. 只识别纯色填充的「色块」本身，忽略白色间隔、黑色网格线、边框、以及色块外的文字说明。
 2. hex 取该色块中心的「主体填充色」，不要取文字颜色、边框颜色或阴影。
-3. code 只取「色块内部印的色号短码」。绝对不要把色块【下方】的数量数字当成 code。看不清或没印字就填空字符串 ""，不要猜测或编造。
+3. code 只取「色块内部印的色号短码」。绝对不要把色块【下方】的数量数字当成 code。看不清或没印字就填空字符串 ""，不要猜测或编造。尤其不要把无意义的英文单词（如 "no"、"yes"、"all"）填到 code 里。
 4. count 取「色块正下方印的数量数字」（整数，如 12）；若下方没有数字就填 0。
 5. 不要合并相近颜色——只要肉眼可区分的不同色块，就分别列出（含深浅不同的同色系）。
 6. 图片顶部可能还有图纸的网格/行号等无关内容，请忽略；只识别最底部那排彩色圆角矩形色块。
-7. 每个色块只输出一条记录，不要重复、不要遗漏。
+7. 每个色块只输出一条记录，不要重复、不要遗漏。如果图例中只有 5 个色块，就返回 5 条；如果有 20 个，就返回 20 条。
 8. 只返回一个 JSON，不要任何额外文字或 Markdown。
 
 返回格式（示例）：
@@ -978,7 +978,13 @@
     const firstX = validRuns[0].x0;
     const lastX = validRuns[validRuns.length - 1].x1;
     const stripW = lastX - firstX + 1;
-    if (stripW < (x1 - x0) * 0.3) return region; // 精修后宽度过小则放弃
+    const originalW = x1 - x0;
+    if (stripW < originalW * 0.3) return region; // 精修后宽度过小则放弃
+    // 如果精修后宽度明显缩水（<70%），很可能是边缘浅色块被过滤掉了，此时回退到原区域更安全
+    if (stripW < originalW * 0.7) {
+      console.debug('[refineLegendRegion] 精修后宽度缩水 %.1f%%，回退到原区域', (stripW/originalW)*100);
+      return region;
+    }
 
     const topMargin = Math.max(1, Math.round(coreH * 0.15));
     const bottomMargin = Math.max(Math.round(coreH * 1.4), 16);
@@ -1178,14 +1184,17 @@
   async function aiParseLegend(img, region, baseUrl) {
     const refined = refineLegendRegion(img, region);
     const blocks = detectLegendBlocks(img, refined);
-    // 快速路径：如果用户上传的是「已经裁好的图例条带」（区域高度 < 150px 原图像素），
-    // 直接整张发给视觉模型，跳过容易过切的色块切分。
     const regionPixelH = (region.h || 0) * (img.naturalHeight || img.height || 1);
     const isCroppedStrip = regionPixelH > 10 && regionPixelH < 150;
+    console.debug('[图例识别] regionPixelH=%d, isCroppedStrip=%s, refined=%o, blocks=%d',
+      regionPixelH, isCroppedStrip, refined, blocks.length);
     const wholeDataUrl = cropRegionToDataURL(img, refined);
+    // 快速路径：如果用户上传的是「已经裁好的图例条带」（区域高度 < 150px 原图像素），
+    // 直接整张发给视觉模型，跳过容易过切的色块切分。
     if (isCroppedStrip && wholeDataUrl && wholeDataUrl.length >= 500) {
       try {
         const raw = await callLegendVisionAPI(wholeDataUrl, state.settings.apiKey, state.settings.model, baseUrl);
+        console.debug('[图例识别] 裁剪条带整张识别返回 %d 条', raw.length);
         if (raw && raw.length >= 2) return buildLegendFromColors(raw, raw.length);
       } catch (e) { console.warn('裁剪图例条带整张识别失败：', e.message); }
     }
@@ -1194,19 +1203,24 @@
     if (wholeDataUrl && wholeDataUrl.length >= 500) {
       try {
         const wholeRaw = await callLegendVisionAPI(wholeDataUrl, state.settings.apiKey, state.settings.model, baseUrl);
+        console.debug('[图例识别] 整张识别返回 %d 条', wholeRaw.length);
         // 当色块切分明显过切（如 >2 倍整张识别结果）时，直接采信整张识别，避免被错误 blocks 拖下水。
         const suspiciousBlocks = blocks.length > 0 && blocks.length > (wholeRaw.length || 0) * 2;
         const expected = Math.max(2, Math.floor((Math.min(blocks.length, (wholeRaw.length || 0) * 2) || wholeRaw.length || 2) * 0.45));
+        console.debug('[图例识别] expected=%d, suspiciousBlocks=%s', expected, suspiciousBlocks);
         if (wholeRaw && wholeRaw.length >= expected) {
+          console.debug('[图例识别] 采用整张识别结果');
           return buildLegendFromColors(wholeRaw, blocks.length || wholeRaw.length);
         }
         if (suspiciousBlocks && wholeRaw && wholeRaw.length >= 3) {
+          console.debug('[图例识别] 检测到 blocks 过切，强制采用整张识别');
           return buildLegendFromColors(wholeRaw, wholeRaw.length);
         }
       } catch (e) { console.warn('整张图例识别失败，尝试分组识别：', e.message); }
     }
     // 第二路径：分组识别（2~3 个色块一组），兼顾上下文与分辨率。
     if (blocks.length >= 2 && blocks.length <= 60) {
+      console.debug('[图例识别] 进入分组识别，blocks=%d', blocks.length);
       const results = [];
       const groupSize = 3;
       for (let i = 0; i < blocks.length; i += groupSize) {
@@ -1229,13 +1243,16 @@
         }
       }
       const valid = results.filter(r => r.hex && /^#?[0-9a-fA-F]{6}$/.test(r.hex));
+      console.debug('[图例识别] 分组识别有效结果 %d / %d', valid.length, results.length);
       if (valid.length >= Math.max(2, Math.floor(blocks.length * 0.5))) {
+        console.debug('[图例识别] 采用分组识别结果');
         return buildLegendFromColors(results, blocks.length);
       }
     }
     // 最终 fallback：整张识别（即使数量偏少也采用，避免空结果）
     if (wholeDataUrl && wholeDataUrl.length >= 500) {
       const raw = await callLegendVisionAPI(wholeDataUrl, state.settings.apiKey, state.settings.model, baseUrl);
+      console.debug('[图例识别] fallback 整张识别返回 %d 条', raw.length);
       return buildLegendFromColors(raw, blocks.length || raw.length || undefined);
     }
     throw new Error('裁剪出的图例区为空/过小，请重新框选图例区域');
@@ -1243,6 +1260,8 @@
   // 把模型返回的 [{hex,code}] 映射为标准色号清单
   function buildLegendFromColors(raw, estimatedCols) {
     const out = [];
+    // 常见模型幻觉/文字误读，清空后交给颜色匹配兜底
+    const noiseCodes = new Set(['no', 'none', 'null', 'undefined', 'yes', 'all', 'ok', 'nil']);
     for (const c of raw) {
       let hex = (c.hex || '').trim();
       if (!hex) continue; // 该列未识别到颜色（图像为空/识别失败），跳过不占位，避免噪声
@@ -1250,9 +1269,11 @@
       const rgb = hexToRgb(hex);
       if (!rgb || rgb.some(v => isNaN(v))) continue;
       const [r, g, b] = rgb;
+      let code = (c.code || '').trim();
+      if (noiseCodes.has(code.toLowerCase())) code = '';
       let colorNumber = '', colorName = '';
-      if (c.code) {
-        const bead = beadByCode(c.code);
+      if (code) {
+        const bead = beadByCode(code);
         if (bead) { colorNumber = bead.colorNumber; colorName = bead.colorName; }
       }
       if (!colorNumber) {
@@ -2575,7 +2596,7 @@
               })()}
               <div id="legend-list" class="${tempLegendMap.length ? '' : 'hidden'}">
                 <div class="flex items-center justify-between mb-1">
-                  <div class="text-xs text-mk-sub">已解析色号清单${tempLegendMap.some(x => x.count > 0) ? '（含数量）' : ''}（色号/数量可点击编辑）：</div>
+                  <div class="text-xs text-mk-sub">已解析 <b>${tempLegendMap.length}</b> 个色号${tempLegendMap.some(x => x.count > 0) ? '（含数量）' : ''}（色号/数量可点击编辑）：</div>
                   <button id="clear-legend" type="button" class="text-xs text-rose-400 hover:underline">清空图例</button>
                 </div>
                 <div id="legend-items" class="flex flex-col gap-1.5 max-h-52 overflow-auto pr-1">
