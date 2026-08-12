@@ -2442,7 +2442,7 @@
 
   function renderRecognize(v) {
     v.innerHTML = `
-      <div class="grid md:grid-cols-2 gap-4">
+      <div class="flex flex-col gap-4">
         <section class="mk-card rounded-2xl shadow-soft p-5">
           <h2 class="text-xl font-bold mb-1">🖼️ 图纸识别（图例模式）</h2>
           <p class="text-sm text-mk-sub mb-4">上传拼豆图纸，程序会自动定位底部的「颜色图例」条；定位不准时可拖拽边框/四角微调。</p>
@@ -2456,7 +2456,7 @@
 
           <div id="preview" class="mt-4 ${tempImage ? '' : 'hidden'}">
             <div class="relative inline-block w-full">
-              <canvas id="editor-canvas" class="w-full rounded-xl border border-mk-sand cursor-crosshair bg-white" style="max-height:360px;"></canvas>
+              <canvas id="editor-canvas" class="w-full rounded-xl border border-mk-sand cursor-crosshair bg-white" style="max-height:min(62vh, 520px);"></canvas>
               <div id="editor-hint" class="text-[11px] text-mk-sub mt-1">${tempLegendRegion ? '已定位图例区域（紫框）。拖拽紫框/绿框的四边或四角可微调大小，在空白处拖拽可重新框选。' : '在图上拖拽框选<b>图例区域</b>（通常是一整条横向排列的色块）。紫框=图例区，绿框=可选的图案区；框好后可拖拽边框/四角微调大小。'}</div>
             </div>
             <div class="flex flex-wrap gap-2 mt-2">
