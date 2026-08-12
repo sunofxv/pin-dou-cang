@@ -1619,6 +1619,7 @@
   let tempDetectedFramePx = null; // 检测到的图纸边框（分析画布像素坐标 {gx0,gy0,gx1,gy1,aw,ah}），用于按行列数重排网格
   let tempLegendMap = [];     // 用户框选图例后解析出的颜色→色号映射 [{r,g,b,hex,colorNumber,colorName,count}]
   let tempLegendRegion = null; // 图例模式：用户框选的图例区域坐标（与图案区 tempCropRegion 分开保存）
+  let tempLegendEstimatedCols = 0; // 自动检测图例时估算的色块列数（用于 AI 逐列识别）
 
 
   /* ---------- 图纸识别辅助：自动框选、格子检测、画布编辑 ---------- */
@@ -2220,6 +2221,7 @@
         tempDetectedFramePx = null;
         tempLegendMap = [];
         tempLegendRegion = null;
+        tempLegendEstimatedCols = 0;
         renderRecognize(v);
         // 上传后自动尝试定位图例条
         const img = new Image();
