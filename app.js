@@ -891,26 +891,8 @@
     });
   }
   // 用视觉大模型识别图例：裁剪图例区 → 调 VLM 读色 → 映射成标准色号清单
-  // cols>1 时启用「按列逐个识别」：把图例条切成 cols 个独立色块小图，每张单独发 VLN，
-  // 几乎零漏色（代价是 API 调用次数 = cols）。cols<=1 时走整条图例识别（兜底）。
-  async function aiParseLegend(img, region, baseUrl, cols) {
-    if (cols && cols > 1) {
-      const results = [];
-      for (let i = 0; i < cols; i++) {
-        const dataUrl = cropColumnToDataURL(img, region, i, cols);
-        if (!dataUrl || dataUrl.length < 400) continue;
-        try {
-          const raw = await callSingleLegendVisionAPI(dataUrl, state.settings.apiKey, state.settings.model, baseUrl);
-          results.push(raw);
-        } catch (e) {
-          console.warn('第' + (i + 1) + '列识别失败：', e.message);
-          // 单块失败不影响整体，留空补位（保证位置对齐）
-          results.push({ hex: '', code: '' });
-        }
-      }
-      return buildLegendFromColors(results, cols);
-    }
-    // 兜底：整条图例一次识别
+  // 始终将整条图例作为一张图发送给模型，由模型自行识别其中所有色块与数量。
+  async function aiParseLegend(img, region, baseUrl) {
     const dataUrl = cropRegionToDataURL(img, region);
     if (!dataUrl || dataUrl.length < 500) throw new Error('裁剪出的图例区为空/过小，请重新框选图例区域');
     const raw = await callLegendVisionAPI(dataUrl, state.settings.apiKey, state.settings.model, baseUrl);
@@ -1619,7 +1601,6 @@
   let tempDetectedFramePx = null; // 检测到的图纸边框（分析画布像素坐标 {gx0,gy0,gx1,gy1,aw,ah}），用于按行列数重排网格
   let tempLegendMap = [];     // 用户框选图例后解析出的颜色→色号映射 [{r,g,b,hex,colorNumber,colorName,count}]
   let tempLegendRegion = null; // 图例模式：用户框选的图例区域坐标（与图案区 tempCropRegion 分开保存）
-  let tempLegendEstimatedCols = 0; // 自动检测图例时估算的色块列数（用于 AI 逐列识别）
 
 
   /* ---------- 图纸识别辅助：自动框选、格子检测、画布编辑 ---------- */
@@ -2214,7 +2195,6 @@
         tempDetectedFramePx = null;
         tempLegendMap = [];
         tempLegendRegion = null;
-        tempLegendEstimatedCols = 0;
         renderRecognize(v);
         // 上传后自动尝试定位图例条
         const img = new Image();
@@ -2222,9 +2202,8 @@
           const det = detectLegendRegion(img);
           if (det && det.region) {
             tempLegendRegion = det.region;
-            tempLegendEstimatedCols = det.estimatedCols || 0;
             drawEditor();
-            toast(`已自动定位图例区域（约 ${det.estimatedCols} 个色块），可拖拽边框/四角微调`, 'success');
+            toast('已自动定位图例区域，可拖拽边框/四角微调', 'success');
           }
         };
         img.src = tempImage;
@@ -2351,10 +2330,9 @@
         tempLegendRegion = det.region;
         tempCropRegion = null;
         tempDetectedVLines = []; tempDetectedHLines = [];
-        tempLegendEstimatedCols = det.estimatedCols || 0;
         drawEditor();
         renderRecognize(v);
-        toast(`已自动定位图例区域（约 ${det.estimatedCols} 个色块），可拖拽边框/四角微调`, 'success');
+        toast('已自动定位图例区域，可拖拽边框/四角微调', 'success');
       };
       img.src = tempImage;
     };
@@ -2369,11 +2347,10 @@
           if (det && det.region) { region = det.region; tempLegendRegion = region; }
         }
         if (!region) return toast('未能自动定位图例区域，请在图上拖拽框选图例条', 'warn');
-        tempLegendMap = parseLegendRegion(img, region, { cols: tempLegendEstimatedCols || 0 });
+        tempLegendMap = parseLegendRegion(img, region, { cols: 0 });
         tempLegendRegion = region;   // 锁定图例区，图案区留给第二步框选
         tempCropRegion = null;
         tempDetectedVLines = []; tempDetectedHLines = [];
-        if (tempLegendMap.estimatedCols) tempLegendEstimatedCols = tempLegendMap.estimatedCols;
         drawEditor();
         renderRecognize(v);
         toast(`已解析 ${tempLegendMap.length} 个图例色，请再框选图案区域后点「计算整图用量」`, tempLegendMap.length ? 'success' : 'warn');
@@ -2386,12 +2363,10 @@
       const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
       if (!viaProxy && !(state.settings.enableVision && state.settings.apiKey)) return toast('当前无法使用云端视觉：请使用内置代理（API 地址留空）或先在设置填写 API Key 与端点', 'warn', 4000);
       if (!tempImage) return toast('请先上传图片', 'error');
-      // 使用自动估算的列数做「按列逐个识别」，未估算到则整条一次识别
-      const cols = tempLegendEstimatedCols || 0;
       const baseUrl = state.settings.visionBaseUrl || '';
       aiLegendBtn.disabled = true;
       const oldText = aiLegendBtn.textContent;
-      aiLegendBtn.textContent = cols > 1 ? `⏳ 逐列识别 ${cols} 块…` : '⏳ AI识别中…';
+      aiLegendBtn.textContent = '⏳ AI识别中…';
       try {
         const img = await loadImage(tempImage);
         let region = tempLegendRegion;
@@ -2401,11 +2376,10 @@
           if (det && det.region) { region = det.region; tempLegendRegion = region; }
         }
         if (!region) return toast('未能自动定位图例区域，请在图上拖拽框选图例条', 'warn');
-        tempLegendMap = await aiParseLegend(img, region, baseUrl, cols);
+        tempLegendMap = await aiParseLegend(img, region, baseUrl);
         tempLegendRegion = region;   // 锁定图例区，图案区留给第二步框选
         tempCropRegion = null;
         tempDetectedVLines = []; tempDetectedHLines = [];
-        if (tempLegendMap.estimatedCols) tempLegendEstimatedCols = tempLegendMap.estimatedCols;
         drawEditor();
         renderRecognize(v);
         const _hasCount = tempLegendMap.some(x => x.count > 0);
@@ -2420,7 +2394,6 @@
     $('#clear-legend').onclick = () => {
       tempLegendMap = [];
       tempLegendRegion = null;
-      tempLegendEstimatedCols = 0;
       renderRecognize(v);
     };
     // 图例清单编辑事件（事件委托）
