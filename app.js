@@ -5442,6 +5442,10 @@
           // 若白像素占绝大多数且主色近白 → 填最近白色系色号, 否则留空
           if (bgTop && bgPx / totalPx >= 0.5 && isNearWhite(bgTop.sr / bgTop.n, bgTop.sg / bgTop.n, bgTop.sb / bgTop.n)) {
             chosen = bgTop; colorRole = 'white';
+          } else if (bgTop && isNearWhite(bgTop.sr / bgTop.n, bgTop.sg / bgTop.n, bgTop.sb / bgTop.n)) {
+            // 🆕 整图不是白底，但 cell 主色是近白（如 97api 重绘风里的头发高光/白色衣服/肤色高光）
+            // 整张图背景是深蓝 H1 时，整图白底分支不会触发，但局部白格仍是有效色 → 也填最近白色系色号。
+            chosen = bgTop; colorRole = 'white';
           } else {
             colorRole = 'bg';  // 避免白底零星彩点/浅灰底被当成色块
           }
