@@ -1409,18 +1409,23 @@
     $$('.bead-del').forEach(b => b.onclick = () => deleteBead(b.dataset.id));
     if (pendingWarehouseColor) {
       const target = pendingWarehouseColor; pendingWarehouseColor = null;
-      // 只在「当前可见」的色号卡片/行里找：移动端是 .bead-card，桌面端是表格 tr；
-      // 另一个被 hidden 掉的元素 offsetParent 为 null，不能用来定位
-      const row = $$('[data-num]').find(el =>
-        el.dataset.num === target &&
-        el.offsetParent !== null &&
-        (el.classList.contains('bead-card') || el.tagName === 'TR')
-      );
-      if (row) {
-        row.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        row.classList.add('ring-2', 'ring-mk-rose', 'bg-mk-rose/5');
-        setTimeout(() => row.classList.remove('ring-2', 'ring-mk-rose', 'bg-mk-rose/5'), 2600);
-      }
+      // 等本次 innerHTML 布局算好后再定位，并改用瞬时滚动：
+      // 移动端（尤其 iOS Safari）behavior:'smooth' 经常失效，导致停在顶部搜索框；
+      // 低库存色号在列表很深处，平滑滚动被忽略就会看起来「跳到了搜索框」
+      requestAnimationFrame(() => {
+        // 只在「当前可见」的色号卡片/行里找：移动端是 .bead-card，桌面端是表格 tr；
+        // 另一个被 hidden 掉的元素 offsetParent 为 null，不能用来定位
+        const row = $$('[data-num]').find(el =>
+          el.dataset.num === target &&
+          el.offsetParent !== null &&
+          (el.classList.contains('bead-card') || el.tagName === 'TR')
+        );
+        if (row) {
+          row.scrollIntoView({ block: 'center' });
+          row.classList.add('ring-2', 'ring-mk-rose', 'bg-mk-rose/5');
+          setTimeout(() => row.classList.remove('ring-2', 'ring-mk-rose', 'bg-mk-rose/5'), 2600);
+        }
+      });
     }
   }
   function beadRow(b) {
@@ -3624,6 +3629,7 @@
   let pAspectLock = true;     // 设置列/行时是否锁定纵横比（空白 1:1、图片按原图比例）
   let pLastDetectedColors = 0; // 上次识别时图中检测到的非白主色数 (5-bit 量化后去重), 给 toast 用
   let pPaletteReport = [];     // 上次识别的色彩映射报告: [{pct, r, g, b, hex, beadCode}, ...] (按占比降序)
+  let pMaxColors = 0;          // 最多用色数 (0=不限制); 借鉴 pindou-skill 的 max_colors: 超出部分合并到最近主色
   let pOcrMeta = null;         // OCR 模式诊断: {recognized, matchedByOCR, filledByFallback, unmatchedByOCR, model}
   let pImageCrop = null;      // 剪裁区域：{x,y,w,h} 原图像素坐标；null = 不剪裁（整图）
   let pImageCropMode = false; // 是否处于剪裁编辑模式（可拖拽选区）
@@ -3707,9 +3713,42 @@
     const fx = f(X / Xn), fy = f(Y / Yn), fz = f(Z / Zn);
     return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
   }
+  // 感知色差：CIEDE2000（对标 skimage.color.deltaE_ciede2000）。
+  // 借鉴 pindou-skill 的核心方法论：颜色聚类必须在 Lab 空间、用 CIEDE2000 ΔE，
+  // 不能用 RGB/CIE76 欧氏距离（会把暖棕+暗影合成中性灰再映射到橄榄绿）。
   function labDeltaE(a, b) {
-    const dL = a[0] - b[0], da = a[1] - b[1], db = a[2] - b[2];
-    return Math.sqrt(dL * dL + da * da + db * db); // CIE76 ΔE
+    const kL = 1, kC = 1, kH = 1;
+    const L1 = a[0], a1 = a[1], b1 = a[2];
+    const L2 = b[0], a2 = b[1], b2 = b[2];
+    const C1 = Math.sqrt(a1 * a1 + b1 * b1);
+    const C2 = Math.sqrt(a2 * a2 + b2 * b2);
+    const Cbar = (C1 + C2) / 2;
+    const Cbar7 = Cbar * Cbar * Cbar * Cbar * Cbar * Cbar * Cbar; // Cbar^7
+    const G = 0.5 * (1 - Math.sqrt(Cbar7 / (Cbar7 + 6103515625))); // 25^7 = 6103515625
+    const a1p = (1 + G) * a1, a2p = (1 + G) * a2;
+    const C1p = Math.sqrt(a1p * a1p + b1 * b1);
+    const C2p = Math.sqrt(a2p * a2p + b2 * b2);
+    const rad = x => { let v = x * 180 / Math.PI; if (v < 0) v += 360; return v; };
+    const h1 = (b1 === 0 && a1p === 0) ? 0 : rad(Math.atan2(b1, a1p));
+    const h2 = (b2 === 0 && a2p === 0) ? 0 : rad(Math.atan2(b2, a2p));
+    const dLp = L2 - L1, dCp = C2p - C1p;
+    let dhp;
+    if (C1p * C2p === 0) dhp = 0;
+    else { dhp = h2 - h1; if (dhp > 180) dhp -= 360; else if (dhp < -180) dhp += 360; }
+    const dHp = 2 * Math.sqrt(C1p * C2p) * Math.sin(dhp * Math.PI / 360); // sin(Δh/2)
+    const Lbarp = (L1 + L2) / 2, Cbarp = (C1p + C2p) / 2;
+    let hpbar;
+    if (C1p * C2p === 0) hpbar = h1 + h2;
+    else { const diff = Math.abs(h1 - h2); hpbar = diff > 180 ? (h1 + h2 + 360) / 2 : (h1 + h2) / 2; }
+    const T = 1 - 0.17 * Math.cos((hpbar - 30) * Math.PI / 180)
+      + 0.24 * Math.cos(2 * hpbar * Math.PI / 180)
+      + 0.32 * Math.cos((3 * hpbar + 6) * Math.PI / 180)
+      - 0.20 * Math.cos((4 * hpbar - 63) * Math.PI / 180);
+    const SL = 1 + (0.015 * (Lbarp - 50) * (Lbarp - 50)) / Math.sqrt(20 + (Lbarp - 50) * (Lbarp - 50));
+    const SC = 1 + 0.045 * Cbarp;
+    const SH = 1 + 0.015 * Cbarp * T;
+    const dL = dLp / (kL * SL), dC = dCp / (kC * SC), dH = dHp / (kH * SH);
+    return Math.sqrt(dL * dL + dC * dC + dH * dH);
   }
   // 用感知色差(CIELAB ΔE)找最近的自有色卡；beadLabs 为预计算的所有色卡 Lab
   function nearestOwnedColorLab(r, g, b, beadLabs) {
@@ -3809,6 +3848,11 @@
             </div>
             <label class="flex items-center gap-2 text-xs mt-2 text-mk-sub select-none">
               <input id="p-aspect-image" type="checkbox" ${pAspectLock ? 'checked' : ''} class="accent-mk-rose"> 🔒 锁定纵横比${pImgAspect ? `（原图 ${pImgAspect.toFixed(2)}:1，改一项另一项自动按比例）` : '（上传图后按原图比例，先传图更准）'}
+            </label>
+            <label class="flex items-center gap-2 text-xs mt-2 text-mk-sub select-none">
+              <span>🎨 最多色数</span>
+              <input id="p-maxcolors" type="number" min="0" max="60" value="${pMaxColors || 0}" class="w-16 px-2 py-1 rounded-lg bg-white/70 border border-mk-sand">
+              <span class="text-[10px]">（0=不限制；超出自动合并到最近主色）</span>
             </label>
             <div class="mt-3 mb-1 text-xs text-mk-sub font-semibold">🔠 识别模式</div>
             <div class="flex flex-wrap gap-1 text-[11px]">
@@ -5072,6 +5116,37 @@
       }
       cells.push(outRow);
     }
+    // 借鉴 pindou-skill 的 max_colors：限制图纸用色数，超出部分合并到最近主色
+    // 思路：先每格 CIEDE2000 匹配全色板（上面已完成），数频次取 top-K 主色板，
+    // 低频色号 remap 到 top-K 里 CIEDE2000 最近的色号（色板→色板，失真可控）。
+    if (pMaxColors && pMaxColors > 0) {
+      const counts = new Map();
+      for (const row of cells) for (const code of row) if (code) counts.set(code, (counts.get(code) || 0) + 1);
+      if (counts.size > pMaxColors) {
+        const topK = [...counts.entries()].sort((x, y) => y[1] - x[1]).slice(0, pMaxColors).map(e => e[0]);
+        const topSet = new Set(topK);
+        const labCacheM = new Map();
+        const labOf = (code) => {
+          if (!labCacheM.has(code)) {
+            const bd = beadByNumber(code);
+            const [br, bg, bb] = (bd && bd.hex) ? hexToRgb(bd.hex) : [200, 200, 200];
+            labCacheM.set(code, rgbToLab(br, bg, bb));
+          }
+          return labCacheM.get(code);
+        };
+        const remap = new Map();
+        for (const code of counts.keys()) {
+          if (topSet.has(code)) { remap.set(code, code); continue; }
+          const lab = labOf(code);
+          let best = null, bd = Infinity;
+          for (const t of topK) { const d = labDeltaE(lab, labOf(t)); if (d < bd) { bd = d; best = t; } }
+          remap.set(code, best);
+        }
+        for (let rr = 0; rr < cells.length; rr++) for (let cc = 0; cc < cells[rr].length; cc++) {
+          if (cells[rr][cc]) cells[rr][cc] = remap.get(cells[rr][cc]);
+        }
+      }
+    }
     return cells;   // 主路径调用方负责写 pCells；OCR 路径把它当 fallback 使用
   }
   // 把 pImage (含 pImageCrop 选区) 画成模型可读的高分辨率图（短边 ≈ min(行数,列数)×35 像素，
@@ -5236,6 +5311,9 @@
   async function patternRunGenerate(opts) {
     const fromAuto = !!(opts && opts.fromAuto);
     if (!pImage) return toast('请先上传参考图', 'warn');
+    // 读取「最多色数」选项（借鉴 pindou-skill 的 max_colors）
+    const mcEl = document.getElementById('p-maxcolors');
+    if (mcEl) { const v = parseInt(mcEl.value, 10); pMaxColors = (isFinite(v) && v > 0) ? v : 0; }
     // 色卡不足时的软提示：≥5 色才"出图", <5 色只建议先补色卡再生成
     if (!state.beads || !state.beads.length) {
       return toast('⚠️ 拼豆色卡为空\n请先到「色卡管理」添加一些色卡（黑色、白色、肉色等基础配色），再识别图纸', 'warn', 6000);
