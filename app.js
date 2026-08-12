@@ -1212,7 +1212,7 @@
   function enableSwipeNavigation() {
     const main = document.querySelector('main');
     if (!main) return;
-    let sx = 0, sy = 0, st = 0, tracking = false;
+    let sx = 0, sy = 0, st = 0, tracking = false, locked = false;
     // 这些元素自身有横向滚动或需要手势交互，滑动切换应让位给它
     const isExcluded = (t) => !!(t && t.closest &&
       t.closest('table, .overflow-x-auto, .overflow-auto, canvas, input, textarea, select, [contenteditable]'));
@@ -1220,21 +1220,42 @@
       const mr = document.querySelector('#modal-root');
       return mr && mr.children.length > 0;
     };
+    // 屏幕左右边缘留白：此区域内起滑交给系统返回手势，不参与翻页，避免与浏览器返回冲突
+    const EDGE = 24;
     main.addEventListener('touchstart', (e) => {
-      if (e.touches.length !== 1 || isExcluded(e.target) || modalOpen()) { tracking = false; return; }
-      sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now(); tracking = true;
+      if (e.touches.length !== 1 || isExcluded(e.target) || modalOpen()) { tracking = false; locked = false; return; }
+      const x = e.touches[0].clientX;
+      // 从屏幕最左/最右边缘起滑 → 交给浏览器（iOS/安卓系统返回手势），不当成翻页
+      if (x < EDGE || x > window.innerWidth - EDGE) { tracking = false; locked = false; return; }
+      sx = x; sy = e.touches[0].clientY; st = Date.now(); tracking = true; locked = false;
     }, { passive: true });
+    // 关键：touchmove 用非 passive，滑动过程中锁定为横向手势后立即 preventDefault，
+    // 拦掉浏览器对横向手势的默认处理（含返回手势），否则极易被浏览器当成「返回」吞掉
+    main.addEventListener('touchmove', (e) => {
+      if (!tracking) return;
+      const t = e.touches[0];
+      const dx = t.clientX - sx, dy = t.clientY - sy;
+      if (!locked) {
+        if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.3) {
+          locked = true; // 横向明显占优 → 锁定为翻页手势
+        } else if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 14) {
+          tracking = false; return; // 纵向占优 → 放弃翻页，让位正常上下滚动
+        }
+      }
+      if (locked) e.preventDefault();
+    }, { passive: false });
     main.addEventListener('touchend', (e) => {
-      if (!tracking) return; tracking = false;
+      if (!tracking) { tracking = false; locked = false; return; }
+      tracking = false;
       const t = e.changedTouches[0];
       const dx = t.clientX - sx, dy = t.clientY - sy, dt = Date.now() - st;
-      // 主要横向、滑动距离足够、动作够快 → 判定为翻页
-      if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.4 && dt < 700) {
+      // 已锁定横向手势 + 距离足够 + 动作够快 → 判定为翻页（阈值略降，更灵敏）
+      if (locked && Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.2 && dt < 800) {
         const idx = VIEWS.findIndex(vv => vv.key === currentView);
-        const dir = dx < 0 ? 1 : -1; // 左滑 → 下一个
-        const ni = idx + dir;
+        const ni = idx + (dx < 0 ? 1 : -1); // 左滑 → 下一个
         if (ni >= 0 && ni < VIEWS.length) swipeToView(VIEWS[ni].key, dx < 0 ? 'next' : 'prev');
       }
+      locked = false;
     }, { passive: true });
     // 桌面端：左右方向键翻页（输入框聚焦时不触发）
     window.addEventListener('keydown', (e) => {

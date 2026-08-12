@@ -49,6 +49,8 @@
 
   <style>
     /* 少量自定义：滚动条、卡片质感、画布背景网格（手作风底色） */
+    /* overscroll-behavior-x: none 阻止横向 overscroll 触发安卓 Chrome 的返回手势 */
+    html, body { overscroll-behavior-x: none; }
     body { background:
         radial-gradient(circle at 12% 18%, #FBD3E9 0%, transparent 38%),
         radial-gradient(circle at 88% 12%, #CDE7FB 0%, transparent 40%),
