@@ -2132,10 +2132,10 @@
           <div class="mt-4 space-y-3">
             <!-- 图例识别：自动/手动框选图例 → 解析颜色 → 生成色号清单 → 框选图案 → 统计用量 -->
             <div id="legend-options" class="space-y-2">
-              <p class="text-[11px] text-mk-sub"><b>第一步</b>：上传后程序会<b>自动定位</b>图纸底部的图例条（紫框）。若定位不准，可拖拽紫框的四边/四角微调大小，或在空白处拖拽重新框选。<br>点「🤖 AI识别图例」即可自动读出色号与数量；若图例下方已印数量，识别后可直接「存为配方 / 扣减库存」，<b>无需再框选图案</b>。</p>
+              <p class="text-[11px] text-mk-sub"><b>第一步</b>：上传后程序会<b>自动定位</b>图纸底部的图例条（紫框）。若定位不准，可拖拽紫框的四边/四角微调大小，或在空白处拖拽重新框选。<br>点「🤖 AI识别图例」读出色号与数量；识别后若调整了紫框，可点「🔄 重新解析」按新框重新识别。若图例下方已印数量，识别后可直接「存为配方 / 扣减库存」，<b>无需再框选图案</b>。</p>
               <div class="flex items-center justify-between text-sm bg-white/60 rounded-xl px-3 py-2">
-                <span class="text-xs text-mk-sub">自动定位图例后，点右侧按钮解析色号：</span>
-                <button id="parse-legend" type="button" class="px-3 py-1.5 rounded-lg bg-mk-lav/70 text-mk-ink text-xs font-semibold hover:bg-mk-lav/90">🎨 解析图例</button>
+                <span class="text-xs text-mk-sub">自动定位图例后，点右侧按钮重新识别（会根据当前紫框重新读取色号与数量）：</span>
+                <button id="parse-legend" type="button" class="px-3 py-1.5 rounded-lg bg-mk-lav/70 text-mk-ink text-xs font-semibold hover:bg-mk-lav/90">${tempLegendMap.length ? '🔄 重新解析' : '🎨 解析图例'}</button>
               </div>
               ${(() => {
                 const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
@@ -2344,37 +2344,15 @@
       };
       img.src = tempImage;
     };
-    $('#parse-legend').onclick = () => {
-      if (!tempImage) return toast('请先上传图片', 'error');
-      const img = new Image();
-      img.onload = () => {
-        let region = tempLegendRegion;
-        if (!region && tempCropRegion) region = tempCropRegion;
-        if (!region) {
-          const det = detectLegendRegion(img);
-          if (det && det.region) { region = det.region; tempLegendRegion = region; }
-        }
-        if (!region) return toast('未能自动定位图例区域，请在图上拖拽框选图例条', 'warn');
-        tempLegendMap = parseLegendRegion(img, region, { cols: 0 });
-        tempLegendRegion = region;   // 锁定图例区，图案区留给第二步框选
-        tempCropRegion = null;
-        tempDetectedVLines = []; tempDetectedHLines = [];
-        drawEditor();
-        renderRecognize(v);
-        toast(`已解析 ${tempLegendMap.length} 个图例色，请再框选图案区域后点「计算整图用量」`, tempLegendMap.length ? 'success' : 'warn');
-      };
-      img.src = tempImage;
-    };
-    // AI 识别图例：把图例区域裁剪后发给视觉大模型，自动读出色块颜色与印的色号
-    const aiLegendBtn = $('#ai-parse-legend');
-    if (aiLegendBtn) aiLegendBtn.onclick = async () => {
+    // 统一的 AI 识别/重新识别逻辑：始终整张图例发给模型，读取色号与数量
+    async function runAiLegendParse(btn) {
       const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
       if (!viaProxy && !(state.settings.enableVision && state.settings.apiKey)) return toast('当前无法使用云端视觉：请使用内置代理（API 地址留空）或先在设置填写 API Key 与端点', 'warn', 4000);
       if (!tempImage) return toast('请先上传图片', 'error');
       const baseUrl = state.settings.visionBaseUrl || '';
-      aiLegendBtn.disabled = true;
-      const oldText = aiLegendBtn.textContent;
-      aiLegendBtn.textContent = '⏳ AI识别中…';
+      btn.disabled = true;
+      const oldText = btn.textContent;
+      btn.textContent = '⏳ AI识别中…';
       try {
         const img = await loadImage(tempImage);
         let region = tempLegendRegion;
@@ -2396,9 +2374,14 @@
         console.error(err);
         toast('AI 识别失败：' + (err.message || err), 'error');
       } finally {
-        aiLegendBtn.disabled = false; aiLegendBtn.textContent = oldText;
+        btn.disabled = false; btn.textContent = oldText;
       }
-    };
+    }
+
+    $('#parse-legend').onclick = () => runAiLegendParse($('#parse-legend'));
+    // AI 识别图例：首次识别按钮（识别完成后隐藏，由「重新解析」接管）
+    const aiLegendBtn = $('#ai-parse-legend');
+    if (aiLegendBtn) aiLegendBtn.onclick = () => runAiLegendParse(aiLegendBtn);
     $('#clear-legend').onclick = () => {
       tempLegendMap = [];
       tempLegendRegion = null;
