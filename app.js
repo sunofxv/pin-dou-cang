@@ -1398,7 +1398,9 @@
         const ni = $('#wh-search');
         if (ni) { ni.focus(); const len = ni.value.length; ni.setSelectionRange(len, len); }
       };
-      whSearchInput.focus();
+      // 从仪表盘点色号跳转时（pendingWarehouseColor 已置），不要聚焦搜索框——
+      // 否则移动端会弹软键盘并把视图滚到顶部，看起来像「跳到了搜索框」
+      if (!pendingWarehouseColor) whSearchInput.focus();
     }
     const whSearchClear = $('#wh-search-clear');
     if (whSearchClear) whSearchClear.onclick = () => { whSearch = ''; renderWarehouse(v); };
@@ -1407,7 +1409,13 @@
     $$('.bead-del').forEach(b => b.onclick = () => deleteBead(b.dataset.id));
     if (pendingWarehouseColor) {
       const target = pendingWarehouseColor; pendingWarehouseColor = null;
-      const row = $$('[data-num]').find(tr => tr.dataset.num === target);
+      // 只在「当前可见」的色号卡片/行里找：移动端是 .bead-card，桌面端是表格 tr；
+      // 另一个被 hidden 掉的元素 offsetParent 为 null，不能用来定位
+      const row = $$('[data-num]').find(el =>
+        el.dataset.num === target &&
+        el.offsetParent !== null &&
+        (el.classList.contains('bead-card') || el.tagName === 'TR')
+      );
       if (row) {
         row.scrollIntoView({ block: 'center', behavior: 'smooth' });
         row.classList.add('ring-2', 'ring-mk-rose', 'bg-mk-rose/5');
