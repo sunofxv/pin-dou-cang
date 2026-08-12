@@ -64,9 +64,10 @@
     input, select, textarea { outline: none; }
     input:focus, select:focus, textarea:focus { border-color:#F8BBD0 !important; box-shadow:0 0 0 3px rgba(248,187,208,.35); }
     /* 页面左右滑动切换动画 */
-    #view { transition: transform .3s cubic-bezier(.22,.61,.36,1), opacity .3s ease; will-change: transform, opacity; }
-    #view.view-from-right { transform: translateX(48px); opacity: 0; }
-    #view.view-from-left  { transform: translateX(-48px); opacity: 0; }
+    /* 滑动翻页动画：仅做轻微位移滑入，不使用 opacity:0 —— 避免动画类万一残留导致整页空白 */
+    #view { transition: transform .28s cubic-bezier(.22,.61,.36,1); will-change: transform; }
+    #view.view-from-right { transform: translateX(40px); }
+    #view.view-from-left  { transform: translateX(-40px); }
   </style>
 </head>
 
