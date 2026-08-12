@@ -890,10 +890,31 @@
       img.src = src;
     });
   }
-  // 用视觉大模型识别图例：裁剪图例区 → 调 VLM 读色 → 映射成标准色号清单
-  // 始终将整条图例作为一张图发送给模型，由模型自行识别其中所有色块与数量。
+  // 用视觉大模型识别图例：先精修区域，再自动估算列数，按列切成单个小图并发识别。
+  // 如果估算失败或列数异常，则退回整张图例识别。
   async function aiParseLegend(img, region, baseUrl) {
-    const dataUrl = cropRegionToDataURL(img, region);
+    const refined = refineLegendRegion(img, region);
+    const cols = estimateLegendCols(img, refined);
+    if (cols >= 2 && cols <= 60) {
+      const results = [];
+      for (let i = 0; i < cols; i++) {
+        try {
+          const dataUrl = cropColumnToDataURL(img, refined, i, cols);
+          if (!dataUrl || dataUrl.length < 400) { results.push({ hex: '', code: '', count: 0 }); continue; }
+          const raw = await callSingleLegendVisionAPI(dataUrl, state.settings.apiKey, state.settings.model, baseUrl);
+          results.push(raw);
+        } catch (e) {
+          console.warn('图例第' + (i + 1) + '列识别失败：', e.message);
+          results.push({ hex: '', code: '', count: 0 });
+        }
+      }
+      const valid = results.filter(r => r.hex && /^#?[0-9a-fA-F]{6}$/.test(r.hex));
+      if (valid.length >= Math.max(2, Math.floor(cols * 0.5))) {
+        return buildLegendFromColors(results, cols);
+      }
+    }
+    // fallback：整张图例一次识别
+    const dataUrl = cropRegionToDataURL(img, refined);
     if (!dataUrl || dataUrl.length < 500) throw new Error('裁剪出的图例区为空/过小，请重新框选图例区域');
     const raw = await callLegendVisionAPI(dataUrl, state.settings.apiKey, state.settings.model, baseUrl);
     return buildLegendFromColors(raw, raw.length || undefined);
@@ -1032,18 +1053,73 @@
     $('#header-go-settings').onclick = () => switchView('settings');
     $('#header-logout').onclick = () => doLogout();
   }
-  function switchView(key) {
+  function switchView(key, opts = {}) {
     currentView = key;
     renderNav();
     const v = $('#view');
     if (key === 'dashboard')  renderDashboard(v);
-    if (key === 'warehouse')  renderWarehouse(v);
+    if (key === 'warehouse')  renderWarehouse(v, opts);
     if (key === 'recognize')  renderRecognize(v);
     if (key === 'recipes')    renderRecipes(v);
     if (key === 'pattern')    renderPattern(v);
     if (key === 'gallery')    renderGallery(v);
     if (key === 'logs')       renderLogs(v);
     if (key === 'settings')   renderSettings(v);
+  }
+
+  /* ===================== 页面滑动切换 ===================== */
+  // 带方向动画地切换到指定视图（仅滑动/方向键触发，避免与色号跳转的滚动定位冲突）
+  function swipeToView(key, dir) {
+    const v = $('#view');
+    if (!v) { switchView(key); return; }
+    const cls = dir === 'next' ? 'view-from-right' : 'view-from-left';
+    v.classList.add(cls);
+    switchView(key); // 渲染新内容（此时 #view 仍带偏移，作为动画起点）
+    // 双 rAF：确保浏览器先以偏移态绘制一帧，再过渡归位，滑动动画才生效
+    requestAnimationFrame(() => requestAnimationFrame(() => v.classList.remove('view-from-right', 'view-from-left')));
+  }
+  function enableSwipeNavigation() {
+    const main = document.querySelector('main');
+    if (!main) return;
+    let sx = 0, sy = 0, st = 0, tracking = false;
+    // 这些元素自身有横向滚动或需要手势交互，滑动切换应让位给它
+    const isExcluded = (t) => !!(t && t.closest &&
+      t.closest('table, .overflow-x-auto, .overflow-auto, canvas, input, textarea, select, [contenteditable]'));
+    const modalOpen = () => {
+      const mr = document.querySelector('#modal-root');
+      return mr && mr.children.length > 0;
+    };
+    main.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1 || isExcluded(e.target) || modalOpen()) { tracking = false; return; }
+      sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now(); tracking = true;
+    }, { passive: true });
+    main.addEventListener('touchend', (e) => {
+      if (!tracking) return; tracking = false;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - sx, dy = t.clientY - sy, dt = Date.now() - st;
+      // 主要横向、滑动距离足够、动作够快 → 判定为翻页
+      if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.4 && dt < 700) {
+        const idx = VIEWS.findIndex(vv => vv.key === currentView);
+        const dir = dx < 0 ? 1 : -1; // 左滑 → 下一个
+        const ni = idx + dir;
+        if (ni >= 0 && ni < VIEWS.length) swipeToView(VIEWS[ni].key, dx < 0 ? 'next' : 'prev');
+      }
+    }, { passive: true });
+    // 桌面端：左右方向键翻页（输入框聚焦时不触发）
+    window.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.isContentEditable)) return;
+      if (modalOpen()) return;
+      const idx = VIEWS.findIndex(vv => vv.key === currentView);
+      const dir = e.key === 'ArrowRight' ? 1 : -1;
+      const ni = idx + dir;
+      if (ni >= 0 && ni < VIEWS.length) { e.preventDefault(); swipeToView(VIEWS[ni].key, e.key === 'ArrowRight' ? 'next' : 'prev'); }
+    });
+    // 首次进入（移动端）提示一次可滑动翻页
+    if (window.matchMedia && window.matchMedia('(max-width: 640px)').matches && !localStorage.getItem('swipe_hinted')) {
+      setTimeout(() => { toast('💡 左右滑动可切换页面', 'info', 2600); localStorage.setItem('swipe_hinted', '1'); }, 1200);
+    }
   }
 
   /* ===================== 11. 仪表盘 ===================== */
@@ -1158,11 +1234,11 @@
         <p class="text-xs text-mk-sub mt-2">💡 点击色号可跳转到「豆子仓库」对应色号；右上角按钮可批量入库 / 出库。</p>
       </section>`;
 
-    $$('.dash-color', v).forEach(btn => btn.onclick = () => {
+    $$('.dash-color', v).forEach(btn => btn.onclick = (e) => {
+      e.stopPropagation();
       whFilterLow = false;
       whSearch = '';
-      pendingWarehouseColor = btn.dataset.num;
-      switchView('warehouse');
+      switchView('warehouse', { focusColor: btn.dataset.num });
     });
     $$('.stat-card', v).forEach(card => card.onclick = () => {
       const action = card.dataset.action;
@@ -1170,7 +1246,6 @@
       if (action === 'warehouse') {
         whFilterLow = false;
         whSearch = '';
-        pendingWarehouseColor = '';
         switchView('warehouse');
       } else if (action === 'logs') {
         switchView('logs');
@@ -1181,11 +1256,12 @@
     });
     const di = $('#dash-in'); if (di) di.onclick = () => openBatchStock('入库');
     const dout = $('#dash-out'); if (dout) dout.onclick = () => openBatchStock('出库');
-    $$('.low-stock-row', v).forEach(btn => btn.onclick = () => {
-      whFilterLow = false;
+    $$('.low-stock-row', v).forEach(btn => btn.onclick = (e) => {
+      e.stopPropagation();
+      // 低库存色号在仓库列表很深处，改开启「仅看低库存」过滤，让其落在短列表里稳定定位
+      whFilterLow = true;
       whSearch = '';
-      pendingWarehouseColor = btn.dataset.num;
-      switchView('warehouse');
+      switchView('warehouse', { focusColor: btn.dataset.num });
     });
     const gr = $('#gen-restock');
     if (gr) gr.onclick = () => {
@@ -1339,7 +1415,7 @@
   let whFilterLow = false;
   let whSearch = ''; // 仓库搜索关键字（色号/名称/色值/位置）
   let pendingWarehouseColor = null; // 从仪表盘点击色号后要跳转/高亮的色号
-  function renderWarehouse(v) {
+  function renderWarehouse(v, opts = {}) {
     let list = state.beads.slice();
     if (whFilterLow) list = list.filter(isLow);
     const q = whSearch.trim().toLowerCase();
@@ -1398,34 +1474,35 @@
         const ni = $('#wh-search');
         if (ni) { ni.focus(); const len = ni.value.length; ni.setSelectionRange(len, len); }
       };
-      // 从仪表盘点色号跳转时（pendingWarehouseColor 已置），不要聚焦搜索框——
-      // 否则移动端会弹软键盘并把视图滚到顶部，看起来像「跳到了搜索框」
-      if (!pendingWarehouseColor) whSearchInput.focus();
+      // 进仓库不再自动聚焦搜索框：移动端会自动弹软键盘并把视图滚到顶部（最早「跳到搜索框」的根因）；
+      // 输入时的光标保持已在 oninput 中处理
+      const focusColor = (opts && opts.focusColor) || pendingWarehouseColor;
     }
     const whSearchClear = $('#wh-search-clear');
     if (whSearchClear) whSearchClear.onclick = () => { whSearch = ''; renderWarehouse(v); };
     $$('.bead-edit').forEach(b => b.onclick = () => openAddBead(b.dataset.id));
     $$('.bead-adj').forEach(b => b.onclick = () => openAdjust(b.dataset.id));
     $$('.bead-del').forEach(b => b.onclick = () => deleteBead(b.dataset.id));
-    if (pendingWarehouseColor) {
-      const target = pendingWarehouseColor; pendingWarehouseColor = null;
-      // 等本次 innerHTML 布局算好后再定位，并改用瞬时滚动：
-      // 移动端（尤其 iOS Safari）behavior:'smooth' 经常失效，导致停在顶部搜索框；
-      // 低库存色号在列表很深处，平滑滚动被忽略就会看起来「跳到了搜索框」
-      requestAnimationFrame(() => {
-        // 只在「当前可见」的色号卡片/行里找：移动端是 .bead-card，桌面端是表格 tr；
-        // 另一个被 hidden 掉的元素 offsetParent 为 null，不能用来定位
-        const row = $$('[data-num]').find(el =>
+    if (focusColor) {
+      const target = focusColor; pendingWarehouseColor = null;
+      // 确定性定位：用 window.scrollTo（不依赖 scrollIntoView 在移动端的容器/平滑滚动怪异行为）
+      // 并在布局未就绪时重试一次，避免低库存色号（列表深处）定位失败停在搜索框
+      const locateAndScroll = () => {
+        let row = $$('[data-num]').find(el =>
           el.dataset.num === target &&
           el.offsetParent !== null &&
           (el.classList.contains('bead-card') || el.tagName === 'TR')
         );
-        if (row) {
-          row.scrollIntoView({ block: 'center' });
-          row.classList.add('ring-2', 'ring-mk-rose', 'bg-mk-rose/5');
-          setTimeout(() => row.classList.remove('ring-2', 'ring-mk-rose', 'bg-mk-rose/5'), 2600);
-        }
-      });
+        if (!row) row = $$('[data-num]').find(el => el.dataset.num === target && el.offsetParent !== null);
+        if (!row) return false;
+        const rect = row.getBoundingClientRect();
+        const absTop = rect.top + window.scrollY;
+        window.scrollTo({ top: Math.max(0, absTop - window.innerHeight * 0.32), behavior: 'auto' });
+        row.classList.add('ring-2', 'ring-mk-rose', 'bg-mk-rose/5');
+        setTimeout(() => row.classList.remove('ring-2', 'ring-mk-rose', 'bg-mk-rose/5'), 2600);
+        return true;
+      };
+      requestAnimationFrame(() => { if (!locateAndScroll()) setTimeout(locateAndScroll, 140); });
     }
   }
   function beadRow(b) {
@@ -5679,6 +5756,7 @@
   }
   renderNav();
   switchView('dashboard');
+  enableSwipeNavigation();
   // 把弹窗相关函数暴露到 window，让 inline onclick（如 `onclick="closeModal()"`）能正常执行
   // （整个 app.js 是 IIFE 闭包，原来在闭包内的函数外部访问不到）
   window.closeModal = closeModal;
