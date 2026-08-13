@@ -1,0 +1,18 @@
+{
+  "spec_id": "anime_girl_50x50_v1",
+  "palette_id": "mard_221",
+  "grid_w": 50,
+  "grid_h": 50,
+  "style": "cartoon",
+  "background_mode": "keep",
+  "background_color": null,
+  "max_colors": 18,
+  "must_include_colors": [],
+  "forbid_colors": [],
+  "preserve_features": [],
+  "ai_draws_grid": true,
+  "cell_px": 20,
+  "show_grid_numbers": true,
+  "show_color_codes": true,
+  "n_candidates": 2
+}
