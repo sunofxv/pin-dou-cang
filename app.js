@@ -152,6 +152,32 @@
       merged.settings = Object.assign(defaultState().settings, parsed.settings || {});
       // 迁移：glm-4v-plus 在智谱侧已不稳定/可能改名，统一切到稳定的 glm-4v-flash（免费、识别色号够用）
       if (merged.settings.model === 'glm-4v-plus') merged.settings.model = 'glm-4v-flash';
+
+      // 迁移：旧版 restockRecords 为扁平结构（每条记录直接带 colorNumber/portions/perQty），
+      // 新版改为「补货记录 → 多个色号清单项(items)」层级。旧数据自动包裹成一条清单项并命名「补货记录N」。
+      // （注意：load() 在 uid 常量定义之前执行，这里不能调用 uid，必须内联生成 id）
+      if (Array.isArray(merged.restockRecords)) {
+        const looksOld = merged.restockRecords.length && merged.restockRecords[0] &&
+          merged.restockRecords[0].colorNumber !== undefined && !Array.isArray(merged.restockRecords[0].items);
+        if (looksOld) {
+          merged.restockRecords = merged.restockRecords.map((r, i) => ({
+            id: r.id || ('rs_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)),
+            name: '补货记录' + (i + 1),
+            status: r.status || 'pending',
+            createdAt: r.createdAt || Date.now(),
+            updatedAt: r.updatedAt || Date.now(),
+            stockedAt: r.stockedAt || null,
+            items: [{
+              id: 'ri_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+              colorNumber: r.colorNumber || '',
+              portions: r.portions || 1,
+              perQty: r.perQty || 1000,
+              note: r.note || ''
+            }]
+          }));
+        }
+      }
+
       return merged;
     } catch (e) {
       console.warn('读取本地数据失败，使用默认数据', e);
@@ -1503,11 +1529,21 @@
   }
 
   /* ===================== 11. 仪表盘 ===================== */
-  const DEFAULT_RESTOCK_PER_QTY = 1000; // 补货记录默认每份颗数
+  const DEFAULT_RESTOCK_PER_QTY = 1000; // 补货记录中每项默认每份颗数
   let restockTab = 'pending';           // 补货管理页当前页签：pending 未入库 / stocked 已入库
   let pendingFocusRestockIds = null;    // 从仪表盘「添加到补货清单」后，要定位/高亮的记录 id
-  let pendingNewRestockId = null;       // 手动新增记录后，要聚焦其色号输入框的 id
-  let expandedRestockId = null;         // 补货管理页当前展开查看详情的记录 id
+  let pendingNewRestockId = null;       // 手动新增记录后，要聚焦其名称输入框的记录 id
+  let collapsedRestock = new Set();     // 处于折叠状态的补货记录 id 集合（其余默认展开，可见清单项）
+
+  // 取下一条补货记录的自动名称：补货记录N（N 为当前最大序号 +1）
+  function nextRestockName() {
+    const nums = (state.restockRecords || []).map(r => {
+      const m = /^补货记录(\d+)$/.exec(r.name || '');
+      return m ? parseInt(m[1], 10) : 0;
+    });
+    const max = nums.length ? Math.max.apply(null, nums) : 0;
+    return '补货记录' + (max + 1);
+  }
   function renderDashboard(v) {
     const low = state.beads.filter(isLow);
     const totalStock = state.beads.reduce((s, b) => s + b.stock, 0);
@@ -1608,31 +1644,41 @@
       <span class="text-sm text-rose-500 font-bold">${b.stock} / 阈值 ${effThreshold(b)}${(b.threshold && b.threshold > 0) ? '' : ' <span class="text-[10px]">默认</span>'}</span>
     </button>`;
   }
+  // 仪表盘「添加到补货清单」：把所有低库存色号（去重）打包成一条新的补货记录
   function addToRestockList() {
     const low = state.beads.filter(isLow);
     if (!low.length) return toast('当前没有低库存色号', 'warn');
-    const pendingMap = {};
-    (state.restockRecords || []).forEach(r => { if (r.status === 'pending') pendingMap[r.colorNumber] = r.id; });
-    const focusIds = [];
-    let added = 0, skipped = 0;
+    // 收集已在任意 pending 记录 items 中的色号，避免重复添加
+    const exist = new Set();
+    (state.restockRecords || []).forEach(r => {
+      if (r.status === 'pending' && Array.isArray(r.items)) r.items.forEach(it => { if (it.colorNumber) exist.add(it.colorNumber); });
+    });
+    const items = [];
+    let skipped = 0;
     low.forEach(b => {
-      if (pendingMap[b.colorNumber]) { focusIds.push(pendingMap[b.colorNumber]); skipped++; return; }
-      const id = uid('rs');
-      state.restockRecords.push({
-        id, colorNumber: b.colorNumber, portions: 1, perQty: DEFAULT_RESTOCK_PER_QTY,
-        status: 'pending', createdAt: Date.now(), updatedAt: Date.now(), stockedAt: null, note: ''
-      });
-      focusIds.push(id); added++;
+      if (exist.has(b.colorNumber)) { skipped++; return; }
+      items.push({ id: uid('ri'), colorNumber: b.colorNumber, portions: 1, perQty: DEFAULT_RESTOCK_PER_QTY, note: '' });
+    });
+    if (!items.length) return toast('低库存色号都已加入补货清单', 'info');
+    const id = uid('rs');
+    state.restockRecords.push({
+      id, name: nextRestockName(), status: 'pending',
+      createdAt: Date.now(), updatedAt: Date.now(), stockedAt: null, items
     });
     save();
     restockTab = 'pending';
-    pendingFocusRestockIds = focusIds;
-    expandedRestockId = focusIds[0] || null;
+    collapsedRestock.delete(id);
+    pendingFocusRestockIds = [id];
     switchView('restock', { focusTab: 'pending' });
-    toast(added ? ('已添加 ' + added + ' 条补货记录' + (skipped ? '，' + skipped + ' 条已存在' : '')) : ('已存在 ' + skipped + ' 条，未重复添加'), added ? 'success' : 'info');
+    toast('已生成补货记录，含 ' + items.length + ' 个色号' + (skipped ? '（' + skipped + ' 个已存在跳过）' : ''), 'success');
   }
 
   function getRestock(id) { return (state.restockRecords || []).find(r => r.id === id); }
+
+  // 记录合计颗数（所有清单项之和）
+  function restockRecordBeads(r) {
+    return (r.items || []).reduce((s, it) => s + (it.portions || 0) * (it.perQty || 0), 0);
+  }
 
   function rStat(label, count, beads, active, tabKey) {
     return `<div class="rs-tab mk-card rounded-2xl shadow-soft p-4 ${active ? 'ring-2 ring-mk-rose bg-mk-rose/5' : 'cursor-pointer hover:bg-mk-sand/40'}" data-t="${tabKey}">
@@ -1642,70 +1688,62 @@
     </div>`;
   }
 
-  function restockRecordRow(r, mode, expanded) {
-    const b = beadByNumber(r.colorNumber);
+  // 单条清单项（可编辑行）：色号 / 份数 / 每份颗数 / 数量 / 删除
+  function restockItemRow(r, it) {
+    const b = beadByNumber(it.colorNumber);
     const hex = b ? b.hex : '#ccc';
-    const name = b ? b.colorName : (r.colorNumber ? '未知色号' : '请填写色号');
-    const total = r.portions * r.perQty;
-    const timeLabel = mode === 'stocked' && r.stockedAt ? '入库于 ' + fmtTime(r.stockedAt) : '创建 ' + fmtTime(r.createdAt);
-    if (!expanded) {
-      return `
-      <div class="restock-rec mk-card rounded-2xl shadow-soft p-4 mb-3 cursor-pointer hover:bg-white/40 transition-colors" data-id="${r.id}" data-expand="1">
-        <div class="flex items-center justify-between gap-3">
-          <div class="flex items-center gap-3 min-w-0">
-            <span class="w-8 h-8 rounded-full swatch shrink-0" style="background:${hex}"></span>
-            <div class="min-w-0">
-              <div class="font-semibold text-sm">${r.colorNumber ? escapeHtml(r.colorNumber) : '<span class="text-mk-sub">未填色号</span>'} <span class="text-xs text-mk-sub font-normal">${escapeHtml(name)}</span></div>
-              <div class="text-xs text-mk-sub">${total} 颗 · ${escapeHtml(timeLabel)}${r.note ? ' · ' + escapeHtml(r.note) : ''}</div>
-            </div>
-          </div>
-          <span class="text-mk-sub text-lg">▾</span>
-        </div>
-      </div>`;
-    }
-    const colorField = mode === 'pending'
-      ? `<input class="rs-color w-full px-2 py-1 rounded-lg bg-white border border-mk-sand text-sm font-semibold" data-id="${r.id}" value="${escapeHtml(r.colorNumber)}">`
-      : `<span class="font-semibold">${escapeHtml(r.colorNumber)}</span>`;
+    const name = b ? b.colorName : (it.colorNumber ? '未知色号' : '请填写色号');
+    const total = (it.portions || 0) * (it.perQty || 0);
     return `
-    <div class="restock-rec mk-card rounded-2xl shadow-soft p-4 mb-3 ring-2 ring-mk-rose/30 bg-mk-rose/5" data-id="${r.id}">
-      <div class="flex items-center justify-between gap-2 mb-3 cursor-pointer" data-collapse="1">
-        <div class="flex items-center gap-2 min-w-0">
-          <span class="w-6 h-6 rounded-full swatch shrink-0" style="background:${hex}"></span>
-          <div class="min-w-0 flex items-center gap-1.5">
-            <span class="font-semibold text-sm">${r.colorNumber ? escapeHtml(r.colorNumber) : '<span class="text-mk-sub">未填色号</span>'}</span>
-            <span class="text-xs text-mk-sub truncate">${escapeHtml(name)}</span>
-          </div>
-        </div>
-        <div class="flex items-center gap-2">
-          <div class="text-[11px] text-mk-sub whitespace-nowrap">${timeLabel}</div>
-          <span class="text-mk-sub text-sm">▴</span>
-        </div>
+    <div class="rs-item flex items-center gap-2 mb-2 bg-white/60 rounded-xl px-2 py-2" data-rid="${r.id}" data-iid="${it.id}">
+      <span class="w-6 h-6 rounded-full swatch shrink-0" style="background:${hex}"></span>
+      <div class="flex flex-col w-28 shrink-0">
+        <input class="ri-color w-full px-1.5 py-1 rounded-lg bg-white border border-mk-sand text-xs font-semibold" data-rid="${r.id}" data-iid="${it.id}" value="${escapeHtml(it.colorNumber)}" placeholder="色号">
+        <span class="text-[10px] text-mk-sub truncate px-0.5">${escapeHtml(name)}</span>
       </div>
-      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2">
-        <label class="text-xs text-mk-sub">色号
-          ${colorField}
-        </label>
-        <label class="text-xs text-mk-sub">份数
-          <input type="number" min="1" step="1" class="rs-portions w-full px-2 py-1 rounded-lg bg-white border border-mk-sand text-sm text-right" data-id="${r.id}" value="${r.portions}">
-        </label>
-        <label class="text-xs text-mk-sub">每份颗数
-          <input type="number" min="1" step="1" class="rs-perqty w-full px-2 py-1 rounded-lg bg-white border border-mk-sand text-sm text-right" data-id="${r.id}" value="${r.perQty}">
-        </label>
-        <label class="text-xs text-mk-sub">备注
-          <input class="rs-note w-full px-2 py-1 rounded-lg bg-white border border-mk-sand text-sm" data-id="${r.id}" value="${escapeHtml(r.note || '')}" placeholder="选填">
-        </label>
+      <label class="flex flex-col items-center text-[10px] text-mk-sub">
+        份数
+        <input type="number" min="1" step="1" class="ri-portions w-14 px-1 py-1 rounded-lg bg-white border border-mk-sand text-xs text-right" data-rid="${r.id}" data-iid="${it.id}" value="${it.portions || 1}">
+      </label>
+      <label class="flex flex-col items-center text-[10px] text-mk-sub">
+        每份
+        <input type="number" min="1" step="1" class="ri-perqty w-16 px-1 py-1 rounded-lg bg-white border border-mk-sand text-xs text-right" data-rid="${r.id}" data-iid="${it.id}" value="${it.perQty || DEFAULT_RESTOCK_PER_QTY}">
+      </label>
+      <div class="flex flex-col items-center text-[10px] text-mk-sub shrink-0">
+        数量
+        <span class="text-sm font-bold text-mk-ink">${total}</span>
       </div>
-      <div class="flex items-center justify-between gap-2">
-        <span class="text-xs font-semibold text-mk-ink">合计 ${total} 颗</span>
-        <div class="flex gap-2">
-          ${mode === 'pending'
-            ? (!r.colorNumber
-              ? `<button disabled class="rs-stock px-3 py-1.5 rounded-xl text-xs font-semibold bg-mk-sand text-white cursor-not-allowed" data-id="${r.id}" title="请填写色号后再入库">✅ 入库</button>`
-              : `<button class="rs-stock px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600" data-id="${r.id}">✅ 入库</button>`)
-            : `<button class="rs-undo px-3 py-1.5 rounded-xl text-xs font-semibold bg-amber-500 text-white hover:bg-amber-600" data-id="${r.id}">↩️ 撤销入库</button>`}
-          <button class="rs-del px-3 py-1.5 rounded-xl text-xs font-semibold bg-white border border-mk-sand text-rose-500 hover:bg-rose-50" data-id="${r.id}">🗑️ 删除</button>
-        </div>
+      <button class="ri-del ml-auto px-2 py-1 rounded-lg text-xs text-rose-500 hover:bg-rose-50" data-rid="${r.id}" data-iid="${it.id}" title="删除该项">✕</button>
+    </div>`;
+  }
+
+  // 补货记录卡片（含可编辑名称、一键入库/新增清单、清单项列表；可折叠）
+  function restockRecordRow(r, mode) {
+    const collapsed = collapsedRestock.has(r.id);
+    const total = restockRecordBeads(r);
+    const itemCount = (r.items || []).length;
+    const timeLabel = mode === 'stocked' && r.stockedAt ? '入库于 ' + fmtTime(r.stockedAt) : '创建 ' + fmtTime(r.createdAt);
+    const ringCls = mode === 'stocked' ? 'ring-2 ring-emerald-300 bg-emerald-50/40' : 'ring-2 ring-mk-rose/30 bg-mk-rose/5';
+    const head = `
+      <div class="flex items-center gap-2 mb-2">
+        <button class="rs-toggle text-mk-sub text-lg leading-none px-1" data-id="${r.id}" title="${collapsed ? '展开' : '折叠'}">${collapsed ? '▸' : '▾'}</button>
+        <input class="rs-name flex-1 min-w-0 px-2 py-1.5 rounded-xl bg-white border border-mk-sand text-sm font-bold" data-id="${r.id}" value="${escapeHtml(r.name || '')}" placeholder="补货记录名称">
+        <span class="text-[11px] text-mk-sub whitespace-nowrap">${itemCount} 项 · ${total} 颗</span>
       </div>
+      <div class="flex items-center gap-2 mb-2 flex-wrap">
+        ${mode === 'pending'
+          ? `<button class="rs-stock-all px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600" data-id="${r.id}">✅ 一键入库</button>
+             <button class="rs-add-item px-3 py-1.5 rounded-xl text-xs font-semibold bg-mk-rose text-white hover:bg-mk-rose/90" data-id="${r.id}">➕ 新增清单</button>`
+          : `<button class="rs-undo px-3 py-1.5 rounded-xl text-xs font-semibold bg-amber-500 text-white hover:bg-amber-600" data-id="${r.id}">↩️ 撤销入库</button>`}
+        <button class="rs-del-record ml-auto px-3 py-1.5 rounded-xl text-xs font-semibold bg-white border border-mk-sand text-rose-500 hover:bg-rose-50" data-id="${r.id}">🗑️ 删除记录</button>
+        <span class="text-[11px] text-mk-sub whitespace-nowrap">${timeLabel}</span>
+      </div>`;
+    const itemsHtml = collapsed ? '' :
+      `<div class="space-y-1 mt-1">${(r.items || []).map(it => restockItemRow(r, it)).join('') || '<div class="text-xs text-mk-sub text-center py-2">暂无清单项，点「新增清单」添加色号</div>'}</div>`;
+    return `
+    <div class="restock-rec mk-card rounded-2xl shadow-soft p-4 mb-3 ${ringCls}" data-id="${r.id}">
+      ${head}
+      ${itemsHtml}
     </div>`;
   }
 
@@ -1715,8 +1753,8 @@
     const pending = records.filter(r => r.status === 'pending');
     const stocked = records.filter(r => r.status === 'stocked');
     const list = restockTab === 'pending' ? pending : stocked;
-    const pendingBeads = pending.reduce((s, r) => s + r.portions * r.perQty, 0);
-    const stockedBeads = stocked.reduce((s, r) => s + r.portions * r.perQty, 0);
+    const pendingBeads = pending.reduce((s, r) => s + restockRecordBeads(r), 0);
+    const stockedBeads = stocked.reduce((s, r) => s + restockRecordBeads(r), 0);
     v.innerHTML = `
       <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
         <h2 class="text-xl font-bold">📥 补货管理</h2>
@@ -1731,120 +1769,164 @@
         ${rStat('未入库', pending.length, pendingBeads, restockTab === 'pending', 'pending')}
         ${rStat('已入库', stocked.length, stockedBeads, restockTab === 'stocked', 'stocked')}
       </div>
-      ${list.length ? list.map(r => restockRecordRow(r, restockTab, expandedRestockId === r.id)).join('')
+      ${list.length ? list.map(r => restockRecordRow(r, restockTab)).join('')
         : `<div class="mk-card rounded-2xl shadow-soft p-8 text-center text-mk-sub">${restockTab === 'pending' ? '暂无未入库记录，去仪表盘点「添加到补货清单」或在右上角新增吧 🌟' : '还没有已入库的记录'}</div>`}
     `;
     $$('.rs-tab', v).forEach(b => b.onclick = () => { restockTab = b.dataset.t; renderRestock(v); });
     const copyBtn = $('#rs-copy'); if (copyBtn) copyBtn.onclick = () => copyRestockRecords();
     const addBtn = $('#rs-add'); if (addBtn) addBtn.onclick = () => addRestockRecord();
-    $$('[data-expand="1"]', v).forEach(el => el.onclick = () => { expandedRestockId = el.dataset.id; renderRestock(v); });
-    $$('[data-collapse="1"]', v).forEach(el => el.onclick = () => { expandedRestockId = null; renderRestock(v); });
     bindRestockRecordHandlers(v);
     if (pendingFocusRestockIds) {
       const ids = pendingFocusRestockIds; pendingFocusRestockIds = null;
       requestAnimationFrame(() => {
         ids.forEach(id => {
           const el = v.querySelector('[data-id="' + id + '"]');
-          if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('ring-2', 'ring-mk-rose', 'bg-mk-rose/5'); setTimeout(() => el.classList.remove('ring-2', 'ring-mk-rose', 'bg-mk-rose/5'), 2600); }
+          if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('ring-2', 'ring-mk-rose'); setTimeout(() => el.classList.remove('ring-2', 'ring-mk-rose'), 2600); }
         });
       });
     }
     if (pendingNewRestockId) {
       const nid = pendingNewRestockId; pendingNewRestockId = null;
       requestAnimationFrame(() => {
-        const el = v.querySelector('.rs-color[data-id="' + nid + '"]');
+        const el = v.querySelector('.rs-name[data-id="' + nid + '"]');
         if (el) { el.focus(); el.select(); }
       });
     }
   }
 
   function bindRestockRecordHandlers(v) {
-    $$('.rs-color', v).forEach(inp => inp.onchange = () => {
+    // 折叠 / 展开
+    $$('.rs-toggle', v).forEach(b => b.onclick = () => {
+      const id = b.dataset.id;
+      if (collapsedRestock.has(id)) collapsedRestock.delete(id); else collapsedRestock.add(id);
+      renderRestock(v);
+    });
+    // 编辑记录名称（输入即存，不重渲染，避免打断输入）
+    $$('.rs-name', v).forEach(inp => inp.oninput = () => {
       const r = getRestock(inp.dataset.id); if (!r) return;
+      r.name = inp.value; r.updatedAt = Date.now(); save();
+    });
+    // 编辑清单项：色号
+    $$('.ri-color', v).forEach(inp => inp.onchange = () => {
+      const r = getRestock(inp.dataset.rid); if (!r) return;
+      const it = r.items.find(x => x.id === inp.dataset.iid); if (!it) return;
       const raw = inp.value.trim().toUpperCase();
-      if (!raw) { inp.value = r.colorNumber; return toast('色号不能为空', 'warn'); }
-      if (!beadByNumber(raw)) { inp.value = r.colorNumber; return toast('色号 ' + raw + ' 不存在', 'error'); }
-      r.colorNumber = raw; r.updatedAt = Date.now(); save(); renderRestock(v);
+      if (!raw) { inp.value = it.colorNumber; return toast('色号不能为空', 'warn'); }
+      if (!beadByNumber(raw)) { inp.value = it.colorNumber; return toast('色号 ' + raw + ' 不存在', 'error'); }
+      it.colorNumber = raw; r.updatedAt = Date.now(); save(); renderRestock(v);
     });
-    $$('.rs-portions', v).forEach(inp => inp.onchange = () => {
-      const r = getRestock(inp.dataset.id); if (!r) return;
+    // 编辑清单项：份数 / 每份颗数
+    $$('.ri-portions', v).forEach(inp => inp.onchange = () => {
+      const r = getRestock(inp.dataset.rid); if (!r) return;
+      const it = r.items.find(x => x.id === inp.dataset.iid); if (!it) return;
       let val = parseInt(inp.value, 10); if (!val || val < 1) val = 1;
-      r.portions = val; r.updatedAt = Date.now(); save(); renderRestock(v);
+      it.portions = val; r.updatedAt = Date.now(); save(); renderRestock(v);
     });
-    $$('.rs-perqty', v).forEach(inp => inp.onchange = () => {
-      const r = getRestock(inp.dataset.id); if (!r) return;
+    $$('.ri-perqty', v).forEach(inp => inp.onchange = () => {
+      const r = getRestock(inp.dataset.rid); if (!r) return;
+      const it = r.items.find(x => x.id === inp.dataset.iid); if (!it) return;
       let val = parseInt(inp.value, 10); if (!val || val < 1) val = 1;
-      r.perQty = val; r.updatedAt = Date.now(); save(); renderRestock(v);
+      it.perQty = val; r.updatedAt = Date.now(); save(); renderRestock(v);
     });
-    $$('.rs-note', v).forEach(inp => inp.oninput = () => {
-      const r = getRestock(inp.dataset.id); if (!r) return;
-      r.note = inp.value; r.updatedAt = Date.now(); save();
+    // 删除清单项
+    $$('.ri-del', v).forEach(b => b.onclick = (e) => {
+      e.stopPropagation();
+      const r = getRestock(b.dataset.rid); if (!r) return;
+      r.items = r.items.filter(x => x.id !== b.dataset.iid);
+      r.updatedAt = Date.now(); save(); renderRestock(v);
     });
-    $$('.rs-stock', v).forEach(b => b.onclick = () => stockInRestock(b.dataset.id));
+    // 新增清单项
+    $$('.rs-add-item', v).forEach(b => b.onclick = () => addRestockItem(b.dataset.id));
+    // 一键入库（整条记录）
+    $$('.rs-stock-all', v).forEach(b => b.onclick = () => stockInRestock(b.dataset.id));
+    // 撤销入库
     $$('.rs-undo', v).forEach(b => b.onclick = () => undoRestock(b.dataset.id));
-    $$('.rs-del', v).forEach(b => b.onclick = () => deleteRestock(b.dataset.id));
+    // 删除记录
+    $$('.rs-del-record', v).forEach(b => b.onclick = () => deleteRestock(b.dataset.id));
+  }
+
+  // 在指定记录内新增一条清单项（色号留空，等待用户填写），并自动展开 + 聚焦输入框
+  function addRestockItem(recordId) {
+    const r = getRestock(recordId); if (!r) return;
+    collapsedRestock.delete(recordId);
+    const it = { id: uid('ri'), colorNumber: '', portions: 1, perQty: DEFAULT_RESTOCK_PER_QTY, note: '' };
+    r.items.push(it); r.updatedAt = Date.now(); save(); renderRestock($('#view'));
+    requestAnimationFrame(() => {
+      const el = $('#view').querySelector('.ri-color[data-rid="' + recordId + '"][data-iid="' + it.id + '"]');
+      if (el) { el.focus(); el.select(); }
+    });
   }
 
   function stockInRestock(id) {
     const r = getRestock(id); if (!r || r.status !== 'pending') return;
-    const b = beadByNumber(r.colorNumber);
-    if (!b) return toast('色号 ' + r.colorNumber + ' 不存在，无法入库', 'error');
-    const qty = r.portions * r.perQty;
-    b.stock += qty;
-    addLog('补货清单入库', b, qty, '补货记录入库（' + r.portions + '份 × ' + r.perQty + '颗）' + (r.note ? ' · ' + r.note : ''));
+    const valid = (r.items || []).filter(it => beadByNumber(it.colorNumber));
+    const invalid = (r.items || []).length - valid.length;
+    if (!valid.length) return toast('没有可入库的有效色号（请先填写正确的色号）', 'warn');
+    valid.forEach(it => {
+      const b = beadByNumber(it.colorNumber);
+      const qty = (it.portions || 0) * (it.perQty || 0);
+      b.stock += qty;
+      addLog('补货清单入库', b, qty, '补货记录「' + (r.name || '') + '」入库（' + it.portions + '份 × ' + it.perQty + '颗）');
+    });
     r.status = 'stocked'; r.stockedAt = Date.now(); r.updatedAt = Date.now();
     save();
     renderRestock($('#view'));
-    toast(r.colorNumber + ' 已入库 +' + qty + ' 颗', 'success');
+    toast((r.name || '') + ' 已入库 +' + valid.length + ' 项' + (invalid ? '（' + invalid + ' 项色号无效已跳过）' : ''), 'success');
   }
 
   function undoRestock(id) {
     const r = getRestock(id); if (!r || r.status !== 'stocked') return;
-    const b = beadByNumber(r.colorNumber);
-    if (!b) return toast('色号 ' + r.colorNumber + ' 不存在', 'error');
-    const qty = r.portions * r.perQty;
-    const before = b.stock;
-    b.stock = Math.max(0, b.stock - qty);
-    const deducted = before - b.stock;
-    addLog('补货清单撤销入库', b, -deducted, '撤销补货入库（' + r.portions + '份 × ' + r.perQty + '颗）' + (r.note ? ' · ' + r.note : ''));
+    const valid = (r.items || []).filter(it => beadByNumber(it.colorNumber));
+    let undone = 0;
+    valid.forEach(it => {
+      const b = beadByNumber(it.colorNumber);
+      const qty = (it.portions || 0) * (it.perQty || 0);
+      const before = b.stock;
+      b.stock = Math.max(0, b.stock - qty);
+      const deducted = before - b.stock;
+      if (deducted > 0) { addLog('补货清单撤销入库', b, -deducted, '撤销补货记录「' + (r.name || '') + '」入库（' + it.portions + '份 × ' + it.perQty + '颗）'); undone++; }
+    });
     r.status = 'pending'; r.stockedAt = null; r.updatedAt = Date.now();
     save();
     renderRestock($('#view'));
-    toast(r.colorNumber + ' 已撤销入库' + (deducted < qty ? '（库存不足，仅扣 ' + deducted + ' 颗）' : '（-' + qty + ' 颗）'), 'info');
+    toast((r.name || '') + ' 已撤销入库，回到未入库' + (undone ? '' : '（库存均已为 0，无扣减）'), 'info');
   }
 
   function deleteRestock(id) {
     const r = getRestock(id); if (!r) return;
-    if (!confirm('删除该补货记录？' + (r.status === 'stocked' ? '（该记录已入库，删除不会回退库存）' : ''))) return;
+    if (!confirm('删除该补货记录「' + (r.name || '') + '」？' + (r.status === 'stocked' ? '（该记录已入库，删除不会回退库存）' : ''))) return;
     state.restockRecords = state.restockRecords.filter(x => x.id !== id);
-    if (expandedRestockId === id) expandedRestockId = null;
+    collapsedRestock.delete(id);
     save(); renderRestock($('#view'));
   }
 
   function addRestockRecord() {
     const id = uid('rs');
     state.restockRecords.push({
-      id, colorNumber: '', portions: 1, perQty: DEFAULT_RESTOCK_PER_QTY,
-      status: 'pending', createdAt: Date.now(), updatedAt: Date.now(), stockedAt: null, note: ''
+      id, name: nextRestockName(), status: 'pending',
+      createdAt: Date.now(), updatedAt: Date.now(), stockedAt: null, items: []
     });
     save();
     restockTab = 'pending';
+    collapsedRestock.delete(id);
     pendingFocusRestockIds = [id];
     pendingNewRestockId = id;
-    expandedRestockId = id;
     renderRestock($('#view'));
   }
 
   function copyRestockRecords() {
     const pending = (state.restockRecords || []).filter(r => r.status === 'pending');
     if (!pending.length) return toast('没有未入库记录可复制', 'warn');
-    const lines = ['补货清单（待采购）', '色号\t份数\t每份颗数\t颗数'];
+    const lines = ['补货清单（待采购）', '记录\t色号\t份数\t每份颗数\t颗数'];
     let totalP = 0, totalG = 0;
     pending.forEach(r => {
-      const g = r.portions * r.perQty; totalP += r.portions; totalG += g;
-      lines.push(r.colorNumber + '\t' + r.portions + '\t' + r.perQty + '\t' + g);
+      (r.items || []).forEach(it => {
+        const g = (it.portions || 0) * (it.perQty || 0); totalP += (it.portions || 0); totalG += g;
+        lines.push((r.name || '') + '\t' + it.colorNumber + '\t' + (it.portions || 1) + '\t' + (it.perQty || DEFAULT_RESTOCK_PER_QTY) + '\t' + g);
+      });
     });
-    lines.push('总份数\t' + totalP + '\t\t总颗数\t' + totalG);
+    lines.push('总份数\t\t\t\t' + totalP);
+    lines.push('总颗数\t\t\t\t' + totalG);
     const text = lines.join('\n');
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => toast('已复制补货清单', 'success'), () => copyTextFallback(text));
     else copyTextFallback(text);
