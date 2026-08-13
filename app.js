@@ -132,7 +132,9 @@
         gridOCREnabled: false,
         // 全局补货阈值：库存低于此值即触发"低库存/需补货"预警（可在设置中调整，默认 100）。
         // 单个色号在「豆子仓库」里可单独设置覆盖值（阈值填 0 = 使用此全局值）。
-        replenishThreshold: 100
+        replenishThreshold: 100,
+        // 补货清单导出列预设：数组即输出顺序，仅列出的列会导出；默认全选
+        restockExportCols: ['record', 'colorNumber', 'portions', 'perQty', 'beads']
       }
     };
   }
@@ -1767,6 +1769,7 @@
         ${restockTab === 'pending'
           ? `<div class="flex gap-2">
               <button id="rs-copy" class="px-4 py-2 rounded-xl bg-white border border-mk-sand text-mk-ink font-semibold hover:bg-mk-sand/40">📄 复制清单</button>
+              <button id="rs-export-cfg" class="px-4 py-2 rounded-xl bg-white border border-mk-sand text-mk-ink font-semibold hover:bg-mk-sand/40">⚙️ 导出列</button>
               <button id="rs-recognize" class="px-4 py-2 rounded-xl bg-white border border-mk-sand text-mk-ink font-semibold hover:bg-mk-sand/40">📷 识别色号</button>
               <button id="rs-add" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold shadow-soft">➕ 新增补货记录</button>
             </div>`
@@ -1781,6 +1784,7 @@
     `;
     $$('.rs-tab', v).forEach(b => b.onclick = () => { restockTab = b.dataset.t; renderRestock(v); });
     const copyBtn = $('#rs-copy'); if (copyBtn) copyBtn.onclick = () => copyRestockRecords();
+    const cfgBtn = $('#rs-export-cfg'); if (cfgBtn) cfgBtn.onclick = () => openRestockExportCfg();
     const recBtn = $('#rs-recognize'); if (recBtn) recBtn.onclick = () => openRestockRecognize();
     const addBtn = $('#rs-add'); if (addBtn) addBtn.onclick = () => addRestockRecord();
     bindRestockRecordHandlers(v);
@@ -2021,22 +2025,93 @@ C25   2</pre>
     return true;
   }
 
+  // 补货清单可导出的列定义（主顺序固定，导出时按用户预设子集与顺序输出）
+  const RESTOCK_COL_DEFS = [
+    { key: 'record', label: '记录名', get: (r, it) => r.name || '' },
+    { key: 'colorNumber', label: '色号', get: (r, it) => it.colorNumber },
+    { key: 'portions', label: '份数', get: (r, it) => (it.portions || 1) },
+    { key: 'perQty', label: '每份颗数', get: (r, it) => (it.perQty || DEFAULT_RESTOCK_PER_QTY) },
+    { key: 'beads', label: '颗数', get: (r, it) => (it.portions || 0) * (it.perQty || 0) }
+  ];
+  // 取当前导出列（严格按用户预设的子集与顺序；预设为空时回退全选）
+  function restockExportCols() {
+    const saved = (state.settings && Array.isArray(state.settings.restockExportCols)) ? state.settings.restockExportCols : null;
+    const valid = RESTOCK_COL_DEFS.map(c => c.key);
+    if (!saved || !saved.length) return valid.slice();
+    const seen = new Set();
+    return saved.filter(k => valid.includes(k) && !seen.has(k) && seen.add(k));
+  }
+
   function copyRestockRecords() {
     const pending = (state.restockRecords || []).filter(r => r.status === 'pending');
     if (!pending.length) return toast('没有未入库记录可复制', 'warn');
-    const lines = ['补货清单（待采购）', '记录\t色号\t份数\t每份颗数\t颗数'];
+    const cols = restockExportCols().map(k => RESTOCK_COL_DEFS.find(c => c.key === k)).filter(Boolean);
+    if (!cols.length) return toast('请先在「⚙️ 导出列」里勾选要导出的列', 'warn');
     let totalP = 0, totalG = 0;
+    const rows = [];
     pending.forEach(r => {
       (r.items || []).forEach(it => {
-        const g = (it.portions || 0) * (it.perQty || 0); totalP += (it.portions || 0); totalG += g;
-        lines.push((r.name || '') + '\t' + it.colorNumber + '\t' + (it.portions || 1) + '\t' + (it.perQty || DEFAULT_RESTOCK_PER_QTY) + '\t' + g);
+        totalP += (it.portions || 0); totalG += (it.portions || 0) * (it.perQty || 0);
+        rows.push(cols.map(c => c.get(r, it)).join('\t'));
       });
     });
-    lines.push('总份数\t\t\t\t' + totalP);
-    lines.push('总颗数\t\t\t\t' + totalG);
+    const totals = { portions: totalP, beads: totalG };
+    const header = cols.map(c => c.label).join('\t');
+    const summary = cols.map(c => (c.key in totals) ? totals[c.key] : '').join('\t');
+    const lines = ['补货清单（待采购）', header, ...rows, summary];
     const text = lines.join('\n');
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => toast('已复制补货清单', 'success'), () => copyTextFallback(text));
     else copyTextFallback(text);
+  }
+
+  // 「⚙️ 导出列」预设配置弹窗：勾选要导出的列并调整顺序，保存到 settings
+  function openRestockExportCfg() {
+    // order：全部 5 列的主顺序；on：勾选包含的列（key 集合）
+    let order = RESTOCK_COL_DEFS.map(c => c.key);
+    const saved = (state.settings && Array.isArray(state.settings.restockExportCols)) ? state.settings.restockExportCols : null;
+    const on = new Set(saved && saved.length ? saved.filter(k => order.includes(k)) : order.slice());
+    const body = document.createElement('div');
+    const render = () => {
+      body.innerHTML = `
+        <p class="text-sm text-mk-sub mb-3">勾选要导出的列，并用 ↑/↓ 调整输出顺序（最上方最先输出）。</p>
+        <div id="rs-cols" class="space-y-2"></div>
+        <div class="mt-3 flex gap-2">
+          <button id="rs-cfg-all" class="px-3 py-1.5 rounded-xl bg-white border border-mk-sand text-xs font-semibold hover:bg-mk-sand/40">全选</button>
+          <button id="rs-cfg-none" class="px-3 py-1.5 rounded-xl bg-white border border-mk-sand text-xs font-semibold hover:bg-mk-sand/40">全不选</button>
+        </div>`;
+      const wrap = body.querySelector('#rs-cols');
+      order.forEach((k, idx) => {
+        const def = RESTOCK_COL_DEFS.find(c => c.key === k);
+        const row = document.createElement('div');
+        row.className = 'flex items-center gap-2 bg-mk-sand/20 rounded-xl px-3 py-2';
+        row.innerHTML = `
+          <input type="checkbox" class="rs-col-on" data-key="${k}" ${on.has(k) ? 'checked' : ''}>
+          <span class="flex-1 text-sm font-semibold">${def.label}</span>
+          <button class="rs-col-up px-2 py-1 rounded-lg text-xs bg-white border border-mk-sand" data-key="${k}" ${idx === 0 ? 'disabled' : ''}>↑</button>
+          <button class="rs-col-down px-2 py-1 rounded-lg text-xs bg-white border border-mk-sand" data-key="${k}" ${idx === order.length - 1 ? 'disabled' : ''}>↓</button>`;
+        wrap.appendChild(row);
+      });
+      body.querySelectorAll('.rs-col-on').forEach(cb => cb.onchange = () => { cb.checked ? on.add(cb.dataset.key) : on.delete(cb.dataset.key); });
+      body.querySelectorAll('.rs-col-up').forEach(b => b.onclick = () => { const i = order.indexOf(b.dataset.key); if (i > 0) { [order[i - 1], order[i]] = [order[i], order[i - 1]]; render(); } });
+      body.querySelectorAll('.rs-col-down').forEach(b => b.onclick = () => { const i = order.indexOf(b.dataset.key); if (i < order.length - 1) { [order[i + 1], order[i]] = [order[i], order[i + 1]]; render(); } });
+      body.querySelector('#rs-cfg-all').onclick = () => { order.forEach(k => on.add(k)); render(); };
+      body.querySelector('#rs-cfg-none').onclick = () => { on.clear(); render(); };
+    };
+    render();
+    openModal('导出列预设', '', { width: 480 });
+    const modalBody = $('#modal-body');
+    modalBody.innerHTML = '';
+    modalBody.appendChild(body);
+    setModalFoot(`
+      <button id="rs-cfg-cancel" class="px-4 py-2 rounded-xl bg-white border border-mk-sand text-mk-ink font-semibold hover:bg-mk-sand/40">取消</button>
+      <button id="rs-cfg-save" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold shadow-soft">保存</button>`);
+    $('#rs-cfg-cancel').onclick = () => closeModal();
+    $('#rs-cfg-save').onclick = () => {
+      state.settings.restockExportCols = order.filter(k => on.has(k));
+      save();
+      closeModal();
+      toast('导出列预设已保存', 'success');
+    };
   }
   function logRow(l) {
     const color = { 入库: 'text-emerald-600', 出库: 'text-rose-500', 消耗: 'text-rose-500', 图纸消耗: 'text-amber-600', 配方扣减: 'text-purple-600', 补货清单入库: 'text-emerald-600', 补货清单撤销入库: 'text-amber-600' }[l.type] || 'text-mk-ink';
