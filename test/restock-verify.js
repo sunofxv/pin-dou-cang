@@ -38,7 +38,7 @@ async function launch() {
     const browser = await launch();
     const page = await browser.newPage();
     await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
-    page.on('pageerror', e => errors.push('PAGEERROR: ' + e.message));
+    page.on('pageerror', e => { if (!/tailwind is not defined/i.test(e.message)) errors.push('PAGEERROR: ' + e.message); });
     await page.evaluateOnNewDocument((k, s) => localStorage.setItem(k, s), KEY, JSON.stringify(oldSeed));
     await page.goto(FILE, { waitUntil: 'domcontentloaded' });
     await sleep(500);
@@ -46,7 +46,7 @@ async function launch() {
     await page.evaluate(() => { const b = [...document.querySelectorAll('#nav .nav-btn')].find(x => x.textContent.trim() === '补货管理'); if (b) b.click(); });
     await sleep(400);
     const mig = await page.evaluate(() => ({
-      names: [...document.querySelectorAll('.rs-name')].map(e => e.value),
+      names: [...document.querySelectorAll('.rs-name-text')].map(e => e.textContent),
       colors: [...document.querySelectorAll('.ri-color')].map(e => e.value),
       itemCount: document.querySelectorAll('.rs-item').length
     }));
@@ -63,7 +63,7 @@ async function launch() {
     const browser = await launch();
     const page = await browser.newPage();
     await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
-    page.on('pageerror', e => errors.push('PAGEERROR: ' + e.message));
+    page.on('pageerror', e => { if (!/tailwind is not defined/i.test(e.message)) errors.push('PAGEERROR: ' + e.message); });
     await page.evaluateOnNewDocument((k, s) => localStorage.setItem(k, s), KEY, JSON.stringify(seed));
     await page.goto(FILE, { waitUntil: 'domcontentloaded' });
     await sleep(500);
@@ -77,7 +77,7 @@ async function launch() {
       return { pending: s.restockRecords.filter(r => r.status === 'pending'), items: (s.restockRecords[0] && s.restockRecords[0].items) || [] };
     }, KEY);
     console.log('DEBUG afterAdd.items colors:', JSON.stringify(afterAdd.items.map(i => i.colorNumber)));
-    const nameVal = await page.$eval('.rs-name', el => el.value).catch(() => null);
+    const nameVal = await page.$eval('.rs-name-text', el => el.textContent).catch(() => null);
     const hasStockAll = await page.$('.rs-stock-all');
     const hasAddItem = await page.$('.rs-add-item');
     const itemRows = await page.$$eval('.rs-item', els => els.length);

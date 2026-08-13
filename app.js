@@ -1534,6 +1534,7 @@
   let pendingFocusRestockIds = null;    // 从仪表盘「添加到补货清单」后，要定位/高亮的记录 id
   let pendingNewRestockId = null;       // 手动新增记录后，要聚焦其名称输入框的记录 id
   let collapsedRestock = new Set();     // 处于折叠状态的补货记录 id 集合（其余默认展开，可见清单项）
+  let editingRestockNameId = null;      // 当前正在编辑名称的补货记录 id（点击铅笔进入编辑）
 
   // 取下一条补货记录的自动名称：补货记录N（N 为当前最大序号 +1）
   function nextRestockName() {
@@ -1724,10 +1725,15 @@
     const itemCount = (r.items || []).length;
     const timeLabel = mode === 'stocked' && r.stockedAt ? '入库于 ' + fmtTime(r.stockedAt) : '创建 ' + fmtTime(r.createdAt);
     const ringCls = mode === 'stocked' ? 'ring-2 ring-emerald-300 bg-emerald-50/40' : 'ring-2 ring-mk-rose/30 bg-mk-rose/5';
+    const editingName = editingRestockNameId === r.id;
+    const nameHtml = editingName
+      ? `<input class="rs-name flex-1 min-w-0 px-2 py-1.5 rounded-xl bg-white border border-mk-sand text-sm font-bold" data-id="${r.id}" value="${escapeHtml(r.name || '')}" placeholder="补货记录名称">`
+      : `<span class="rs-name-text flex-1 min-w-0 px-2 py-1.5 rounded-xl hover:bg-white/60 text-sm font-bold cursor-pointer truncate" data-id="${r.id}" title="点击折叠/展开">${escapeHtml(r.name || '')}</span>
+         <button class="rs-name-edit ml-1 px-1.5 py-1 rounded-lg text-xs text-mk-sub hover:bg-mk-sand/40 hover:text-mk-ink" data-id="${r.id}" title="修改名称">✏️</button>`;
     const head = `
       <div class="flex items-center gap-2 mb-2">
         <button class="rs-toggle text-mk-sub text-lg leading-none px-1" data-id="${r.id}" title="${collapsed ? '展开' : '折叠'}">${collapsed ? '▸' : '▾'}</button>
-        <input class="rs-name flex-1 min-w-0 px-2 py-1.5 rounded-xl bg-white border border-mk-sand text-sm font-bold" data-id="${r.id}" value="${escapeHtml(r.name || '')}" placeholder="补货记录名称">
+        ${nameHtml}
         <span class="text-[11px] text-mk-sub whitespace-nowrap">${itemCount} 项 · ${total} 颗</span>
       </div>
       <div class="flex items-center gap-2 mb-2 flex-wrap">
@@ -1787,6 +1793,8 @@
     }
     if (pendingNewRestockId) {
       const nid = pendingNewRestockId; pendingNewRestockId = null;
+      editingRestockNameId = nid;
+      renderRestock(v);
       requestAnimationFrame(() => {
         const el = v.querySelector('.rs-name[data-id="' + nid + '"]');
         if (el) { el.focus(); el.select(); }
@@ -1795,16 +1803,30 @@
   }
 
   function bindRestockRecordHandlers(v) {
-    // 折叠 / 展开
-    $$('.rs-toggle', v).forEach(b => b.onclick = () => {
-      const id = b.dataset.id;
+    // 折叠 / 展开（箭头按钮 & 名称文本点击）
+    $$('.rs-toggle, .rs-name-text', v).forEach(el => el.onclick = () => {
+      const id = el.dataset.id;
       if (collapsedRestock.has(id)) collapsedRestock.delete(id); else collapsedRestock.add(id);
       renderRestock(v);
     });
+    // 点击铅笔进入名称编辑模式
+    $$('.rs-name-edit', v).forEach(b => b.onclick = (e) => {
+      e.stopPropagation();
+      editingRestockNameId = b.dataset.id;
+      renderRestock(v);
+      requestAnimationFrame(() => {
+        const el = v.querySelector('.rs-name[data-id="' + b.dataset.id + '"]');
+        if (el) { el.focus(); el.select(); }
+      });
+    });
     // 编辑记录名称（输入即存，不重渲染，避免打断输入）
-    $$('.rs-name', v).forEach(inp => inp.oninput = () => {
-      const r = getRestock(inp.dataset.id); if (!r) return;
-      r.name = inp.value; r.updatedAt = Date.now(); save();
+    $$('.rs-name', v).forEach(inp => {
+      inp.oninput = () => {
+        const r = getRestock(inp.dataset.id); if (!r) return;
+        r.name = inp.value; r.updatedAt = Date.now(); save();
+      };
+      inp.onblur = () => { editingRestockNameId = null; renderRestock(v); };
+      inp.onkeydown = (e) => { if (e.key === 'Enter') { editingRestockNameId = null; renderRestock(v); } };
     });
     // 编辑清单项：色号
     $$('.ri-color', v).forEach(inp => inp.onchange = () => {
