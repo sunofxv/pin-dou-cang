@@ -1674,7 +1674,9 @@
         <span class="text-xs font-semibold text-mk-ink">合计 ${r.portions * r.perQty} 颗</span>
         <div class="flex gap-2">
           ${mode === 'pending'
-            ? `<button class="rs-stock px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600" data-id="${r.id}">✅ 入库</button>`
+            ? (!r.colorNumber
+              ? `<button disabled class="rs-stock px-3 py-1.5 rounded-xl text-xs font-semibold bg-mk-sand text-white cursor-not-allowed" data-id="${r.id}" title="请填写色号后再入库">✅ 入库</button>`
+              : `<button class="rs-stock px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600" data-id="${r.id}">✅ 入库</button>`)
             : `<button class="rs-undo px-3 py-1.5 rounded-xl text-xs font-semibold bg-amber-500 text-white hover:bg-amber-600" data-id="${r.id}">↩️ 撤销入库</button>`}
           <button class="rs-del px-3 py-1.5 rounded-xl text-xs font-semibold bg-white border border-mk-sand text-rose-500 hover:bg-rose-50" data-id="${r.id}">🗑️ 删除</button>
         </div>
