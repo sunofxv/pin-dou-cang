@@ -155,4 +155,45 @@ async function launch() {
     try { await browser.close(); } catch (e) {}
     process.exitCode = ok ? 0 : 1;
   }
+
+  // ---- Phase C: 识别色号文本 → 生成补货记录 ----
+  {
+    const seed = baseSeed();
+    seed.beads.push(
+      { id: 'b4', colorNumber: 'A7', colorName: '橙', hex: '#f97316', location: '', stock: 5, threshold: 0 },
+      { id: 'b5', colorNumber: 'C22', colorName: '青', hex: '#06b6d4', location: '', stock: 5, threshold: 0 },
+      { id: 'b6', colorNumber: 'C25', colorName: '紫', hex: '#8b5cf6', location: '', stock: 5, threshold: 0 },
+      { id: 'b7', colorNumber: 'D9', colorName: '粉', hex: '#ec4899', location: '', stock: 5, threshold: 0 }
+    );
+    const browser = await launch();
+    const page = await browser.newPage();
+    await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+    page.on('pageerror', e => { if (!/tailwind is not defined/i.test(e.message)) errors.push('PAGEERROR: ' + e.message); });
+    await page.evaluateOnNewDocument((k, s) => localStorage.setItem(k, s), KEY, JSON.stringify(seed));
+    await page.goto(FILE, { waitUntil: 'domcontentloaded' });
+    await sleep(500);
+    await page.evaluate(() => { const b = [...document.querySelectorAll('#nav .nav-btn')].find(x => x.textContent.trim() === '补货管理'); if (b) b.click(); }); await sleep(400);
+    await page.click('#rs-recognize'); await sleep(300);
+    const hasModal = await page.$('#rs-rec-input');
+    const sample = 'A7    1\nC22   2\nC25   2\nD9\nZ9   3\nA7   5';
+    await page.type('#rs-rec-input', sample); await sleep(200);
+    const preview = await page.$eval('#rs-rec-preview', el => el.textContent).catch(() => '');
+    await page.click('#rs-rec-ok'); await sleep(500);
+    const afterRec = await page.evaluate((k) => {
+      const s = JSON.parse(localStorage.getItem(k));
+      const last = s.restockRecords[s.restockRecords.length - 1];
+      return { recs: s.restockRecords.length, name: last && last.name, items: (last && last.items) || [] };
+    }, KEY);
+    console.log('RECOGNIZE:', JSON.stringify({ hasModal: !!hasModal, preview, recs: afterRec.recs, name: afterRec.name, colors: afterRec.items.map(i => i.colorNumber + '×' + i.portions) }));
+    try { await browser.close(); } catch (e) {}
+    const recOK = errors.length === 0 && !!hasModal &&
+      afterRec.recs === 1 && afterRec.name === '补货记录1' &&
+      afterRec.items.length === 4 &&
+      afterRec.items.map(i => i.colorNumber).sort().join(',') === 'A7,C22,C25,D9' &&
+      afterRec.items.find(i => i.colorNumber === 'A7').portions === 1 &&
+      afterRec.items.find(i => i.colorNumber === 'C22').portions === 2 &&
+      afterRec.items.find(i => i.colorNumber === 'D9').portions === 1;
+    console.log(recOK ? '✅ RECOGNIZE PASS' : '❌ RECOGNIZE FAIL');
+    if (!recOK) { console.log('PAGEERRORS:', errors); process.exitCode = 1; }
+  }
 })();

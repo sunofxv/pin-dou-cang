@@ -1767,6 +1767,7 @@
         ${restockTab === 'pending'
           ? `<div class="flex gap-2">
               <button id="rs-copy" class="px-4 py-2 rounded-xl bg-white border border-mk-sand text-mk-ink font-semibold hover:bg-mk-sand/40">📄 复制清单</button>
+              <button id="rs-recognize" class="px-4 py-2 rounded-xl bg-white border border-mk-sand text-mk-ink font-semibold hover:bg-mk-sand/40">📷 识别色号</button>
               <button id="rs-add" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold shadow-soft">➕ 新增补货记录</button>
             </div>`
           : ''}
@@ -1780,6 +1781,7 @@
     `;
     $$('.rs-tab', v).forEach(b => b.onclick = () => { restockTab = b.dataset.t; renderRestock(v); });
     const copyBtn = $('#rs-copy'); if (copyBtn) copyBtn.onclick = () => copyRestockRecords();
+    const recBtn = $('#rs-recognize'); if (recBtn) recBtn.onclick = () => openRestockRecognize();
     const addBtn = $('#rs-add'); if (addBtn) addBtn.onclick = () => addRestockRecord();
     bindRestockRecordHandlers(v);
     if (pendingFocusRestockIds) {
@@ -1934,6 +1936,89 @@
     pendingFocusRestockIds = [id];
     pendingNewRestockId = id;
     renderRestock($('#view'));
+  }
+
+  // 补货管理「识别色号」：解析形如「色号 份数」的多行文本，生成一条补货记录
+  function openRestockRecognize() {
+    const body = `
+      <p class="text-sm text-mk-sub mb-3">每行一个色号，格式：<span class="font-semibold text-mk-ink">色号 + 空格/制表符 + 份数</span>（份数可省略，默认 1）。例如：</p>
+      <pre class="text-xs bg-mk-sand/30 rounded-xl p-3 mb-3 whitespace-pre-wrap">A7    1
+C22   2
+C25   2</pre>
+      <textarea id="rs-rec-input" rows="7" class="w-full px-3 py-2 rounded-xl bg-white border border-mk-sand text-sm font-mono" placeholder="在此粘贴：&#10;A7   1&#10;C22  2&#10;C25  2"></textarea>
+      <div id="rs-rec-preview" class="mt-3 text-xs text-mk-sub"></div>`;
+    openModal('识别色号并添加', body, { width: 560 });
+    const input = $('#rs-rec-input');
+    const preview = $('#rs-rec-preview');
+    if (input) {
+      input.focus();
+      input.oninput = () => {
+        const r = parseRestockText(input.value);
+        const parts = [];
+        if (r.items.length) parts.push('可添加 ' + r.items.length + ' 个：' + r.items.map(i => i.colorNumber + '×' + i.portions).join('、'));
+        if (r.missing.length) parts.push('色号不存在跳过 ' + r.missing.length + '：' + r.missing.join('、'));
+        if (r.skipped.length) parts.push('已存在跳过 ' + r.skipped.length + '：' + r.skipped.join('、'));
+        preview.innerHTML = parts.length ? parts.join('；') : '';
+      };
+    }
+    setModalFoot(`
+      <button id="rs-rec-cancel" class="px-4 py-2 rounded-xl bg-white border border-mk-sand text-mk-ink font-semibold hover:bg-mk-sand/40">取消</button>
+      <button id="rs-rec-ok" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold shadow-soft">识别并添加</button>`);
+    $('#rs-rec-cancel').onclick = () => closeModal();
+    $('#rs-rec-ok').onclick = () => {
+      const text = input ? input.value : '';
+      const res = applyRestockRecognize(text);
+      if (res) closeModal();
+    };
+  }
+
+  // 解析文本：返回 {items:[{colorNumber,portions}], missing:[色号], skipped:[色号]}
+  function parseRestockText(text) {
+    const items = [], missing = [], skipped = [];
+    if (!text) return { items, missing, skipped };
+    // 已存在（任意 pending 记录的 items）的色号，避免重复添加
+    const exist = new Set();
+    (state.restockRecords || []).forEach(r => {
+      if (r.status === 'pending' && Array.isArray(r.items)) r.items.forEach(it => { if (it.colorNumber) exist.add(it.colorNumber); });
+    });
+    text.split(/\r?\n/).forEach(raw => {
+      const line = raw.trim();
+      if (!line) return;
+      const toks = line.split(/\s+/);
+      const color = toks[0].toUpperCase();
+      let portions = 1;
+      if (toks[1] !== undefined) {
+        const n = parseInt(toks[1], 10);
+        if (!isNaN(n) && n >= 1) portions = n;
+      }
+      if (!beadByNumber(color)) { missing.push(color); return; }
+      if (exist.has(color)) { skipped.push(color); return; }
+      exist.add(color);
+      items.push({ id: uid('ri'), colorNumber: color, portions, perQty: DEFAULT_RESTOCK_PER_QTY, note: '' });
+    });
+    return { items, missing, skipped };
+  }
+
+  function applyRestockRecognize(text) {
+    const { items, missing, skipped } = parseRestockText(text);
+    if (!items.length) {
+      return toast(missing.length ? ('没有可添加的色号，' + missing.length + ' 个色号在色卡中不存在') : '请输入色号和份数', 'warn');
+    }
+    const id = uid('rs');
+    state.restockRecords.push({
+      id, name: nextRestockName(), status: 'pending',
+      createdAt: Date.now(), updatedAt: Date.now(), stockedAt: null, items
+    });
+    save();
+    restockTab = 'pending';
+    collapsedRestock.delete(id);
+    pendingFocusRestockIds = [id];
+    renderRestock($('#view'));
+    let msg = '已识别添加 ' + items.length + ' 个色号';
+    if (skipped.length) msg += '，' + skipped.length + ' 个已存在跳过';
+    if (missing.length) msg += '，' + missing.length + ' 个色号不存在跳过';
+    toast(msg, 'success');
+    return true;
   }
 
   function copyRestockRecords() {
