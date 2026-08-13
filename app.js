@@ -3907,11 +3907,11 @@ C25   2</pre>
           <div>已定位图例区域，AI 识别中…</div>
         </div>
       `;
-      const det = detectLegendRegion(img);
+      const det = window.__legendRegionStub ? window.__legendRegionStub(img) : detectLegendRegion(img);
       if (!det || !det.region) throw new Error('未能自动定位图例区域，请尝试到「图纸识别」页手动框选图例');
       const baseUrl = state.settings.visionBaseUrl || '';
-      const items = await aiParseLegend(img, det.region, baseUrl);
-      renderGalleryLegendResult(g, items, det.region);
+      const items = await (window.__aiParseLegendStub ? window.__aiParseLegendStub(img, det.region, baseUrl) : aiParseLegend(img, det.region, baseUrl));
+      renderGalleryLegendResult(g, img, det.region, items);
     } catch (err) {
       console.error(err);
       bodyEl.innerHTML = `
@@ -3925,46 +3925,110 @@ C25   2</pre>
     }
   }
 
-  function renderGalleryLegendResult(g, items, region) {
-    const hasCount = items.some(x => x.count > 0);
-    const totalColors = items.length;
-    const totalBeads = items.reduce((s, x) => s + (+x.count || 0), 0);
+  // 图例识别结果弹窗：可逐行校正色号/数量，色号不存在标红，支持合并重复色号，移动端适配
+  function renderGalleryLegendResult(g, img, region, items) {
+    // 工作副本（可编辑），每项 {colorNumber,colorName,count,hex,bad,removed}
+    let work = items.map(it => ({
+      colorNumber: it.colorNumber || '', colorName: it.colorName || '',
+      count: (+it.count || 0), hex: it.hex || '', bad: false, removed: false
+    }));
+    const hasCount = work.some(x => x.count > 0);
+
+    // 图例区域裁剪预览（用于对照校正）
+    let previewUrl = '';
+    try {
+      if (img) {
+        const r = refineLegendRegion(img, region);
+        previewUrl = cropRegionToDataURL(img, r) || cropRegionToDataURL(img, region) || '';
+      }
+    } catch (e) { previewUrl = ''; }
+
+    const recheck = () => {
+      work.forEach(it => {
+        it.bad = !!(it.colorNumber && !beadByNumber(it.colorNumber.trim().toUpperCase()));
+      });
+    };
+    recheck();
+
     const body = `
       <div class="space-y-3">
-        <div class="text-xs text-mk-sub">图纸「${escapeHtml(g.name)}」识别到 <b>${totalColors}</b> 个图例色号${hasCount ? `，共 <b>${totalBeads}</b> 颗` : ''}：</div>
-        <div class="flex flex-col gap-1.5 max-h-[44vh] overflow-auto pr-1">
-          ${items.length ? items.map((it, i) => `
-            <div class="flex items-center gap-2 p-2 rounded-lg bg-white border border-mk-sand">
-              <span class="w-6 h-6 rounded-full swatch shrink-0" style="background:${it.hex}"></span>
-              <div class="flex-1 min-w-0">
-                <div class="text-sm font-semibold">${escapeHtml(it.colorNumber || '—')} ${it.colorName ? '<span class="text-xs text-mk-sub font-normal">' + escapeHtml(it.colorName) + '</span>' : ''}</div>
-                ${it.count > 0 ? `<div class="text-xs text-mk-sub">数量：${it.count} 颗</div>` : ''}
-              </div>
-            </div>
-          `).join('') : '<div class="text-center text-mk-sub py-4">未识别到有效图例色块</div>'}
+        <div class="flex flex-col sm:flex-row sm:items-center gap-2 text-xs text-mk-sub">
+          <span>图纸「${escapeHtml(g.name)}」识别到 <b id="gl-ncolors">0</b> 个图例色号，可逐行校正后再导出。色号不存在会<span class="text-rose-500 font-semibold">标红</span>。</span>
+        </div>
+        ${previewUrl ? `<div class="mx-auto max-w-[260px] sm:max-w-[320px] rounded-xl overflow-hidden border border-mk-sand bg-white"><img src="${previewUrl}" class="w-full block" alt="图例区域预览"></div><div class="text-[11px] text-center text-mk-sub -mt-1">识别所用图例区域（可对照校正）</div>` : ''}
+        <div id="gl-list" class="flex flex-col gap-1.5 max-h-[40vh] sm:max-h-[44vh] overflow-auto pr-1"></div>
+        <div class="flex items-center gap-2 flex-wrap">
+          <button id="gl-merge" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-white border border-mk-sand text-mk-ink hover:bg-mk-sand/40">🔁 合并重复色号</button>
+          <span id="gl-warn" class="text-[11px] text-rose-500"></span>
         </div>
       </div>
     `;
     const bodyEl = openModal('🎨 识别结果：' + g.name, body, { wide: true });
+
+    const renderList = () => {
+      const list = $('#gl-list'); if (!list) return;
+      list.innerHTML = work.map((it, i) => {
+        const cn = (it.colorNumber || '').trim().toUpperCase();
+        return `
+        <div class="flex items-center gap-1.5 p-1.5 rounded-lg border ${it.removed ? 'opacity-40 bg-mk-sand/20' : 'bg-white border-mk-sand'} ${it.bad ? 'border-rose-400 ring-1 ring-rose-200' : ''}">
+          <span class="w-5 h-5 rounded-full swatch shrink-0" style="background:${it.hex || '#ccc'}"></span>
+          <input class="gl-cn flex-1 min-w-0 w-16 px-1.5 py-1 rounded-lg bg-white border ${it.bad ? 'border-rose-400' : 'border-mk-sand'} text-xs font-semibold uppercase" data-i="${i}" value="${escapeHtml(cn)}" placeholder="色号">
+          <input class="gl-cn-name flex-1 min-w-0 w-16 px-1.5 py-1 rounded-lg bg-white border border-mk-sand text-xs" data-i="${i}" value="${escapeHtml(it.colorName || '')}" placeholder="名称">
+          <input class="gl-cnt w-14 px-1.5 py-1 rounded-lg bg-white border border-mk-sand text-xs text-right" data-i="${i}" type="number" min="0" value="${it.count || 0}">
+          <button class="gl-rm text-mk-sub px-1.5 ${it.removed ? 'text-emerald-500' : 'text-rose-400'}" data-i="${i}" title="${it.removed ? '恢复' : '删除'}">${it.removed ? '↺' : '✕'}</button>
+        </div>`;
+      }).join('');
+      list.querySelectorAll('.gl-cn').forEach(inp => inp.oninput = () => { const it = work[+inp.dataset.i]; it.colorNumber = (inp.value || '').toUpperCase(); recheck(); paintWarnings(); });
+      list.querySelectorAll('.gl-cn-name').forEach(inp => inp.oninput = () => { work[+inp.dataset.i].colorName = inp.value; });
+      list.querySelectorAll('.gl-cnt').forEach(inp => inp.oninput = () => { const v = parseInt(inp.value, 10); work[+inp.dataset.i].count = isNaN(v) ? 0 : v; paintWarnings(); });
+      list.querySelectorAll('.gl-rm').forEach(b => b.onclick = () => { const it = work[+b.dataset.i]; it.removed = !it.removed; renderList(); });
+    };
+    const paintWarnings = () => {
+      const nColors = work.filter(x => !x.removed && x.colorNumber).length;
+      const elN = $('#gl-ncolors'); if (elN) elN.textContent = nColors;
+      const badList = work.filter(x => x.bad && !x.removed);
+      const warn = $('#gl-warn');
+      if (warn) warn.textContent = badList.length ? ('⚠️ ' + badList.length + ' 个色号不存在，请修正后再加入补货') : '';
+    };
+    renderList(); paintWarnings();
+
+    $('#gl-merge').onclick = () => {
+      const map = {}; let merged = 0;
+      const next = [];
+      work.forEach(it => {
+        if (it.removed) { next.push(it); return; }
+        const key = (it.colorNumber || '').trim().toUpperCase();
+        if (!key) { next.push(it); return; }
+        if (map[key] != null) { next[map[key]].count += it.count || 0; merged++; }
+        else { map[key] = next.length; next.push(it); }
+      });
+      work = next; renderList(); paintWarnings();
+      toast(merged ? ('已合并 ' + merged + ' 个重复色号') : '没有可合并的重复色号', merged ? 'success' : 'info');
+    };
+
     setModalFoot(`
       <button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="closeModal()">关闭</button>
       <button id="gl-copy" class="px-4 py-2 rounded-xl bg-mk-lav text-mk-ink font-semibold">📄 复制清单</button>
-      ${hasCount ? '<button id="gl-restock" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold">📥 加入补货清单</button>' : ''}
+      <button id="gl-restock" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold">📥 加入补货清单</button>
     `);
+    const activeItems = () => work.filter(x => !x.removed && x.colorNumber);
     $('#gl-copy').onclick = () => {
+      const rows = activeItems();
+      if (!rows.length) return toast('没有可导出的色号', 'warn');
       const lines = ['图例识别：' + g.name, '色号\t名称\t数量'];
-      items.forEach(it => lines.push((it.colorNumber || '—') + '\t' + (it.colorName || '') + '\t' + (it.count || 0)));
+      rows.forEach(it => lines.push((it.colorNumber) + '\t' + (it.colorName || '') + '\t' + (it.count || 0)));
       const text = lines.join('\n');
       if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => toast('已复制图例清单', 'success'), () => copyTextFallback(text));
       else copyTextFallback(text);
     };
-    if (hasCount) {
-      $('#gl-restock').onclick = () => {
-        const valid = items.filter(it => it.colorNumber && it.count > 0);
-        if (!valid.length) return toast('没有可加入补货清单的色号', 'warn');
-        addItemsToRestock(valid.map(it => ({ colorNumber: it.colorNumber, portions: 1, perQty: it.count })), '来自图库「' + g.name + '」图例识别');
-      };
-    }
+    $('#gl-restock').onclick = () => {
+      const rows = activeItems();
+      const bad = rows.filter(x => !beadByNumber(x.colorNumber));
+      if (bad.length) return toast('存在不存在的色号（' + bad.map(x => x.colorNumber).join('、') + '），请先修正', 'error');
+      const valid = rows.filter(x => x.count > 0);
+      if (!valid.length) return toast('请至少给一个色号填写数量', 'warn');
+      addItemsToRestock(valid.map(it => ({ colorNumber: it.colorNumber, portions: 1, perQty: it.count })), '来自图库「' + g.name + '」图例识别');
+    };
   }
 
   function openAddGalleryModal() {
