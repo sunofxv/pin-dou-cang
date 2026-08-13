@@ -1678,6 +1678,34 @@
 
   function getRestock(id) { return (state.restockRecords || []).find(r => r.id === id); }
 
+  // 将一组色号清单项加入补货管理（生成一条新记录，自动去重已有 pending 色号）
+  function addItemsToRestock(newItems, notePrefix) {
+    if (!newItems || !newItems.length) return toast('没有可添加的色号', 'warn');
+    const exist = new Set();
+    (state.restockRecords || []).forEach(r => {
+      if (r.status === 'pending' && Array.isArray(r.items)) r.items.forEach(it => { if (it.colorNumber) exist.add(it.colorNumber); });
+    });
+    const items = [];
+    let skipped = 0;
+    newItems.forEach(it => {
+      if (!it.colorNumber || exist.has(it.colorNumber)) { skipped++; return; }
+      items.push({ id: uid('ri'), colorNumber: it.colorNumber, portions: it.portions || 1, perQty: it.perQty || DEFAULT_RESTOCK_PER_QTY, note: it.note || '' });
+    });
+    if (!items.length) return toast('这些色号都已加入补货清单', 'info');
+    const id = uid('rs');
+    state.restockRecords.push({
+      id, name: nextRestockName(), status: 'pending',
+      createdAt: Date.now(), updatedAt: Date.now(), stockedAt: null,
+      items, note: notePrefix || ''
+    });
+    save();
+    restockTab = 'pending';
+    collapsedRestock.delete(id);
+    pendingFocusRestockIds = [id];
+    switchView('restock', { focusTab: 'pending' });
+    toast('已生成补货记录，含 ' + items.length + ' 个色号' + (skipped ? '（' + skipped + ' 个已存在跳过）' : ''), 'success');
+  }
+
   // 记录合计颗数（所有清单项之和）
   function restockRecordBeads(r) {
     return (r.items || []).reduce((s, it) => s + (it.portions || 0) * (it.perQty || 0), 0);
@@ -3737,6 +3765,10 @@ C25   2</pre>
       const g = state.gallery.find(x => x.id === b.dataset.id);
       if (g) viewGallery(g);
     });
+    $$('.g-legend').forEach(b => b.onclick = () => {
+      const g = state.gallery.find(x => x.id === b.dataset.id);
+      if (g) recognizeGalleryLegend(g);
+    });
     $$('.g-edit').forEach(b => b.onclick = (e) => {
       e.stopPropagation();
       galleryEditId = b.dataset.id;
@@ -3785,7 +3817,8 @@ C25   2</pre>
           <div class="text-xs text-mk-sub mt-0.5 truncate">${g.platform ? '📦 ' + escapeHtml(g.platform) : ''}${g.platform && g.author ? ' · ' : ''}${g.author ? '✍️ ' + escapeHtml(g.author) : ''}</div>
           <div class="mt-2 flex items-center justify-between">
             <span class="text-[11px] px-2 py-0.5 rounded-full ${made ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}">${made ? '✓ 已拼' : '○ 未拼'}</span>
-            <div class="flex gap-1.5">
+            <div class="flex gap-1.5 flex-wrap justify-end">
+              <button class="g-legend text-[11px] px-2.5 py-1.5 rounded-xl bg-violet-50 text-violet-500" data-id="${g.id}">🎨 识别图例</button>
               <button class="g-edit text-[11px] px-2.5 py-1.5 rounded-xl bg-sky-50 text-sky-500" data-id="${g.id}">编辑</button>
               <button class="g-toggle text-[11px] px-2.5 py-1.5 rounded-xl ${made ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600'}" data-id="${g.id}">${made ? '标记未拼' : '标记已拼'}</button>
               <button class="g-del text-[11px] px-2.5 py-1.5 rounded-xl bg-rose-50 text-rose-400" data-id="${g.id}">删除</button>
@@ -3851,6 +3884,89 @@ C25   2</pre>
     const imgWrap = $('#g-detail-img-wrap');
     if (imgWrap) imgWrap.onclick = () => openGalleryImageZoom(g);
   }
+
+  // 图库图纸的「识别图例」：自动定位底部图例区域，AI 视觉读色号与数量
+  async function recognizeGalleryLegend(g) {
+    const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
+    const aiReady = viaProxy || !!(state.settings.enableVision && state.settings.apiKey);
+    if (!aiReady) return toast('请先到「设置 → 云端视觉AI」启用图例识别', 'warn');
+    if (!g.image) return toast('该图纸没有图片，无法识别图例', 'warn');
+
+    const bodyEl = openModal('🎨 识别图例：' + g.name, `
+      <div class="text-center py-8 text-mk-sub">
+        <div class="text-3xl mb-2">⏳</div>
+        <div>正在加载图片并定位图例区域…</div>
+      </div>
+    `, { wide: true });
+
+    try {
+      const img = await loadImage(g.image);
+      bodyEl.innerHTML = `
+        <div class="text-center py-8 text-mk-sub">
+          <div class="text-3xl mb-2">🤖</div>
+          <div>已定位图例区域，AI 识别中…</div>
+        </div>
+      `;
+      const det = detectLegendRegion(img);
+      if (!det || !det.region) throw new Error('未能自动定位图例区域，请尝试到「图纸识别」页手动框选图例');
+      const baseUrl = state.settings.visionBaseUrl || '';
+      const items = await aiParseLegend(img, det.region, baseUrl);
+      renderGalleryLegendResult(g, items, det.region);
+    } catch (err) {
+      console.error(err);
+      bodyEl.innerHTML = `
+        <div class="text-center py-6 text-mk-sub">
+          <div class="text-2xl mb-2">⚠️</div>
+          <div>识别失败：${escapeHtml(err.message || '未知错误')}</div>
+          <div class="text-xs mt-2">可尝试到「图纸识别」页手动框选图例区域后识别。</div>
+        </div>
+      `;
+      setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">关闭</button>`);
+    }
+  }
+
+  function renderGalleryLegendResult(g, items, region) {
+    const hasCount = items.some(x => x.count > 0);
+    const totalColors = items.length;
+    const totalBeads = items.reduce((s, x) => s + (+x.count || 0), 0);
+    const body = `
+      <div class="space-y-3">
+        <div class="text-xs text-mk-sub">图纸「${escapeHtml(g.name)}」识别到 <b>${totalColors}</b> 个图例色号${hasCount ? `，共 <b>${totalBeads}</b> 颗` : ''}：</div>
+        <div class="flex flex-col gap-1.5 max-h-[44vh] overflow-auto pr-1">
+          ${items.length ? items.map((it, i) => `
+            <div class="flex items-center gap-2 p-2 rounded-lg bg-white border border-mk-sand">
+              <span class="w-6 h-6 rounded-full swatch shrink-0" style="background:${it.hex}"></span>
+              <div class="flex-1 min-w-0">
+                <div class="text-sm font-semibold">${escapeHtml(it.colorNumber || '—')} ${it.colorName ? '<span class="text-xs text-mk-sub font-normal">' + escapeHtml(it.colorName) + '</span>' : ''}</div>
+                ${it.count > 0 ? `<div class="text-xs text-mk-sub">数量：${it.count} 颗</div>` : ''}
+              </div>
+            </div>
+          `).join('') : '<div class="text-center text-mk-sub py-4">未识别到有效图例色块</div>'}
+        </div>
+      </div>
+    `;
+    const bodyEl = openModal('🎨 识别结果：' + g.name, body, { wide: true });
+    setModalFoot(`
+      <button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="closeModal()">关闭</button>
+      <button id="gl-copy" class="px-4 py-2 rounded-xl bg-mk-lav text-mk-ink font-semibold">📄 复制清单</button>
+      ${hasCount ? '<button id="gl-restock" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold">📥 加入补货清单</button>' : ''}
+    `);
+    $('#gl-copy').onclick = () => {
+      const lines = ['图例识别：' + g.name, '色号\t名称\t数量'];
+      items.forEach(it => lines.push((it.colorNumber || '—') + '\t' + (it.colorName || '') + '\t' + (it.count || 0)));
+      const text = lines.join('\n');
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => toast('已复制图例清单', 'success'), () => copyTextFallback(text));
+      else copyTextFallback(text);
+    };
+    if (hasCount) {
+      $('#gl-restock').onclick = () => {
+        const valid = items.filter(it => it.colorNumber && it.count > 0);
+        if (!valid.length) return toast('没有可加入补货清单的色号', 'warn');
+        addItemsToRestock(valid.map(it => ({ colorNumber: it.colorNumber, portions: 1, perQty: it.count })), '来自图库「' + g.name + '」图例识别');
+      };
+    }
+  }
+
   function openAddGalleryModal() {
     const body = `
       <div class="space-y-3">
