@@ -3796,15 +3796,40 @@ C25   2</pre>
 
   /* ===================== 15. 操作记录 ===================== */
   let logFilter = 'all';
+  let logSearch = '';
+  let logSearchTimer = null;
   function renderLogs(v) {
     const types = ['all', '入库', '补货清单入库', '补货清单撤销入库', '消耗', '图纸消耗', '配方扣减'];
-    const list = state.logs.filter(l => logFilter === 'all' || l.type === logFilter);
+    const term = logSearch.trim().toLowerCase();
+    const list = state.logs.filter(l => {
+      const typeOk = logFilter === 'all' || l.type === logFilter;
+      if (!typeOk) return false;
+      if (!term) return true;
+      const hay = [
+        l.type,
+        l.colorNumber,
+        l.colorName,
+        l.note,
+        String(l.qty),
+        String(l.balance),
+        fmtTime(l.ts)
+      ].join(' ').toLowerCase();
+      return hay.includes(term);
+    });
     v.innerHTML = `
-      <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-        <h2 class="text-xl font-bold">📝 操作记录</h2>
-        <div class="flex gap-1.5 flex-wrap">
+      <div class="mb-4">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
+          <h2 class="text-xl font-bold">📝 操作记录</h2>
+          <div class="relative w-full sm:w-64">
+            <input id="log-search" type="text" value="${escapeHtml(logSearch)}" placeholder="搜索色号 / 颜色 / 备注 / 数量…" class="w-full pl-9 pr-8 py-2 rounded-xl bg-white/70 border border-mk-sand text-sm focus:outline-none focus:ring-2 focus:ring-mk-rose/40">
+            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-mk-sub">🔍</span>
+            ${logSearch ? `<button id="log-search-clear" class="absolute right-2 top-1/2 -translate-y-1/2 text-mk-sub hover:text-mk-ink px-1">✕</button>` : ''}
+          </div>
+        </div>
+        <div class="flex flex-wrap gap-1.5">
           ${types.map(t => `<button class="lf-btn px-3 py-1.5 rounded-xl text-xs font-semibold ${logFilter === t ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub'}" data-t="${t}">${t === 'all' ? '全部' : t}</button>`).join('')}
         </div>
+        ${term ? `<div class="mt-2 text-xs text-mk-sub">「${escapeHtml(logSearch.trim())}」共 ${list.length} 条记录</div>` : ''}
       </div>
       <div class="mk-card rounded-2xl shadow-soft overflow-hidden">
         <div class="overflow-x-auto">
@@ -3822,12 +3847,23 @@ C25   2</pre>
                 <td class="px-3 py-2">${l.colorNumber} ${escapeHtml(l.colorName)}</td>
                 <td class="px-3 py-2 text-right text-mk-sub">${l.balance}</td>
                 <td class="px-3 py-2 text-mk-sub">${escapeHtml(l.note || '')}</td>
-              </tr>`).join('') : `<tr><td colspan="6" class="text-center text-mk-sub py-6">暂无记录</td></tr>`}
+              </tr>`).join('') : `<tr><td colspan="6" class="text-center text-mk-sub py-6">${term ? '没有匹配记录' : '暂无记录'}</td></tr>`}
             </tbody>
           </table>
         </div>
       </div>`;
     $$('.lf-btn').forEach(b => b.onclick = () => { logFilter = b.dataset.t; renderLogs(v); });
+    const searchInput = $('#log-search');
+    if (searchInput) {
+      searchInput.oninput = () => {
+        logSearch = searchInput.value;
+        clearTimeout(logSearchTimer);
+        logSearchTimer = setTimeout(() => renderLogs(v), 180);
+      };
+      searchInput.onkeydown = (e) => { if (e.key === 'Escape') { logSearch = ''; renderLogs(v); } };
+    }
+    const clearBtn = $('#log-search-clear');
+    if (clearBtn) clearBtn.onclick = () => { logSearch = ''; renderLogs(v); };
   }
 
   /* ===================== 15.5 图库 ===================== */
