@@ -2492,7 +2492,7 @@ C25   2</pre>
     image: null,       // 当前图纸 dataURL
     imgEl: null,       // 已加载的 HTMLImageElement（缓存）
     cols: 0, rows: 0,  // 网格列/行数
-    quad: null,        // 对齐四边形（归一化 0~1）：{tl,tr,br,bl}，每个含 {x,y}
+    align: null,       // 网格对齐：{cx,cy(归一化),cell(按宽归一化),rot(弧度),cols,rows}
     cells: null,       // 识别结果 [rows][cols] = {code:'', src:'', conf:0}
     engine: 'vision',  // 'vision' | 'tesseract'
     highlight: null,   // 当前高亮的色号
@@ -3861,7 +3861,7 @@ C25   2</pre>
       const g = state.gallery.find(x => x.id === b.dataset.id);
       if (g) viewGallery(g);
     });
-    $$('.g-grid').forEach(b => b.onclick = () => { const g = state.gallery.find(x => x.id === b.dataset.id); if (g) { grid.image = g.image; gridReset(true); gridInitQuad(); switchView('grid'); } });
+    $$('.g-grid').forEach(b => b.onclick = () => { const g = state.gallery.find(x => x.id === b.dataset.id); if (g) { grid.image = g.image; gridReset(true); switchView('grid'); } });
     $$('.g-legend').forEach(b => b.onclick = () => {
       const g = state.gallery.find(x => x.id === b.dataset.id);
       if (g) openLegendInRecognize(g);
@@ -4761,27 +4761,41 @@ C25   2</pre>
   }
 
   /* ===================== 拼豆模式：网格图纸识别 ===================== */
-  function gridInitQuad() {
-    grid.quad = { tl:{x:0.04,y:0.04}, tr:{x:0.96,y:0.04}, br:{x:0.96,y:0.96}, bl:{x:0.04,y:0.96} };
+  function gridInitAlign() {
+    // 默认：网格居中、格子取短边的 1/30、旋转 0；用户再拖中心十字 + 调格子大小/角度
+    const iw = grid.imgEl ? grid.imgEl.width : 1000;
+    const ih = grid.imgEl ? grid.imgEl.height : 1000;
+    const cellPx = Math.min(iw, ih) / 30;
+    grid.align = { cx: 0.5, cy: 0.5, cell: cellPx / iw, rot: 0, cols: grid.cols || 0, rows: grid.rows || 0 };
   }
   function gridReset(keepImage) {
     const img = keepImage ? grid.image : null;
     const imgEl = keepImage ? grid.imgEl : null;
-    grid = { image: img, imgEl, cols: 0, rows: 0, quad: null, cells: null,
+    grid = { image: img, imgEl, cols: 0, rows: 0, align: null, cells: null,
              engine: grid.engine, highlight: null, warp: null, worker: grid.worker, busy: false, cancel: false };
   }
-  // 双线性四边形映射：u,v ∈ [0,1] → 归一化图像坐标
-  function gridQuadPoint(q, u, v) {
-    const tx = q.tl.x + (q.tr.x - q.tl.x) * u, ty = q.tl.y + (q.tr.y - q.tl.y) * u;
-    const bx = q.bl.x + (q.br.x - q.bl.x) * u, by = q.bl.y + (q.br.y - q.bl.y) * u;
-    return { x: tx + (bx - tx) * v, y: ty + (by - ty) * v };
+  // 网格对齐模型：中心(cx,cy)归一化坐标 + 每格边长 cell(按图宽归一化) + 旋转 rot(弧度)
+  // 格(r,c)中心(r:0..rows-1, c:0..cols-1)像素坐标
+  function gridCellCenter(align, r, c, iw, ih) {
+    const dx = c - (align.cols - 1) / 2, dy = r - (align.rows - 1) / 2;
+    const cellPx = align.cell * iw, cos = Math.cos(align.rot), sin = Math.sin(align.rot);
+    return { x: align.cx * iw + dx * cellPx * cos - dy * cellPx * sin,
+             y: align.cy * ih + dx * cellPx * sin + dy * cellPx * cos };
+  }
+  // 网格线交点(ri:0..rows, ci:0..cols)像素坐标
+  function gridNodePx(align, ri, ci, iw, ih) {
+    const dx = ci - align.cols / 2, dy = ri - align.rows / 2;
+    const cellPx = align.cell * iw, cos = Math.cos(align.rot), sin = Math.sin(align.rot);
+    return { x: align.cx * iw + dx * cellPx * cos - dy * cellPx * sin,
+             y: align.cy * ih + dx * cellPx * sin + dy * cellPx * cos };
   }
   function gridCellPx() {
     const n = Math.max(1, grid.cols * grid.rows);
     return Math.max(16, Math.min(48, Math.floor(Math.sqrt(12_000_000 / n))));
   }
-  // 把 quad 区域透视（双线性）拉正为 rows×cols 矩形画布，cellPx = 每格像素
-  function gridWarp(img, quad, cols, rows, cellPx) {
+  // 按对齐参数把网格区域拉正为 rows×cols 矩形画布（补偿旋转），cellPx=输出每格像素
+  function gridWarp(img, align, cols, rows, cellPx) {
+    const iw = img.width, ih = img.height;
     const { w, h, ctx } = createAnalysisCanvas(img, 4000);
     const src = ctx.getImageData(0, 0, w, h).data;
     const W = Math.max(1, cols * cellPx), H = Math.max(1, rows * cellPx);
@@ -4789,23 +4803,26 @@ C25   2</pre>
     out.width = W; out.height = H;
     const octx = out.getContext('2d');
     const od = octx.createImageData(W, H);
+    const cellSrc = align.cell * iw, cos = Math.cos(align.rot), sin = Math.sin(align.rot);
     for (let dy = 0; dy < H; dy++) {
-      const v = (dy + 0.5) / H;
+      const r = Math.floor(dy / cellPx);
+      const inV = (dy - r * cellPx + 0.5) / cellPx - 0.5;     // 格内纵向偏移(格单位)
       for (let dx = 0; dx < W; dx++) {
-        const u = (dx + 0.5) / W;
-        const p = gridQuadPoint(quad, u, v);
-        const sx = p.x * w, sy = p.y * h;
+        const c = Math.floor(dx / cellPx);
+        const inU = (dx - c * cellPx + 0.5) / cellPx - 0.5;   // 格内横向偏移
+        const tu = (c - (cols - 1) / 2) + inU, tv = (r - (rows - 1) / 2) + inV;
+        const sx = align.cx * iw + tu * cellSrc * cos - tv * cellSrc * sin;
+        const sy = align.cy * ih + tu * cellSrc * sin + tv * cellSrc * cos;
         let x0 = Math.floor(sx), y0 = Math.floor(sy);
         let fx = sx - x0, fy = sy - y0;
         let x1 = x0 + 1, y1 = y0 + 1;
         if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
         if (x1 > w - 1) x1 = w - 1; if (y1 > h - 1) y1 = h - 1;
-        const i00 = (y0 * w + x0) * 4, i10 = (y0 * w + x1) * 4,
-              i01 = (y1 * w + x0) * 4, i11 = (y1 * w + x1) * 4;
+        const i00 = (y0 * w + x0) * 4, i10 = (y0 * w + x1) * 4, i01 = (y1 * w + x0) * 4, i11 = (y1 * w + x1) * 4;
         const oi = (dy * W + dx) * 4;
-        for (let c = 0; c < 3; c++) {
-          const a = src[i00 + c], b = src[i10 + c], d = src[i01 + c], e = src[i11 + c];
-          od.data[oi + c] = (a * (1 - fx) + b * fx) * (1 - fy) + (d * (1 - fx) + e * fx) * fy;
+        for (let k = 0; k < 3; k++) {
+          const a = src[i00 + k], b = src[i10 + k], d = src[i01 + k], e = src[i11 + k];
+          od.data[oi + k] = (a * (1 - fx) + b * fx) * (1 - fy) + (d * (1 - fx) + e * fx) * fy;
         }
         od.data[oi + 3] = 255;
       }
@@ -4840,18 +4857,21 @@ C25   2</pre>
     const det = detectGridLines(grid.imgEl, { x: 0, y: 0, w: 1, h: 1 });
     if (!det || !det.cols || !det.rows) return toast('未能自动检测网格，请手动填写列数/行数', 'warn');
     grid.cols = det.cols; grid.rows = det.rows;
-    const f = det.frame, aw = det.aw, ah = det.ah;
-    grid.quad = {
-      tl: { x: f.gx0 / aw, y: f.gy0 / ah }, tr: { x: f.gx1 / aw, y: f.gy0 / ah },
-      br: { x: f.gx1 / aw, y: f.gy1 / ah }, bl: { x: f.gx0 / aw, y: f.gy1 / ah }
+    const aw = det.aw, ah = det.ah, f = det.frame;
+    const nx0 = f.gx0 / aw, ny0 = f.gy0 / ah, nx1 = f.gx1 / aw, ny1 = f.gy1 / ah;
+    grid.align = {
+      cx: (nx0 + nx1) / 2, cy: (ny0 + ny1) / 2,
+      cell: (nx1 - nx0) / det.cols, rot: 0,
+      cols: det.cols, rows: det.rows
     };
     const ci = $('#grid-cols'), ri = $('#grid-rows');
     if (ci) ci.value = det.cols;
     if (ri) ri.value = det.rows;
+    if (grid.align) { const ce = $('#grid-cell'); if (ce) ce.value = Math.round(grid.align.cell * grid.imgEl.width); }
     gridDrawAlign();
-    toast(`已检测 ${det.cols} 列 × ${det.rows} 行，可拖四角微调`, 'success');
+    toast(`已检测 ${det.cols} 列 × ${det.rows} 行，可拖动中心十字 + 调格子大小微调`, 'success');
   }
-  // 对齐画布：原图 + 网格预览 + 四角手柄
+  // 对齐画布：原图 + 正交网格预览 + 中心十字手柄
   function gridDrawAlign() {
     const cv = $('#grid-align-canvas');
     if (!cv || !grid.imgEl) return;
@@ -4861,30 +4881,28 @@ C25   2</pre>
     cv.width = Wpx; cv.height = Hpx;
     const ctx = cv.getContext('2d');
     ctx.drawImage(img, 0, 0, Wpx, Hpx);
-    if (!grid.quad) return;
-    const P = (p) => ({ x: p.x * Wpx, y: p.y * Hpx });
-    if (grid.cols > 1 && grid.rows > 1) {
-      ctx.strokeStyle = 'rgba(99,102,241,0.45)'; ctx.lineWidth = 1;
-      for (let c = 0; c <= grid.cols; c++) {
-        const a = P(gridQuadPoint(grid.quad, c / grid.cols, 0)), b = P(gridQuadPoint(grid.quad, c / grid.cols, 1));
-        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    if (!grid.align) return;
+    const a = grid.align, iw = img.width, ih = img.height;
+    const sx = Wpx / iw, sy = Hpx / ih;
+    const node = (ri, ci) => { const p = gridNodePx(a, ri, ci, iw, ih); return { x: p.x * sx, y: p.y * sy }; };
+    ctx.strokeStyle = 'rgba(99,102,241,0.5)'; ctx.lineWidth = 1;
+    if (a.cols > 0 && a.rows > 0) {
+      for (let ci = 0; ci <= a.cols; ci++) {
+        const A = node(0, ci), B = node(a.rows, ci);
+        ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
       }
-      for (let r = 0; r <= grid.rows; r++) {
-        const a = P(gridQuadPoint(grid.quad, 0, r / grid.rows)), b = P(gridQuadPoint(grid.quad, 1, r / grid.rows));
-        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      for (let ri = 0; ri <= a.rows; ri++) {
+        const A = node(ri, 0), B = node(ri, a.cols);
+        ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
       }
     }
-    ctx.strokeStyle = '#6366f1'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
-    const pts = [P(grid.quad.tl), P(grid.quad.tr), P(grid.quad.br), P(grid.quad.bl)];
-    ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < 4; i++) ctx.lineTo(pts[i].x, pts[i].y);
-    ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
-    ['tl', 'tr', 'br', 'bl'].forEach(k => {
-      const p = P(grid.quad[k]);
-      ctx.beginPath(); ctx.arc(p.x, p.y, 9, 0, Math.PI * 2);
-      ctx.fillStyle = '#ef4444'; ctx.fill();
-      ctx.lineWidth = 2; ctx.strokeStyle = '#fff'; ctx.stroke();
-    });
+    const ctr = { x: a.cx * cv.width, y: a.cy * cv.height };
+    ctx.save();
+    ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(ctr.x - 16, ctr.y); ctx.lineTo(ctr.x + 16, ctr.y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(ctr.x, ctr.y - 16); ctx.lineTo(ctr.x, ctr.y + 16); ctx.stroke();
+    ctx.beginPath(); ctx.arc(ctr.x, ctr.y, 6, 0, Math.PI * 2); ctx.fillStyle = '#ef4444'; ctx.fill();
+    ctx.restore();
   }
   // 结果画布：拉正图 + 网格线 + 高亮
   function gridDrawResult() {
@@ -5024,7 +5042,6 @@ C25   2</pre>
       if (!g) return;
       grid.image = g.image;
       gridReset(true);
-      gridInitQuad();
       closeModal();
       renderGrid(GV);
     });
@@ -5040,7 +5057,7 @@ C25   2</pre>
     const v = GV;
     if (grid.busy) return;
     if (!grid.cols || !grid.rows) return toast('请先填写列数/行数，或点「自动检测网格」', 'error');
-    if (!grid.quad) return toast('请先对齐网格（拖四角）', 'error');
+    if (!grid.align) return toast('请先对齐网格（拖动红色十字到网格交点）', 'error');
     if (grid.engine === 'vision') {
       const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
       const ready = viaProxy || (state.settings.enableVision && state.settings.apiKey);
@@ -5066,7 +5083,7 @@ C25   2</pre>
   }
   async function gridRecognizeVision(img) {
     const cellPx = gridCellPx();
-    const warp = gridWarp(img, grid.quad, grid.cols, grid.rows, cellPx);
+    const warp = gridWarp(img, grid.align, grid.cols, grid.rows, cellPx);
     grid.warp = warp;
     const dataUrl = warp.toDataURL('image/png');
     const res = await callGridVisionAPI(dataUrl, grid.rows, grid.cols, state.settings.apiKey, state.settings.model, state.settings.visionBaseUrl);
@@ -5081,7 +5098,7 @@ C25   2</pre>
   }
   async function gridRecognizeTesseract(img) {
     const cellPx = gridCellPx();
-    const warp = gridWarp(img, grid.quad, grid.cols, grid.rows, cellPx);
+    const warp = gridWarp(img, grid.align, grid.cols, grid.rows, cellPx);
     grid.warp = warp;
     const worker = await gridGetWorker();
     grid.cells = [];
@@ -5117,40 +5134,37 @@ C25   2</pre>
   }
   function gridBindAlign() {
     const cv = $('#grid-align-canvas');
-    if (!cv || !grid.quad) return;
-    let dragKey = null;
-    const norm = (ev) => {
+    if (!cv || !grid.align) return;
+    let dragging = false;
+    const toCanvas = (ev) => {
       const rect = cv.getBoundingClientRect();
       const cx = ev.clientX !== undefined ? ev.clientX : (ev.touches && ev.touches[0] && ev.touches[0].clientX);
       const cy = ev.clientY !== undefined ? ev.clientY : (ev.touches && ev.touches[0] && ev.touches[0].clientY);
       return { x: (cx - rect.left) / rect.width * cv.width, y: (cy - rect.top) / rect.height * cv.height };
     };
-    const hit = (p) => {
-      const keys = ['tl', 'tr', 'br', 'bl'];
-      let best = null, bd = 22 * 22;
-      for (const k of keys) {
-        const q = grid.quad[k];
-        const dx = (q.x * cv.width) - p.x, dy = (q.y * cv.height) - p.y;
-        const d = dx * dx + dy * dy;
-        if (d < bd) { bd = d; best = k; }
-      }
-      return best;
-    };
-    const down = (ev) => { if (!grid.quad) return; const p = norm(ev); dragKey = hit(p); if (dragKey) ev.preventDefault(); };
+    const hitCenter = (p) => Math.hypot(p.x - grid.align.cx * cv.width, p.y - grid.align.cy * cv.height) < 24;
+    const down = (ev) => { if (!grid.align) return; const p = toCanvas(ev); if (hitCenter(p)) { dragging = true; ev.preventDefault(); } };
     const move = (ev) => {
-      if (!dragKey || !grid.quad) return;
-      ev.preventDefault();
-      const p = norm(ev);
-      grid.quad[dragKey] = { x: Math.min(1, Math.max(0, p.x / cv.width)), y: Math.min(1, Math.max(0, p.y / cv.height)) };
+      if (!dragging) { cv.style.cursor = hitCenter(toCanvas(ev)) ? 'grab' : 'default'; return; }
+      ev.preventDefault(); cv.style.cursor = 'grabbing';
+      const p = toCanvas(ev);
+      grid.align.cx = Math.min(1, Math.max(0, p.x / cv.width));
+      grid.align.cy = Math.min(1, Math.max(0, p.y / cv.height));
       gridDrawAlign();
     };
-    const up = () => { dragKey = null; };
-    cv.onmousedown = down;
-    cv.onmousemove = (e) => { if (!dragKey) { cv.style.cursor = hit(norm(e)) ? 'grab' : 'default'; } else { cv.style.cursor = 'grabbing'; } move(e); };
-    cv.onmouseup = up; cv.onmouseleave = up;
+    const up = () => { dragging = false; };
+    cv.onmousedown = down; cv.onmousemove = move; cv.onmouseup = up; cv.onmouseleave = up;
     cv.addEventListener('touchstart', (e) => down(e), { passive: false });
     cv.addEventListener('touchmove', (e) => move(e), { passive: false });
     cv.addEventListener('touchend', up);
+    cv.addEventListener('wheel', (e) => {
+      if (!grid.align) return;
+      e.preventDefault();
+      const f = e.deltaY < 0 ? 1.05 : 0.95;
+      grid.align.cell = Math.min(0.5, Math.max(0.002, grid.align.cell * f));
+      const ce = $('#grid-cell'); if (ce) ce.value = Math.round(grid.align.cell * grid.imgEl.width);
+      gridDrawAlign();
+    }, { passive: false });
   }
   function gridBindResult() {
     const cv = $('#grid-result-canvas');
@@ -5178,7 +5192,7 @@ C25   2</pre>
       <div class="flex flex-col gap-4">
         <section class="mk-card rounded-2xl shadow-soft p-5">
           <h2 class="text-xl font-bold mb-1">🧩 拼豆模式 · 网格图纸识别</h2>
-          <p class="text-sm text-mk-sub mb-4">上传或导入一张「每个格子都印有色号文字」的拼豆图纸。手动拖拽四角对齐网格 → 识别每个格子的色号 → 统计用量 → 点击色号高亮对应格子。</p>
+          <p class="text-sm text-mk-sub mb-4">上传或导入一张「每个格子都印有色号文字」的拼豆图纸。拖动红色十字对齐网格交点、调格子大小/旋转贴合 → 识别每个格子的色号 → 统计用量 → 点击色号高亮对应格子。</p>
           <div class="flex flex-wrap gap-2">
             <label class="px-3 py-1.5 rounded-lg bg-mk-rose text-white text-xs font-semibold cursor-pointer hover:opacity-90">📤 上传图纸<input id="grid-upload" type="file" accept="image/*" class="hidden"></label>
             <button id="grid-from-gallery" type="button" class="px-3 py-1.5 rounded-lg bg-mk-sky/70 text-mk-ink text-xs font-semibold hover:bg-mk-sky/90">📂 从图库导入</button>
@@ -5190,7 +5204,7 @@ C25   2</pre>
         ${hasImg ? `
         <section class="mk-card rounded-2xl shadow-soft p-5">
           <h3 class="font-bold mb-2">① 对齐网格</h3>
-          <p class="text-[11px] text-mk-sub mb-2">拖动图片四角的<span class="text-rose-500 font-semibold">红点</span>对齐图纸最外圈的网格线（可处理轻微倾斜/透视）。先填列数/行数，或点「自动检测」。</p>
+          <p class="text-[11px] text-mk-sub mb-2">把图上的<span class="text-rose-500 font-semibold">红色十字</span>中心点拖到图纸某个网格交叉点上，再调「格子大小」让网格贴合图纸格子（可旋转校正倾斜）。先填列数/行数，或点「自动检测」。</p>
           <div class="relative inline-block w-full">
             <canvas id="grid-align-canvas" class="w-full rounded-xl border border-mk-sand bg-white" style="max-height:min(58vh,520px); touch-action:none;"></canvas>
           </div>
@@ -5198,6 +5212,11 @@ C25   2</pre>
             <label class="text-xs text-mk-sub">列数 <input id="grid-cols" type="number" min="1" max="400" value="${grid.cols || ''}" class="w-16 px-2 py-1 rounded bg-mk-sand/30 border border-mk-sand text-sm"></label>
             <label class="text-xs text-mk-sub">行数 <input id="grid-rows" type="number" min="1" max="400" value="${grid.rows || ''}" class="w-16 px-2 py-1 rounded bg-mk-sand/30 border border-mk-sand text-sm"></label>
             <button id="grid-auto" type="button" class="px-3 py-1.5 rounded-lg bg-mk-lav/70 text-mk-ink text-xs font-semibold hover:bg-mk-lav/90">🎯 自动检测网格</button>
+          </div>
+          <div class="flex flex-wrap items-center gap-3 mt-3">
+            <label class="text-xs text-mk-sub">格子大小(px) <input id="grid-cell" type="number" min="2" max="4000" value="${grid.align ? Math.round(grid.align.cell * grid.imgEl.width) : ''}" class="w-20 px-2 py-1 rounded bg-mk-sand/30 border border-mk-sand text-sm"></label>
+            <label class="text-xs text-mk-sub">旋转(°) <input id="grid-rot" type="number" min="-45" max="45" step="0.5" value="${grid.align ? (grid.align.rot * 180 / Math.PI).toFixed(1) : 0}" class="w-20 px-2 py-1 rounded bg-mk-sand/30 border border-mk-sand text-sm"></label>
+            <span class="text-[11px] text-mk-sub">滚轮在图上可缩放格子</span>
           </div>
           <div class="flex flex-wrap items-center gap-3 mt-3">
             <span class="text-xs text-mk-sub">识别引擎：</span>
@@ -5236,7 +5255,7 @@ C25   2</pre>
       const file = e.target.files && e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
-      reader.onload = (ev) => { grid.image = ev.target.result; gridReset(true); gridInitQuad(); renderGrid(v); };
+      reader.onload = (ev) => { grid.image = ev.target.result; gridReset(true); renderGrid(v); };
       reader.readAsDataURL(file);
     };
     const fromGallery = $('#grid-from-gallery');
@@ -5246,16 +5265,26 @@ C25   2</pre>
 
     if (hasImg) {
       const ci = $('#grid-cols'), ri = $('#grid-rows');
-      if (ci) ci.oninput = () => { grid.cols = Math.max(0, parseInt(ci.value, 10) || 0); gridDrawAlign(); };
-      if (ri) ri.oninput = () => { grid.rows = Math.max(0, parseInt(ri.value, 10) || 0); gridDrawAlign(); };
+      if (ci) ci.oninput = () => { grid.cols = Math.max(0, parseInt(ci.value, 10) || 0); if (grid.align) grid.align.cols = grid.cols; gridDrawAlign(); };
+      if (ri) ri.oninput = () => { grid.rows = Math.max(0, parseInt(ri.value, 10) || 0); if (grid.align) grid.align.rows = grid.rows; gridDrawAlign(); };
       const autoBtn = $('#grid-auto');
       if (autoBtn) autoBtn.onclick = () => gridAutoDetect();
+      const cellEl = $('#grid-cell');
+      if (cellEl) cellEl.oninput = () => {
+        const v = parseInt(cellEl.value, 10);
+        if (grid.align && grid.imgEl && isFinite(v) && v > 0) { grid.align.cell = v / grid.imgEl.width; gridDrawAlign(); }
+      };
+      const rotEl = $('#grid-rot');
+      if (rotEl) rotEl.oninput = () => {
+        const d = parseFloat(rotEl.value);
+        if (grid.align && isFinite(d)) { grid.align.rot = d * Math.PI / 180; gridDrawAlign(); }
+      };
       const recBtn = $('#grid-recognize');
       if (recBtn) recBtn.onclick = () => gridRunRecognize();
       $$('input[name="grid-engine"]').forEach(r => r.onchange = () => { if (r.checked) grid.engine = r.value; });
       gridBindAlign();
       gridEnsureImage(() => {
-        if (!grid.quad) gridInitQuad();
+        if (!grid.align) gridInitAlign();
         gridDrawAlign();
         if (grid.cols === 0 && grid.rows === 0) gridAutoDetect();
       });
