@@ -3901,7 +3901,7 @@ C25   2</pre>
       const g = state.gallery.find(x => x.id === b.dataset.id);
       if (g) viewGallery(g);
     });
-    $$('.g-grid').forEach(b => b.onclick = () => { const g = state.gallery.find(x => x.id === b.dataset.id); if (g) { grid.image = g.image; gridReset(true); switchView('grid'); } });
+    $$('.g-grid').forEach(b => b.onclick = () => { const g = state.gallery.find(x => x.id === b.dataset.id); if (g) { grid.image = g.image; gridReset(true); grid.cropped = false; grid.cropRegion = null; switchView('grid'); } });
     $$('.g-legend').forEach(b => b.onclick = () => {
       const g = state.gallery.find(x => x.id === b.dataset.id);
       if (g) openLegendInRecognize(g);
@@ -4811,8 +4811,9 @@ C25   2</pre>
   function gridReset(keepImage) {
     const img = keepImage ? grid.image : null;
     const imgEl = keepImage ? grid.imgEl : null;
-    grid = { image: img, imgEl, cols: 0, rows: 0, align: null, cells: null,
-             engine: grid.engine, highlight: null, warp: null, worker: grid.worker, busy: false, cancel: false };
+    grid = { image: img, imgEl, cols: 0, rows: 0, align: null, zoom: 1, cells: null,
+             engine: grid.engine, highlight: null, warp: null, worker: grid.worker, busy: false, cancel: false,
+             cropped: false, cropRegion: null };
   }
   // 网格对齐模型：中心(cx,cy)归一化坐标 + 每格边长 cell(按图宽归一化) + 旋转 rot(弧度)
   // 格(r,c)中心(r:0..rows-1, c:0..cols-1)像素坐标
@@ -4830,8 +4831,14 @@ C25   2</pre>
              y: align.cy * ih + dx * cellPx * sin + dy * cellPx * cos };
   }
   function gridCellPx() {
-    const n = Math.max(1, grid.cols * grid.rows);
-    return Math.max(16, Math.min(48, Math.floor(Math.sqrt(12_000_000 / n))));
+    // 优先用对齐参数导出的实际格距（用户拖十字/输入的格子大小），保证 warp 采样与绘制一致
+    if (grid.align && grid.imgEl) {
+      const px = Math.round(grid.align.cell * grid.imgEl.width);
+      if (px >= 4) return Math.max(4, Math.min(120, px));
+    }
+    // 无 align 时 fallback：按总格数算一个合理默认值
+    const total = Math.max(1, grid.cols * grid.rows);
+    return Math.max(16, Math.min(48, Math.floor(Math.sqrt(12_000_000 / total))));
   }
   // 按对齐参数把网格区域拉正为 rows×cols 矩形画布（补偿旋转），cellPx=输出每格像素
   function gridWarp(img, align, cols, rows, cellPx) {
@@ -4954,6 +4961,9 @@ C25   2</pre>
     if (!cv || !grid.warp || !grid.cells) return;
     const w = grid.warp.width, h = grid.warp.height;
     cv.width = w; cv.height = h;
+    cv.style.aspectRatio = w + '/' + h;
+    cv.style.maxWidth = '100%';
+    cv.style.height = 'auto';
     const ctx = cv.getContext('2d');
     ctx.drawImage(grid.warp, 0, 0);
     const cw = w / grid.cols, ch = h / grid.rows;
@@ -5085,7 +5095,7 @@ C25   2</pre>
       const g = imgs[+b.dataset.i];
       if (!g) return;
       grid.image = g.image;
-      gridReset(true);
+      gridReset(true); grid.cropped = false; grid.cropRegion = null;
       closeModal();
       renderGrid(GV);
     });
@@ -5275,6 +5285,121 @@ C25   2</pre>
     cv.onclick = handler;
     cv.addEventListener('touchstart', (e) => { e.preventDefault(); handler(e); }, { passive: false });
   }
+  // ---- 剪裁模式：渲染剪裁画布 + 拖拽框选 ----
+  let gridCropDrag = null; // {x0,y0,x1,y1} 归一化拖拽状态
+  function gridRenderCrop() {
+    const cv = $('#grid-crop-canvas');
+    if (!cv || !grid.image) return;
+    const img = new Image();
+    img.onload = () => {
+      const Wpx = 1000;
+      const Hpx = Math.max(1, Math.round(img.height * (Wpx / img.width)));
+      cv.width = Wpx; cv.height = Hpx;
+      cv.style.aspectRatio = Wpx + '/' + Hpx;
+      const ctx = cv.getContext('2d');
+      ctx.drawImage(img, 0, 0, Wpx, Hpx);
+      // 默认选区：留 3% 边距
+      if (!grid.cropRegion) grid.cropRegion = { x: 0.03, y: 0.03, w: 0.94, h: 0.94 };
+      const r = grid.cropRegion;
+      // 半透明暗色蒙层
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      ctx.fillRect(0, 0, Wpx, Hpx);
+      // 选区亮显
+      ctx.drawImage(img,
+        r.x * img.width, r.y * img.height, r.w * img.width, r.h * img.height,
+        r.x * Wpx, r.y * Hpx, r.w * Wpx, r.h * Hpx
+      );
+      // 选区边框
+      ctx.strokeStyle = '#6366f1'; ctx.lineWidth = 2;
+      ctx.strokeRect(r.x * Wpx, r.y * Hpx, r.w * Wpx, r.h * Hpx);
+      // 拖拽中的临时框
+      if (gridCropDrag) {
+        const dx0 = Math.min(gridCropDrag.x0, gridCropDrag.x1) * Wpx;
+        const dy0 = Math.min(gridCropDrag.y0, gridCropDrag.y1) * Hpx;
+        const dw = Math.abs(gridCropDrag.x1 - gridCropDrag.x0) * Wpx;
+        const dh = Math.abs(gridCropDrag.y1 - gridCropDrag.y0) * Hpx;
+        ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 2; ctx.setLineDash([5, 3]);
+        ctx.strokeRect(dx0, dy0, dw, dh);
+        ctx.setLineDash([]);
+      }
+    };
+    img.src = grid.image;
+  }
+  function gridBindCropEvents(cv) {
+    if (!cv) return;
+    const getPos = (e) => {
+      const rect = cv.getBoundingClientRect();
+      const touch = e.touches ? e.touches[0] : e;
+      return { x: (touch.clientX - rect.left) / rect.width, y: (touch.clientY - rect.top) / rect.height };
+    };
+    const onDown = (e) => {
+      e.preventDefault();
+      const p = getPos(e);
+      gridCropDrag = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+    };
+    const onMove = (e) => {
+      if (!gridCropDrag) return;
+      e.preventDefault();
+      const p = getPos(e);
+      gridCropDrag.x1 = p.x; gridCropDrag.y1 = p.y;
+      gridRenderCrop();
+    };
+    const onUp = () => {
+      if (!gridCropDrag) return;
+      const x0 = Math.min(gridCropDrag.x0, gridCropDrag.x1), y0 = Math.min(gridCropDrag.y0, gridCropDrag.y1);
+      const x1 = Math.max(gridCropDrag.x0, gridCropDrag.x1), y1 = Math.max(gridCropDrag.y0, gridCropDrag.y1);
+      if (x1 - x0 > 0.02 && y1 - y0 > 0.02) {
+        grid.cropRegion = { x: Math.max(0, x0), y: Math.max(0, y0), w: Math.min(1 - x0, x1 - x0), h: Math.min(1 - y0, y1 - y0) };
+      }
+      gridCropDrag = null;
+      gridRenderCrop();
+    };
+    cv.addEventListener('mousedown', onDown);
+    cv.addEventListener('mousemove', onMove);
+    cv.addEventListener('mouseup', onUp);
+    cv.addEventListener('mouseleave', onUp);
+    cv.addEventListener('touchstart', onDown, { passive: false });
+    cv.addEventListener('touchmove', onMove, { passive: false });
+    cv.addEventListener('touchend', onUp);
+  }
+  function gridConfirmCrop(v) {
+    if (!grid.image || !grid.cropRegion) return;
+    const img = new Image();
+    img.onload = () => {
+      const r = grid.cropRegion;
+      const tmp = document.createElement('canvas');
+      tmp.width = Math.round(r.w * img.width);
+      tmp.height = Math.round(r.h * img.height);
+      const ctx = tmp.getContext('2d');
+      ctx.drawImage(img, r.x * img.width, r.y * img.height, r.w * img.width, r.h * img.height, 0, 0, tmp.width, tmp.height);
+      grid.image = tmp.toDataURL('image/png');
+      grid.cropped = true;
+      // 重新加载剪裁后的图片（重置 align）
+      const croppedImg = new Image();
+      croppedImg.onload = () => {
+        grid.imgEl = croppedImg;
+        gridInitAlign();
+        renderGrid(v);
+      };
+      croppedImg.src = grid.image;
+    };
+    img.src = grid.image;
+  }
+  function gridSkipCrop(v) {
+    grid.cropped = true;
+    grid.cropRegion = null;
+    if (!grid.imgEl && grid.image) {
+      const img = new Image();
+      img.onload = () => { grid.imgEl = img; gridInitAlign(); renderGrid(v); };
+      img.src = grid.image;
+    } else if (grid.imgEl) {
+      gridInitAlign();
+      renderGrid(v);
+    } else {
+      renderGrid(v);
+    }
+  }
+
   function renderGrid(v) {
     GV = v;
     const hasImg = !!grid.image;
@@ -5346,15 +5471,26 @@ C25   2</pre>
       const file = e.target.files && e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
-      reader.onload = (ev) => { grid.image = ev.target.result; gridReset(true); renderGrid(v); };
+      reader.onload = (ev) => { grid.image = ev.target.result; gridReset(true); grid.cropped = false; grid.cropRegion = null; renderGrid(v); };
       reader.readAsDataURL(file);
     };
     const fromGallery = $('#grid-from-gallery');
     if (fromGallery) fromGallery.onclick = () => gridOpenGalleryPicker();
     const clearImg = $('#grid-clear-img');
-    if (clearImg) clearImg.onclick = () => { gridReset(false); renderGrid(v); };
+    if (clearImg) clearImg.onclick = () => { gridReset(false); grid.cropped = false; grid.cropRegion = null; renderGrid(v); };
 
-    if (hasImg) {
+    // ---- 剪裁模式绑定 ----
+    if (hasImg && !grid.cropped) {
+      gridRenderCrop();
+      gridBindCropEvents($('#grid-crop-canvas'));
+      const cropOk = $('#grid-crop-ok');
+      if (cropOk) cropOk.onclick = () => gridConfirmCrop(v);
+      const cropSkip = $('#grid-crop-skip');
+      if (cropSkip) cropSkip.onclick = () => gridSkipCrop(v);
+    }
+
+    // ---- 对齐模式绑定（仅在已剪裁后）----
+    if (hasImg && grid.cropped) {
       const ci = $('#grid-cols'), ri = $('#grid-rows');
       if (ci) ci.oninput = () => { grid.cols = Math.max(0, parseInt(ci.value, 10) || 0); if (grid.align) grid.align.cols = grid.cols; gridDrawAlign(); };
       if (ri) ri.oninput = () => { grid.rows = Math.max(0, parseInt(ri.value, 10) || 0); if (grid.align) grid.align.rows = grid.rows; gridDrawAlign(); };
