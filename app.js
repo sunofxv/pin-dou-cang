@@ -3866,6 +3866,11 @@ C25   2</pre>
       const g = state.gallery.find(x => x.id === b.dataset.id);
       if (g) openLegendInRecognize(g);
     });
+    $$('.g-legend-preview').forEach(b => b.onclick = (e) => {
+      e.stopPropagation();
+      const g = state.gallery.find(x => x.id === b.dataset.id);
+      if (g) openGalleryLegendPreview(g);
+    });
     $$('.g-edit').forEach(b => b.onclick = (e) => {
       e.stopPropagation();
       galleryEditId = b.dataset.id;
@@ -3922,7 +3927,7 @@ C25   2</pre>
               <button class="g-del text-[11px] px-2.5 py-1.5 rounded-xl bg-rose-50 text-rose-400" data-id="${g.id}">删除</button>
             </div>
           </div>
-          ${g.legend && g.legend.items && g.legend.items.length ? `<div class="mt-1 flex items-center gap-1.5 text-[11px] text-violet-500"><span>🎨 图例 ${g.legend.items.length} 色</span><span class="text-mk-sub">· 共 ${g.legend.items.reduce((s, x) => s + (+x.count || 0), 0)} 颗</span></div>` : ''}
+          ${g.legend && g.legend.items && g.legend.items.length ? `<div class="g-legend-preview mt-1 flex items-center gap-1.5 text-[11px] text-violet-500 cursor-pointer hover:text-violet-600" data-id="${g.id}"><span>🎨 图例 ${g.legend.items.length} 色</span><span class="text-mk-sub">· 共 ${g.legend.items.reduce((s, x) => s + (+x.count || 0), 0)} 颗</span></div>` : ''}
         </div>
       </div>`;
     }
@@ -3957,6 +3962,31 @@ C25   2</pre>
     </div>`;
   }
   // 图库「识别图例」：把当前图片注入「图纸识别」页（自动定位图例），识别后可反填回图库
+  // 在弹窗中展示图库图纸已保存的图例清单
+  function openGalleryLegendPreview(g) {
+    if (!g || !g.legend || !g.legend.items || !g.legend.items.length) return toast('该图纸暂无图例信息', 'info');
+    const items = g.legend.items;
+    const total = items.reduce((s, x) => s + (+x.count || 0), 0);
+    const rows = items.map((it, i) => {
+      const hex = it.hex || '#e5e7eb';
+      const cn = it.colorNumber || '—';
+      const name = it.colorName || '—';
+      const cnt = +it.count || 0;
+      return `<div class="flex items-center gap-2 py-1.5 border-b border-mk-sand/40 ${i % 2 === 0 ? 'bg-white/40' : ''}">
+        <div class="w-5 h-5 rounded-md border border-mk-sand shrink-0" style="background:${hex}"></div>
+        <div class="w-14 text-xs font-mono font-semibold">${escapeHtml(cn)}</div>
+        <div class="flex-1 text-xs truncate">${escapeHtml(name)}</div>
+        <div class="w-12 text-xs text-right font-semibold">${cnt} 颗</div>
+      </div>`;
+    }).join('');
+    const body = `
+      <div class="text-xs text-mk-sub mb-2">保存于 ${fmtTime(g.legend.savedAt || g.legend.updatedAt || 0)} · 共 ${items.length} 色 / ${total} 颗</div>
+      <div class="max-h-[55vh] overflow-auto rounded-xl border border-mk-sand bg-white/60 px-2">
+        ${rows}
+      </div>`;
+    openModal('🎨 图例清单：' + g.name, body, { wide: true });
+  }
+
   function openLegendInRecognize(g) {
     if (!g || !g.image) return toast('该图纸没有图片，无法识别图例', 'warn');
     tempImage = g.image;

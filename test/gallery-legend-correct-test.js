@@ -106,10 +106,23 @@ function seed(image) {
     }, KEY);
     console.log('SAVED LEGEND=', JSON.stringify(saved));
 
-    const ok = afterClick.hasCanvas && afterClick.hasBack && afterClick.hasSave &&
-      afterParse.items === 3 && saved && saved.count === 3 && saved.first.colorNumber === 'A1';
+    // 返回图库，点击卡片上的图例标签，应弹出图例清单预览
+    await page.evaluate(() => { const b = document.querySelector('#rc-back-gallery'); if (b) b.click(); });
+    await sleep(600);
+    await page.evaluate(() => { const b = document.querySelector('.g-legend-preview'); if (b) b.click(); });
+    await sleep(400);
+    const preview = await page.evaluate(() => ({
+      modalVisible: !!document.querySelector('#modal-root .rounded-2xl'),
+      titleHasLegend: document.querySelector('#modal-root h3, #modal-root .modal-title')?.textContent.includes('图例清单') || false,
+      rows: document.querySelectorAll('#modal-root .font-mono').length
+    }));
+    console.log('PREVIEW=', JSON.stringify(preview));
 
-    console.log(ok ? '✅ GALLERY→RECOGNIZE→SAVE PASS' : '❌ GALLERY→RECOGNIZE→SAVE FAIL');
+    const ok = afterClick.hasCanvas && afterClick.hasBack && afterClick.hasSave &&
+      afterParse.items === 3 && saved && saved.count === 3 && saved.first.colorNumber === 'A1' &&
+      preview.modalVisible && preview.rows >= 3;
+
+    console.log(ok ? '✅ GALLERY→RECOGNIZE→SAVE→PREVIEW PASS' : '❌ GALLERY→RECOGNIZE→SAVE→PREVIEW FAIL');
     console.log('PAGEERRORS:', errors);
     console.log('RESULT_OK=' + (ok && errors.length === 0 ? '1' : '0'));
     process.exitCode = ok && errors.length === 0 ? 0 : 1;
