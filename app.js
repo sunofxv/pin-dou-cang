@@ -3860,6 +3860,7 @@ C25   2</pre>
       const g = state.gallery.find(x => x.id === b.dataset.id);
       if (g) viewGallery(g);
     });
+    $$('.g-grid').forEach(b => b.onclick = () => { const g = state.gallery.find(x => x.id === b.dataset.id); if (g) { grid.image = g.image; gridReset(true); gridInitQuad(); switchView('grid'); } });
     $$('.g-legend').forEach(b => b.onclick = () => {
       const g = state.gallery.find(x => x.id === b.dataset.id);
       if (g) openLegendInRecognize(g);
@@ -3914,6 +3915,7 @@ C25   2</pre>
             <span class="text-[11px] px-2 py-0.5 rounded-full ${made ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}">${made ? '✓ 已拼' : '○ 未拼'}</span>
             <div class="flex gap-1.5 flex-wrap justify-end">
               <button class="g-legend text-[11px] px-2.5 py-1.5 rounded-xl bg-violet-50 text-violet-500" data-id="${g.id}">🎨 识别图例</button>
+              <button class="g-grid text-[11px] px-2.5 py-1.5 rounded-xl bg-indigo-50 text-indigo-500" data-id="${g.id}">🧩 网格识别</button>
               <button class="g-edit text-[11px] px-2.5 py-1.5 rounded-xl bg-sky-50 text-sky-500" data-id="${g.id}">编辑</button>
               <button class="g-toggle text-[11px] px-2.5 py-1.5 rounded-xl ${made ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600'}" data-id="${g.id}">${made ? '标记未拼' : '标记已拼'}</button>
               <button class="g-del text-[11px] px-2.5 py-1.5 rounded-xl bg-rose-50 text-rose-400" data-id="${g.id}">删除</button>
@@ -4725,6 +4727,518 @@ C25   2</pre>
     // 近黑(max<45)保留黑；暗而不黑(max>=45)且最近非黑比黑更近 → 改取最近非黑豆，削减"黑色块偏多"
     if (bestD < blackD && mx >= 45) return best.colorNumber;
     return 'H7';
+  }
+
+  /* ===================== 拼豆模式：网格图纸识别 ===================== */
+  function gridInitQuad() {
+    grid.quad = { tl:{x:0.04,y:0.04}, tr:{x:0.96,y:0.04}, br:{x:0.96,y:0.96}, bl:{x:0.04,y:0.96} };
+  }
+  function gridReset(keepImage) {
+    const img = keepImage ? grid.image : null;
+    const imgEl = keepImage ? grid.imgEl : null;
+    grid = { image: img, imgEl, cols: 0, rows: 0, quad: null, cells: null,
+             engine: grid.engine, highlight: null, warp: null, worker: grid.worker, busy: false, cancel: false };
+  }
+  // 双线性四边形映射：u,v ∈ [0,1] → 归一化图像坐标
+  function gridQuadPoint(q, u, v) {
+    const tx = q.tl.x + (q.tr.x - q.tl.x) * u, ty = q.tl.y + (q.tr.y - q.tl.y) * u;
+    const bx = q.bl.x + (q.br.x - q.bl.x) * u, by = q.bl.y + (q.br.y - q.bl.y) * u;
+    return { x: tx + (bx - tx) * v, y: ty + (by - ty) * v };
+  }
+  function gridCellPx() {
+    const n = Math.max(1, grid.cols * grid.rows);
+    return Math.max(16, Math.min(48, Math.floor(Math.sqrt(12_000_000 / n))));
+  }
+  // 把 quad 区域透视（双线性）拉正为 rows×cols 矩形画布，cellPx = 每格像素
+  function gridWarp(img, quad, cols, rows, cellPx) {
+    const { w, h, ctx } = createAnalysisCanvas(img, 4000);
+    const src = ctx.getImageData(0, 0, w, h).data;
+    const W = Math.max(1, cols * cellPx), H = Math.max(1, rows * cellPx);
+    const out = document.createElement('canvas');
+    out.width = W; out.height = H;
+    const octx = out.getContext('2d');
+    const od = octx.createImageData(W, H);
+    for (let dy = 0; dy < H; dy++) {
+      const v = (dy + 0.5) / H;
+      for (let dx = 0; dx < W; dx++) {
+        const u = (dx + 0.5) / W;
+        const p = gridQuadPoint(quad, u, v);
+        const sx = p.x * w, sy = p.y * h;
+        let x0 = Math.floor(sx), y0 = Math.floor(sy);
+        let fx = sx - x0, fy = sy - y0;
+        let x1 = x0 + 1, y1 = y0 + 1;
+        if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
+        if (x1 > w - 1) x1 = w - 1; if (y1 > h - 1) y1 = h - 1;
+        const i00 = (y0 * w + x0) * 4, i10 = (y0 * w + x1) * 4,
+              i01 = (y1 * w + x0) * 4, i11 = (y1 * w + x1) * 4;
+        const oi = (dy * W + dx) * 4;
+        for (let c = 0; c < 3; c++) {
+          const a = src[i00 + c], b = src[i10 + c], d = src[i01 + c], e = src[i11 + c];
+          od.data[oi + c] = (a * (1 - fx) + b * fx) * (1 - fy) + (d * (1 - fx) + e * fx) * fy;
+        }
+        od.data[oi + 3] = 255;
+      }
+    }
+    octx.putImageData(od, 0, 0);
+    return out;
+  }
+  function gridSanitizeCode(s) {
+    if (!s) return '';
+    return String(s).toUpperCase().replace(/[\s\u3000]+/g, '').replace(/[^A-Z0-9-]/g, '').trim();
+  }
+  function gridLoadTesseract() {
+    return new Promise((resolve, reject) => {
+      if (window.Tesseract) return resolve();
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error('Tesseract 加载失败（请检查网络是否可访问 CDN）'));
+      document.head.appendChild(s);
+    });
+  }
+  async function gridGetWorker() {
+    if (grid.worker) return grid.worker;
+    await gridLoadTesseract();
+    const worker = await Tesseract.createWorker('eng', 1, { logger: () => {} });
+    await worker.setParameters({ tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-' });
+    grid.worker = worker;
+    return worker;
+  }
+  function gridAutoDetect() {
+    if (!grid.imgEl) return toast('请先上传图片', 'error');
+    const det = detectGridLines(grid.imgEl, { x: 0, y: 0, w: 1, h: 1 });
+    if (!det || !det.cols || !det.rows) return toast('未能自动检测网格，请手动填写列数/行数', 'warn');
+    grid.cols = det.cols; grid.rows = det.rows;
+    const f = det.frame, aw = det.aw, ah = det.ah;
+    grid.quad = {
+      tl: { x: f.gx0 / aw, y: f.gy0 / ah }, tr: { x: f.gx1 / aw, y: f.gy0 / ah },
+      br: { x: f.gx1 / aw, y: f.gy1 / ah }, bl: { x: f.gx0 / aw, y: f.gy1 / ah }
+    };
+    const ci = $('#grid-cols'), ri = $('#grid-rows');
+    if (ci) ci.value = det.cols;
+    if (ri) ri.value = det.rows;
+    gridDrawAlign();
+    toast(`已检测 ${det.cols} 列 × ${det.rows} 行，可拖四角微调`, 'success');
+  }
+  // 对齐画布：原图 + 网格预览 + 四角手柄
+  function gridDrawAlign() {
+    const cv = $('#grid-align-canvas');
+    if (!cv || !grid.imgEl) return;
+    const img = grid.imgEl;
+    const Wpx = 1000;
+    const Hpx = Math.max(1, Math.round(img.height * (Wpx / img.width)));
+    cv.width = Wpx; cv.height = Hpx;
+    const ctx = cv.getContext('2d');
+    ctx.drawImage(img, 0, 0, Wpx, Hpx);
+    if (!grid.quad) return;
+    const P = (p) => ({ x: p.x * Wpx, y: p.y * Hpx });
+    if (grid.cols > 1 && grid.rows > 1) {
+      ctx.strokeStyle = 'rgba(99,102,241,0.45)'; ctx.lineWidth = 1;
+      for (let c = 0; c <= grid.cols; c++) {
+        const a = P(gridQuadPoint(grid.quad, c / grid.cols, 0)), b = P(gridQuadPoint(grid.quad, c / grid.cols, 1));
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      }
+      for (let r = 0; r <= grid.rows; r++) {
+        const a = P(gridQuadPoint(grid.quad, 0, r / grid.rows)), b = P(gridQuadPoint(grid.quad, 1, r / grid.rows));
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      }
+    }
+    ctx.strokeStyle = '#6366f1'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+    const pts = [P(grid.quad.tl), P(grid.quad.tr), P(grid.quad.br), P(grid.quad.bl)];
+    ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < 4; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
+    ['tl', 'tr', 'br', 'bl'].forEach(k => {
+      const p = P(grid.quad[k]);
+      ctx.beginPath(); ctx.arc(p.x, p.y, 9, 0, Math.PI * 2);
+      ctx.fillStyle = '#ef4444'; ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = '#fff'; ctx.stroke();
+    });
+  }
+  // 结果画布：拉正图 + 网格线 + 高亮
+  function gridDrawResult() {
+    const cv = $('#grid-result-canvas');
+    if (!cv || !grid.warp || !grid.cells) return;
+    const w = grid.warp.width, h = grid.warp.height;
+    cv.width = w; cv.height = h;
+    const ctx = cv.getContext('2d');
+    ctx.drawImage(grid.warp, 0, 0);
+    const cw = w / grid.cols, ch = h / grid.rows;
+    ctx.strokeStyle = 'rgba(0,0,0,0.12)'; ctx.lineWidth = 1;
+    for (let c = 0; c <= grid.cols; c++) { ctx.beginPath(); ctx.moveTo(c * cw, 0); ctx.lineTo(c * cw, h); ctx.stroke(); }
+    for (let r = 0; r <= grid.rows; r++) { ctx.beginPath(); ctx.moveTo(0, r * ch); ctx.lineTo(w, r * ch); ctx.stroke(); }
+    if (grid.highlight) {
+      ctx.fillStyle = 'rgba(255,255,255,0.6)';
+      ctx.fillRect(0, 0, w, h);
+      for (let r = 0; r < grid.rows; r++) {
+        for (let c = 0; c < grid.cols; c++) {
+          if (grid.cells[r][c] && grid.cells[r][c].code === grid.highlight) {
+            const x = c * cw, y = r * ch;
+            ctx.drawImage(grid.warp, x, y, cw, ch, x, y, cw, ch);
+            const bead = beadByCode(grid.highlight);
+            ctx.strokeStyle = bead ? bead.hex : '#ef4444';
+            ctx.lineWidth = Math.max(2, cw * 0.06);
+            ctx.strokeRect(x + 1, y + 1, cw - 2, ch - 2);
+          }
+        }
+      }
+    }
+  }
+  function gridCodeCounts() {
+    const m = new Map();
+    if (!grid.cells) return m;
+    for (let r = 0; r < grid.rows; r++)
+      for (let c = 0; c < grid.cols; c++) {
+        const code = grid.cells[r][c] && grid.cells[r][c].code;
+        if (code) m.set(code, (m.get(code) || 0) + 1);
+      }
+    return m;
+  }
+  function gridRenderStats() {
+    const el = $('#grid-stats');
+    if (!el) return;
+    const counts = gridCodeCounts();
+    const arr = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    el.innerHTML = arr.length ? arr.map(([code, n]) => {
+      const bead = beadByCode(code);
+      const sw = bead ? bead.hex : '#cbd5e1';
+      const active = grid.highlight === code;
+      return `<button class="grid-stat-chip relative flex flex-col items-center p-2 rounded-xl border ${active ? 'ring-2 ring-mk-rose border-mk-rose' : 'border-mk-sand bg-white/70'} hover:bg-white transition" data-code="${escapeHtml(code)}">
+        <span class="w-7 h-7 rounded-full swatch mb-1" style="background:${sw}"></span>
+        <span class="text-xs font-bold">${escapeHtml(code)}</span>
+        <span class="text-[10px] text-mk-sub">${n} 格</span>
+        ${bead ? '' : '<span class="absolute top-1 right-1 text-[9px] px-1 rounded-full bg-amber-100 text-amber-600">缺</span>'}
+      </button>`;
+    }).join('') : '<p class="text-xs text-mk-sub col-span-full">没有识别到任何色号，请重新识别或手动点击格子填写。</p>';
+    $$('#grid-stats .grid-stat-chip').forEach(b => b.onclick = () => {
+      const code = b.dataset.code;
+      grid.highlight = (grid.highlight === code) ? null : code;
+      gridDrawResult();
+      gridRenderStats();
+    });
+    gridRenderActions(counts);
+  }
+  function gridRenderActions(counts) {
+    const el = $('#grid-actions');
+    if (!el) return;
+    let matched = 0, missing = 0, total = 0;
+    counts.forEach((n, code) => { total += n; if (beadByCode(code)) matched += n; else missing += n; });
+    el.innerHTML = `
+      <div class="text-xs text-mk-sub w-full">共 <b>${counts.size}</b> 种色号 · <b>${total}</b> 格 · 库存匹配 <b class="text-emerald-600">${matched}</b> · <span class="text-amber-600">缺货/未录入 ${missing}</span></div>
+      <button id="grid-save" type="button" class="px-4 py-2 rounded-xl bg-mk-lav text-mk-ink text-sm font-semibold hover:bg-mk-lav/80">💾 存为配方</button>
+      <button id="grid-deduct" type="button" class="px-4 py-2 rounded-xl bg-mk-rose text-white text-sm font-semibold hover:opacity-90">➖ 扣减库存</button>`;
+    $('#grid-save').onclick = () => {
+      const items = [];
+      counts.forEach((n, code) => {
+        const bead = beadByCode(code);
+        if (bead) items.push({ colorNumber: bead.colorNumber, colorName: bead.colorName, hex: bead.hex, qty: n });
+      });
+      if (!items.length) return toast('没有可保存的已匹配色号', 'warn');
+      const def = '网格图纸 ' + fmtTime(Date.now());
+      const name = (window.prompt('配方名称', def) || '').trim() || def;
+      state.recipes.unshift({ id: uid('rc'), name, createdAt: Date.now(), items });
+      save();
+      toast('已保存到配方库', 'success');
+      switchView('recipes');
+    };
+    $('#grid-deduct').onclick = () => {
+      let ok = 0, skip = 0;
+      counts.forEach((n, code) => {
+        const b = beadByCode(code);
+        if (!b) { skip++; return; }
+        b.stock = Math.max(0, b.stock - n);
+        addLog('图纸消耗', b, -n, '网格图纸识别扣减');
+        ok++;
+      });
+      save();
+      switchView('dashboard');
+      toast(`已扣减 ${ok} 种颜色${skip ? `，跳过 ${skip} 种未匹配` : ''}`, 'success');
+    };
+  }
+  function gridOpenCellEditor(r, c) {
+    const cell = grid.cells[r][c];
+    const body = `<div class="space-y-3">
+      <div class="text-sm text-mk-sub">第 ${r + 1} 行 · 第 ${c + 1} 列</div>
+      <input id="cell-code" type="text" value="${escapeHtml(cell.code)}" placeholder="输入色号，如 B12 / W3" class="w-full px-3 py-2 rounded-xl bg-mk-sand/30 border border-mk-sand text-sm font-semibold uppercase">
+      <div id="cell-match" class="text-xs min-h-[1rem]"></div>
+    </div>`;
+    openModal('编辑格子色号', body, {}, () => {});
+    const input = $('#cell-code');
+    const match = $('#cell-match');
+    const refresh = () => {
+      const code = gridSanitizeCode(input.value);
+      const bead = code ? beadByCode(code) : null;
+      match.innerHTML = bead
+        ? `<span class="inline-block w-4 h-4 rounded-full swatch align-middle mr-1" style="background:${bead.hex}"></span> 匹配库存：${escapeHtml(bead.colorName || bead.colorNumber)}`
+        : (code ? '<span class="text-amber-600">库存中无此色号</span>' : '');
+    };
+    input.oninput = refresh; refresh();
+    setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="closeModal()">取消</button>
+      <button id="cell-ok" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold">保存</button>`);
+    $('#cell-ok').onclick = () => {
+      cell.code = gridSanitizeCode(input.value);
+      cell.src = 'manual';
+      closeModal();
+      gridDrawResult(); gridRenderStats();
+    };
+  }
+  function gridOpenGalleryPicker() {
+    const imgs = state.gallery.filter(g => g.image);
+    const body = imgs.length
+      ? `<div class="grid grid-cols-3 gap-2">${imgs.map((g, i) => `<button class="gpick rounded-xl overflow-hidden border border-mk-sand hover:ring-2 hover:ring-mk-rose" data-i="${i}"><img src="${g.image}" class="w-full aspect-square object-cover"><div class="text-[10px] px-1 py-0.5 truncate">${escapeHtml(g.name)}</div></button>`).join('')}</div>`
+      : '<p class="text-sm text-mk-sub">图库还没有带图的图纸，先去「图库」上传吧。</p>';
+    openModal('从图库导入图纸', body, { wide: true });
+    $$('.gpick').forEach(b => b.onclick = () => {
+      const g = imgs[+b.dataset.i];
+      if (!g) return;
+      grid.image = g.image;
+      gridReset(true);
+      gridInitQuad();
+      closeModal();
+      renderGrid(GV);
+    });
+  }
+  function gridEnsureImage(cb) {
+    if (grid.imgEl && grid.imgEl.src === grid.image) { cb(grid.imgEl); return; }
+    const img = new Image();
+    img.onload = () => { grid.imgEl = img; cb(img); };
+    img.onerror = () => toast('图片加载失败', 'error');
+    img.src = grid.image;
+  }
+  async function gridRunRecognize() {
+    const v = GV;
+    if (grid.busy) return;
+    if (!grid.cols || !grid.rows) return toast('请先填写列数/行数，或点「自动检测网格」', 'error');
+    if (!grid.quad) return toast('请先对齐网格（拖四角）', 'error');
+    if (grid.engine === 'vision') {
+      const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
+      const ready = viaProxy || (state.settings.enableVision && state.settings.apiKey);
+      if (!ready) return toast('当前无法用云端视觉：请在「设置 → 云端视觉AI」启用（默认走内置代理）或先填 Key', 'warn', 4000);
+    }
+    grid.busy = true; grid.cancel = false;
+    renderGrid(v);
+    try {
+      const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('图片加载失败')); i.src = grid.image; });
+      grid.imgEl = img;
+      if (grid.engine === 'tesseract') await gridRecognizeTesseract(img);
+      else await gridRecognizeVision(img);
+      const n = gridCodeCounts();
+      grid.busy = false;
+      renderGrid(v);
+      toast(`识别完成：共 ${n.size} 种色号、${[...n.values()].reduce((a, b) => a + b, 0)} 个有码格子`, 'success');
+    } catch (e) {
+      console.error(e);
+      grid.busy = false;
+      renderGrid(v);
+      toast('识别失败：' + (e && e.message ? e.message : e), 'error');
+    }
+  }
+  async function gridRecognizeVision(img) {
+    const cellPx = gridCellPx();
+    const warp = gridWarp(img, grid.quad, grid.cols, grid.rows, cellPx);
+    grid.warp = warp;
+    const dataUrl = warp.toDataURL('image/png');
+    const res = await callGridVisionAPI(dataUrl, grid.rows, grid.cols, state.settings.apiKey, state.settings.model, state.settings.visionBaseUrl);
+    const g = res.grid || [];
+    grid.cells = [];
+    for (let r = 0; r < grid.rows; r++) {
+      const src = g[r] || [];
+      const row = [];
+      for (let c = 0; c < grid.cols; c++) row.push({ code: gridSanitizeCode(src[c]), src: 'vision', conf: 0 });
+      grid.cells.push(row);
+    }
+  }
+  async function gridRecognizeTesseract(img) {
+    const cellPx = gridCellPx();
+    const warp = gridWarp(img, grid.quad, grid.cols, grid.rows, cellPx);
+    grid.warp = warp;
+    const worker = await gridGetWorker();
+    grid.cells = [];
+    for (let r = 0; r < grid.rows; r++) {
+      const row = [];
+      for (let c = 0; c < grid.cols; c++) row.push({ code: '', src: '', conf: 0 });
+      grid.cells.push(row);
+    }
+    const total = grid.rows * grid.cols;
+    let done = 0;
+    const m = Math.round(cellPx * 0.12);
+    for (let r = 0; r < grid.rows; r++) {
+      for (let c = 0; c < grid.cols; c++) {
+        if (grid.cancel) throw new Error('已取消');
+        const cw = cellPx - 2 * m, ch = cellPx - 2 * m;
+        const tmp = document.createElement('canvas');
+        tmp.width = cw * 2; tmp.height = ch * 2;
+        const tctx = tmp.getContext('2d');
+        tctx.fillStyle = '#fff'; tctx.fillRect(0, 0, tmp.width, tmp.height);
+        tctx.imageSmoothingEnabled = true;
+        tctx.drawImage(warp, c * cellPx + m, r * cellPx + m, cw, ch, 0, 0, cw * 2, ch * 2);
+        const { data } = await worker.recognize(tmp);
+        grid.cells[r][c] = { code: gridSanitizeCode(data.text), src: 'ocr', conf: data.confidence || 0 };
+        done++;
+        if (done % 4 === 0 || done === total) {
+          const pct = Math.round(done / total * 100);
+          const bar = $('#grid-progress-bar'), txt = $('#grid-progress-text');
+          if (bar) bar.style.width = pct + '%';
+          if (txt) txt.textContent = `已识别 ${done}/${total}`;
+        }
+      }
+    }
+  }
+  function gridBindAlign() {
+    const cv = $('#grid-align-canvas');
+    if (!cv || !grid.quad) return;
+    let dragKey = null;
+    const norm = (ev) => {
+      const rect = cv.getBoundingClientRect();
+      const cx = ev.clientX !== undefined ? ev.clientX : (ev.touches && ev.touches[0] && ev.touches[0].clientX);
+      const cy = ev.clientY !== undefined ? ev.clientY : (ev.touches && ev.touches[0] && ev.touches[0].clientY);
+      return { x: (cx - rect.left) / rect.width * cv.width, y: (cy - rect.top) / rect.height * cv.height };
+    };
+    const hit = (p) => {
+      const keys = ['tl', 'tr', 'br', 'bl'];
+      let best = null, bd = 22 * 22;
+      for (const k of keys) {
+        const q = grid.quad[k];
+        const dx = (q.x * cv.width) - p.x, dy = (q.y * cv.height) - p.y;
+        const d = dx * dx + dy * dy;
+        if (d < bd) { bd = d; best = k; }
+      }
+      return best;
+    };
+    const down = (ev) => { if (!grid.quad) return; const p = norm(ev); dragKey = hit(p); if (dragKey) ev.preventDefault(); };
+    const move = (ev) => {
+      if (!dragKey || !grid.quad) return;
+      ev.preventDefault();
+      const p = norm(ev);
+      grid.quad[dragKey] = { x: Math.min(1, Math.max(0, p.x / cv.width)), y: Math.min(1, Math.max(0, p.y / cv.height)) };
+      gridDrawAlign();
+    };
+    const up = () => { dragKey = null; };
+    cv.onmousedown = down;
+    cv.onmousemove = (e) => { if (!dragKey) { cv.style.cursor = hit(norm(e)) ? 'grab' : 'default'; } else { cv.style.cursor = 'grabbing'; } move(e); };
+    cv.onmouseup = up; cv.onmouseleave = up;
+    cv.addEventListener('touchstart', (e) => down(e), { passive: false });
+    cv.addEventListener('touchmove', (e) => move(e), { passive: false });
+    cv.addEventListener('touchend', up);
+  }
+  function gridBindResult() {
+    const cv = $('#grid-result-canvas');
+    if (!cv || !grid.warp) return;
+    const handler = (ev) => {
+      const rect = cv.getBoundingClientRect();
+      const cx = ev.clientX !== undefined ? ev.clientX : (ev.changedTouches && ev.changedTouches[0] && ev.changedTouches[0].clientX);
+      const cy = ev.clientY !== undefined ? ev.clientY : (ev.changedTouches && ev.changedTouches[0] && ev.changedTouches[0].clientY);
+      if (cx == null || cy == null) return;
+      const x = (cx - rect.left) / rect.width * cv.width;
+      const y = (cy - rect.top) / rect.height * cv.height;
+      const cw = cv.width / grid.cols, ch = cv.height / grid.rows;
+      const c = Math.min(grid.cols - 1, Math.max(0, Math.floor(x / cw)));
+      const r = Math.min(grid.rows - 1, Math.max(0, Math.floor(y / ch)));
+      gridOpenCellEditor(r, c);
+    };
+    cv.onclick = handler;
+    cv.addEventListener('touchstart', (e) => { e.preventDefault(); handler(e); }, { passive: false });
+  }
+  function renderGrid(v) {
+    GV = v;
+    const hasImg = !!grid.image;
+    const hasCells = !!(grid.cells && grid.rows && grid.cols);
+    v.innerHTML = `
+      <div class="flex flex-col gap-4">
+        <section class="mk-card rounded-2xl shadow-soft p-5">
+          <h2 class="text-xl font-bold mb-1">🧩 拼豆模式 · 网格图纸识别</h2>
+          <p class="text-sm text-mk-sub mb-4">上传或导入一张「每个格子都印有色号文字」的拼豆图纸。手动拖拽四角对齐网格 → 识别每个格子的色号 → 统计用量 → 点击色号高亮对应格子。</p>
+          <div class="flex flex-wrap gap-2">
+            <label class="px-3 py-1.5 rounded-lg bg-mk-rose text-white text-xs font-semibold cursor-pointer hover:opacity-90">📤 上传图纸<input id="grid-upload" type="file" accept="image/*" class="hidden"></label>
+            <button id="grid-from-gallery" type="button" class="px-3 py-1.5 rounded-lg bg-mk-sky/70 text-mk-ink text-xs font-semibold hover:bg-mk-sky/90">📂 从图库导入</button>
+            ${hasImg ? `<button id="grid-clear-img" type="button" class="px-3 py-1.5 rounded-lg bg-white border border-mk-sand text-mk-sub text-xs hover:bg-mk-sand/30">↺ 换图</button>` : ''}
+          </div>
+          ${!hasImg ? `<div class="mt-4 text-sm text-mk-sub">还没有图纸。点「上传图纸」选择本地图片，或「从图库导入」已保存的图纸。</div>` : ''}
+        </section>
+
+        ${hasImg ? `
+        <section class="mk-card rounded-2xl shadow-soft p-5">
+          <h3 class="font-bold mb-2">① 对齐网格</h3>
+          <p class="text-[11px] text-mk-sub mb-2">拖动图片四角的<span class="text-rose-500 font-semibold">红点</span>对齐图纸最外圈的网格线（可处理轻微倾斜/透视）。先填列数/行数，或点「自动检测」。</p>
+          <div class="relative inline-block w-full">
+            <canvas id="grid-align-canvas" class="w-full rounded-xl border border-mk-sand bg-white" style="max-height:min(58vh,520px); touch-action:none;"></canvas>
+          </div>
+          <div class="flex flex-wrap items-center gap-3 mt-3">
+            <label class="text-xs text-mk-sub">列数 <input id="grid-cols" type="number" min="1" max="400" value="${grid.cols || ''}" class="w-16 px-2 py-1 rounded bg-mk-sand/30 border border-mk-sand text-sm"></label>
+            <label class="text-xs text-mk-sub">行数 <input id="grid-rows" type="number" min="1" max="400" value="${grid.rows || ''}" class="w-16 px-2 py-1 rounded bg-mk-sand/30 border border-mk-sand text-sm"></label>
+            <button id="grid-auto" type="button" class="px-3 py-1.5 rounded-lg bg-mk-lav/70 text-mk-ink text-xs font-semibold hover:bg-mk-lav/90">🎯 自动检测网格</button>
+          </div>
+          <div class="flex flex-wrap items-center gap-3 mt-3">
+            <span class="text-xs text-mk-sub">识别引擎：</span>
+            <label class="text-xs flex items-center gap-1"><input type="radio" name="grid-engine" value="vision" ${grid.engine === 'vision' ? 'checked' : ''}> 云端视觉（整图，快）</label>
+            <label class="text-xs flex items-center gap-1"><input type="radio" name="grid-engine" value="tesseract" ${grid.engine === 'tesseract' ? 'checked' : ''}> 本地OCR（密集网格更准）</label>
+            <button id="grid-recognize" type="button" class="ml-auto px-4 py-2 rounded-xl bg-gradient-to-r from-violet-400 to-sky-400 text-white text-sm font-semibold hover:opacity-90 ${grid.busy ? 'opacity-60 cursor-wait' : ''}" ${grid.busy ? 'disabled' : ''}>${grid.busy ? '⏳ 识别中…' : '🔍 识别色号'}</button>
+          </div>
+          <div id="grid-progress" class="mt-2 ${grid.busy ? '' : 'hidden'}">
+            <div class="h-2 rounded-full bg-mk-sand overflow-hidden"><div id="grid-progress-bar" class="h-full bg-mk-rose" style="width:0%"></div></div>
+            <div id="grid-progress-text" class="text-[11px] text-mk-sub mt-1"></div>
+          </div>
+        </section>` : ''}
+
+        ${hasCells ? `
+        <section class="mk-card rounded-2xl shadow-soft p-5">
+          <h3 class="font-bold mb-2">② 识别结果（${grid.rows} 行 × ${grid.cols} 列）</h3>
+          <div class="relative inline-block w-full">
+            <canvas id="grid-result-canvas" class="w-full rounded-xl border border-mk-sand bg-white" style="max-height:min(72vh,680px); touch-action:none;"></canvas>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 mt-2">
+            <span class="text-[11px] text-mk-sub">点击上方格子可改色号；点击下方色号可高亮对应格子。</span>
+            <button id="grid-clear-hl" type="button" class="px-3 py-1.5 rounded-lg bg-white border border-mk-sand text-mk-sub text-xs hover:bg-mk-sand/30">清除高亮</button>
+            <button id="grid-realign" type="button" class="px-3 py-1.5 rounded-lg bg-white border border-mk-sand text-mk-sub text-xs hover:bg-mk-sand/30">重新对齐</button>
+          </div>
+        </section>
+
+        <section class="mk-card rounded-2xl shadow-soft p-5">
+          <h3 class="font-bold mb-2">③ 色号统计（点击高亮）</h3>
+          <div id="grid-stats" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2"></div>
+          <div id="grid-actions" class="flex flex-wrap gap-2 mt-4"></div>
+        </section>` : ''}
+      </div>`;
+
+    const upload = $('#grid-upload');
+    if (upload) upload.onchange = (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => { grid.image = ev.target.result; gridReset(true); gridInitQuad(); renderGrid(v); };
+      reader.readAsDataURL(file);
+    };
+    const fromGallery = $('#grid-from-gallery');
+    if (fromGallery) fromGallery.onclick = () => gridOpenGalleryPicker();
+    const clearImg = $('#grid-clear-img');
+    if (clearImg) clearImg.onclick = () => { gridReset(false); renderGrid(v); };
+
+    if (hasImg) {
+      const ci = $('#grid-cols'), ri = $('#grid-rows');
+      if (ci) ci.oninput = () => { grid.cols = Math.max(0, parseInt(ci.value, 10) || 0); gridDrawAlign(); };
+      if (ri) ri.oninput = () => { grid.rows = Math.max(0, parseInt(ri.value, 10) || 0); gridDrawAlign(); };
+      const autoBtn = $('#grid-auto');
+      if (autoBtn) autoBtn.onclick = () => gridAutoDetect();
+      const recBtn = $('#grid-recognize');
+      if (recBtn) recBtn.onclick = () => gridRunRecognize();
+      $$('input[name="grid-engine"]').forEach(r => r.onchange = () => { if (r.checked) grid.engine = r.value; });
+      gridBindAlign();
+      gridEnsureImage(() => {
+        if (!grid.quad) gridInitQuad();
+        gridDrawAlign();
+        if (grid.cols === 0 && grid.rows === 0) gridAutoDetect();
+      });
+    }
+
+    if (hasCells) {
+      gridDrawResult();
+      gridRenderStats();
+      const clearHl = $('#grid-clear-hl');
+      if (clearHl) clearHl.onclick = () => { grid.highlight = null; gridDrawResult(); gridRenderStats(); };
+      const realign = $('#grid-realign');
+      if (realign) realign.onclick = () => { grid.cells = null; grid.highlight = null; grid.warp = null; renderGrid(v); };
+      gridBindResult();
+    }
   }
 
   function renderPattern(v) {
