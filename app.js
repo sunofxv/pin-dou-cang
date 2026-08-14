@@ -1354,6 +1354,8 @@
       const isFlatGray = max - min < 20 && max > 80 && max < 220;
       if ((isNearWhite || isNearBlack) && !code) continue;
       // count 为 0 且颜色是浅色/灰色背景、没有有效色号 → 大概率是表头/分隔行/网格
+      const countRaw = Number(c.count);
+      const count = (c.count && countRaw > 0) ? countRaw : 0;
       if (count === 0 && !code && (isNearWhite || isFlatGray)) continue;
       let colorNumber = '', colorName = '';
       if (code) {
@@ -1365,7 +1367,6 @@
         colorNumber = m.colorNumber || '';
         colorName = m.colorName || '';
       }
-      const count = (c.count && Number(c.count) > 0) ? Number(c.count) : 0;
       out.push({ r, g, b, hex: rgbToHex(r, g, b), colorNumber, colorName, count });
     }
     out.estimatedCols = estimatedCols || out.length;
