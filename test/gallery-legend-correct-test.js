@@ -68,6 +68,10 @@ function seed() {
     const hasBad = await page.$$eval('#gl-list > div', divs => divs.some(d => d.className.includes('rose')));
     console.log(hasBad ? '✅ 不存在色号标红' : '❌ 未标红');
 
+    // 手动框选入口应存在
+    const hasReselect = await page.evaluate(() => !!document.querySelector('#gl-reselect'));
+    console.log(hasReselect ? '✅ 手动框选入口存在' : '❌ 缺少手动框选入口');
+
     // 点击「合并重复色号」
     await page.evaluate(() => document.querySelector('#gl-merge').click());
     await sleep(300);
@@ -91,7 +95,7 @@ function seed() {
     }, KEY);
     console.log('afterRestock=', JSON.stringify(afterRestock));
 
-    const ok = errors.length === 0 && opened && rowCount === 4 && hasBad &&
+    const ok = errors.length === 0 && opened && rowCount === 4 && hasBad && hasReselect &&
       rowCountAfterMerge === 3 && afterRestock.count === 1;
     console.log(ok ? '✅ GALLERY LEGEND CORRECT PASS' : '❌ GALLERY LEGEND CORRECT FAIL');
     console.log('PAGEERRORS:', errors);

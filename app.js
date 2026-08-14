@@ -752,7 +752,7 @@
 3. code 只取「色块内部印的色号短码」。绝对不要把色块【下方】的数量数字当成 code。看不清或没印字就填空字符串 ""，不要猜测或编造。尤其不要把无意义的英文单词（如 "no"、"yes"、"all"）填到 code 里。
 4. count 取「色块正下方印的数量数字」（整数，如 12）；若下方没有数字就填 0。
 5. 不要合并相近颜色——只要肉眼可区分的不同色块，就分别列出（含深浅不同的同色系）。
-6. 图片中可能还混有图纸网格、行号、水印等无关内容，请忽略；只识别彩色圆角矩形色块。
+6. 图片中可能还混有图纸网格、行号、水印、表头文字（如 "色号 名称 数量"）等无关内容，请全部忽略；只识别彩色圆角矩形色块。
 7. 每个色块只输出一条记录，不要重复、不要遗漏。如果图例中有 16 个色块，就必须返回 16 条；有 20 个就返回 20 条。
 8. 只返回一个 JSON，不要任何额外文字或 Markdown。
 
@@ -934,7 +934,7 @@
     return c.toDataURL('image/jpeg', 0.92);
   }
 
-  // 在 region 内部精修图例条带：切除上方的行号/网格，保留色块主体 + 下方数量。
+  // 在 region 内部精修图例条带：保留色块主体 + 下方数量，支持两行图例。
   // 返回归一化 region，失败时返回原 region。
   function refineLegendRegion(img, region) {
     const { canvas, w, h, ctx } = createAnalysisCanvas(img, 2400);
@@ -945,9 +945,10 @@
     const rw = Math.max(1, x1 - x0), rh = Math.max(1, y1 - y0);
     if (rw < 20 || rh < 10) return region;
     const data = ctx.getImageData(x0, y0, rw, rh).data;
-    function isBg(r, g, b) { return r > 248 && g > 248 && b > 248; }
-    function isText(r, g, b) { return r < 40 && g < 40 && b < 40; }
-    function isGray(r, g, b) { const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return mx - mn < 25 && mx > 50 && mx < 235; }
+    function isBg(r, g, b) { return r > 245 && g > 245 && b > 245; }
+    function isText(r, g, b) { return r < 45 && g < 45 && b < 45; }
+    // 放宽灰色判定：避免把浅肤色/浅灰等浅色块边缘误过滤
+    function isGray(r, g, b) { const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return mx - mn < 18 && mx > 90 && mx < 220; }
     function goodPx(r, g, b) { return !isBg(r, g, b) && !isText(r, g, b) && !isGray(r, g, b); }
 
     const rowInfos = [];
@@ -968,22 +969,35 @@
       }
       if (inSeg && rw - segStart >= 2) segments.push({ x0: segStart, x1: rw });
       const ratio = goodCount / rw;
-      const segScore = Math.min(segments.length, 10) * 0.06;
-      const multiSegBonus = segments.length >= 3 ? 0.12 : 0;
+      const segScore = Math.min(segments.length, 12) * 0.05;
+      const multiSegBonus = segments.length >= 3 ? 0.15 : 0;
       rowInfos[y] = { ratio, score: ratio + segScore + multiSegBonus, segments };
     }
     let bestY = 0, bestScore = 0;
     for (let y = 0; y < rh; y++) if (rowInfos[y].score > bestScore) { bestScore = rowInfos[y].score; bestY = y; }
-    if (bestScore < 0.05) return region;
+    if (bestScore < 0.04) return region;
 
+    // 向上下扩展时允许单行空白，适配两行之间的分隔行
     let coreY0 = bestY, coreY1 = bestY;
-    while (coreY0 > 0 && (rowInfos[coreY0 - 1].segments.length >= 2 || rowInfos[coreY0 - 1].ratio > 0.15)) coreY0--;
-    while (coreY1 < rh - 1 && (rowInfos[coreY1 + 1].segments.length >= 2 || rowInfos[coreY1 + 1].ratio > 0.15)) coreY1++;
+    let blankStreak = 0;
+    while (coreY0 > 0) {
+      const r = rowInfos[coreY0 - 1];
+      if (r.segments.length >= 2 || r.ratio > 0.12) { coreY0--; blankStreak = 0; }
+      else if (blankStreak < 2) { coreY0--; blankStreak++; }
+      else break;
+    }
+    blankStreak = 0;
+    while (coreY1 < rh - 1) {
+      const r = rowInfos[coreY1 + 1];
+      if (r.segments.length >= 2 || r.ratio > 0.12) { coreY1++; blankStreak = 0; }
+      else if (blankStreak < 2) { coreY1++; blankStreak++; }
+      else break;
+    }
     const coreH = coreY1 - coreY0 + 1;
     if (coreH < 4) return region;
 
     // x 方向主彩色带
-    const gapThresh = Math.max(2, Math.round(rw * 0.003));
+    const gapThresh = Math.max(3, Math.round(rw * 0.004));
     const runs = [];
     let run = null;
     for (let x = 0; x < rw; x++) {
@@ -1001,7 +1015,7 @@
       }
     }
     if (run) runs.push({ x0: run.x0, x1: run.x1 - run.gap });
-    const minBlockW = Math.max(4, Math.round(rw * 0.007));
+    const minBlockW = Math.max(4, Math.round(rw * 0.006));
     const validRuns = runs.filter(r => r.x1 - r.x0 + 1 >= minBlockW);
     if (!validRuns.length) return region;
     // 取所有有效段的并集作为图例主体宽度，避免只保留最长段而切掉左右边缘色块
@@ -1009,15 +1023,15 @@
     const lastX = validRuns[validRuns.length - 1].x1;
     const stripW = lastX - firstX + 1;
     const originalW = x1 - x0;
-    if (stripW < originalW * 0.3) return region; // 精修后宽度过小则放弃
-    // 如果精修后宽度明显缩水（<70%），很可能是边缘浅色块被过滤掉了，此时回退到原区域更安全
-    if (stripW < originalW * 0.7) {
-      console.debug('[refineLegendRegion] 精修后宽度缩水 %.1f%%，回退到原区域', (stripW/originalW)*100);
+    if (stripW < originalW * 0.3) return region;
+    if (stripW < originalW * 0.6) {
+      console.debug('[refineLegendRegion] 精修后宽度缩水 %.1f%%，回退到原区域', (stripW / originalW) * 100);
       return region;
     }
 
-    const topMargin = Math.max(1, Math.round(coreH * 0.15));
-    const bottomMargin = Math.max(Math.round(coreH * 1.4), 16);
+    const topMargin = Math.max(2, Math.round(coreH * 0.12));
+    // 两行图例时，下方需要足够空间容纳第二行色块及其数量数字
+    const bottomMargin = Math.max(Math.round(coreH * (coreH > rh * 0.35 ? 1.0 : 1.6)), 20);
     const rx0 = x0 + firstX;
     const rx1 = x0 + lastX;
     const ry0 = Math.max(0, y0 + coreY0 - topMargin);
@@ -1211,16 +1225,17 @@
   }
   // 用视觉大模型识别图例：先精修区域，再用饱和度能量峰定位每个色块，
   // 按实际色块边界裁剪成单个小图并发识别；失败则退回整张图例识别。
-  async function aiParseLegend(img, region, baseUrl) {
+  async function aiParseLegend(img, region, baseUrl, opts = {}) {
     const refined = refineLegendRegion(img, region);
     const blocks = detectLegendBlocks(img, refined);
     const imgH = img.naturalHeight || img.height || 1;
     const regionPixelH = (region.h || 0) * imgH;
+    const likelyTwoRow = !!opts.likelyTwoRow;
     // 只有「用户上传的本身就是裁剪后的图例条带」才走快速路径：
     // 图片整体高度 < 200 且图例区域高度 < 150。避免整张图纸被误判为条带。
     const isCroppedStrip = imgH < 200 && regionPixelH > 10 && regionPixelH < 150;
-    console.debug('[图例识别] regionPixelH=%d, isCroppedStrip=%s, refined=%o, blocks=%d',
-      regionPixelH, isCroppedStrip, refined, blocks.length);
+    console.debug('[图例识别] regionPixelH=%d, isCroppedStrip=%s, likelyTwoRow=%s, refined=%o, blocks=%d',
+      regionPixelH, isCroppedStrip, likelyTwoRow, refined, blocks.length);
     const wholeDataUrl = cropRegionToDataURL(img, refined);
     // 快速路径：如果用户上传的是「已经裁好的图例条带」（区域高度 < 150px 原图像素），
     // 直接整张发给视觉模型，跳过容易过切的色块切分。
@@ -1233,13 +1248,16 @@
     }
     // 第一路径：整张图例识别。经过 refine 后区域只保留色块条带 + 数量，
     // 完整上下文让模型更不容易把 A11 误读成 A17，也不易遗漏边缘色块。
+    // 对疑似两行图例，强制优先整张识别（分组路径容易跨行混乱）。
     if (wholeDataUrl && wholeDataUrl.length >= 500) {
       try {
         const wholeRaw = await callLegendVisionAPI(wholeDataUrl, state.settings.apiKey, state.settings.model, baseUrl);
         console.debug('[图例识别] 整张识别返回 %d 条', wholeRaw.length);
         // 当色块切分明显过切（如 >2 倍整张识别结果）时，直接采信整张识别，避免被错误 blocks 拖下水。
         const suspiciousBlocks = blocks.length > 0 && blocks.length > (wholeRaw.length || 0) * 2;
-        const expected = Math.max(2, Math.floor((Math.min(blocks.length, (wholeRaw.length || 0) * 2) || wholeRaw.length || 2) * 0.45));
+        // 预期数量：单行时约为 blocks/1，两行时约为 blocks/2
+        const rowFactor = likelyTwoRow ? 0.5 : 1;
+        const expected = Math.max(2, Math.floor((Math.min(blocks.length * rowFactor, (wholeRaw.length || 0) * 2) || wholeRaw.length || 2) * 0.45));
         console.debug('[图例识别] expected=%d, suspiciousBlocks=%s', expected, suspiciousBlocks);
         if (wholeRaw && wholeRaw.length >= expected) {
           console.debug('[图例识别] 采用整张识别结果');
@@ -1249,13 +1267,14 @@
           console.debug('[图例识别] 检测到 blocks 过切，强制采用整张识别');
           return buildLegendFromColors(wholeRaw, wholeRaw.length);
         }
+        // 疑似两行但整张结果明显偏少：可能是表头/文字被误识别，继续尝试分组
       } catch (e) { console.warn('整张图例识别失败，尝试分组识别：', e.message); }
     }
     // 第二路径：分组识别（2~3 个色块一组），兼顾上下文与分辨率。
     // 仅当图例区域比较扁（单行/接近单行）且 blocks 数合理时才分组；
     // 多行矩阵图例的分组会跨行混色，直接用整张识别更稳。
     const regionAspect = (region.h || 0) / Math.max(0.001, region.w || 1);
-    const looksSingleRow = regionAspect < 0.12;
+    const looksSingleRow = regionAspect < 0.12 && !likelyTwoRow;
     if (blocks.length >= 2 && blocks.length <= 60 && looksSingleRow) {
       console.debug('[图例识别] 进入分组识别，blocks=%d', blocks.length);
       const results = [];
@@ -1294,20 +1313,28 @@
     }
     throw new Error('裁剪出的图例区为空/过小，请重新框选图例区域');
   }
-  // 把模型返回的 [{hex,code}] 映射为标准色号清单
+  // 把模型返回的 [{hex,code}] 映射为标准色号清单，并过滤表头/无效行
   function buildLegendFromColors(raw, estimatedCols) {
     const out = [];
     // 常见模型幻觉/文字误读，清空后交给颜色匹配兜底
     const noiseCodes = new Set(['no', 'none', 'null', 'undefined', 'yes', 'all', 'ok', 'nil']);
+    // 表头类文字：直接丢弃，避免把 "色号 名称 数量" 当成一行数据
+    const headerCodes = new Set(['色号', '名称', '数量', '颜色', '颜色名称', '编号', '序号', 'code', 'name', 'count', 'color']);
     for (const c of raw) {
       let hex = (c.hex || '').trim();
-      if (!hex) continue; // 该列未识别到颜色（图像为空/识别失败），跳过不占位，避免噪声
+      if (!hex) continue;
       if (!hex.startsWith('#')) hex = '#' + hex;
       const rgb = hexToRgb(hex);
       if (!rgb || rgb.some(v => isNaN(v))) continue;
       const [r, g, b] = rgb;
       let code = (c.code || '').trim();
       if (noiseCodes.has(code.toLowerCase())) code = '';
+      // 过滤明显是表头/说明文字的行
+      if (headerCodes.has(code) || headerCodes.has(code.toLowerCase())) continue;
+      // 如果颜色接近白/黑灰且没有有效 code，也视为文字/间隔而非色块
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      const isNearWhite = max > 245 && min > 245;
+      if (isNearWhite && !code) continue;
       let colorNumber = '', colorName = '';
       if (code) {
         const bead = beadByCode(code);
@@ -3342,20 +3369,20 @@ C25   2</pre>
     return { total, matched: acc.size };
   }
 
-  // 自动检测图纸底部的横向颜色图例条，返回 { region: {x,y,w,h}, estimatedCols }
-  // 失败时返回 null。region 坐标为相对于原图的归一化值（0~1）。
+  // 自动检测图纸底部的颜色图例条，支持 1~2 行（甚至多行）色块矩阵。
+  // 返回 { region: {x,y,w,h}, estimatedCols, likelyTwoRow }，失败时返回 null。region 为归一化坐标（0~1）。
   function detectLegendRegion(img) {
-    const MAX_W = 1200;
+    const MAX_W = 1600;
     const { w, h, ctx } = createAnalysisCanvas(img, MAX_W);
     const data = ctx.getImageData(0, 0, w, h).data;
 
-    function isBg(r, g, b) { return r > 248 && g > 248 && b > 248; }
-    function isText(r, g, b) { return r < 40 && g < 40 && b < 40; }
-    function isGray(r, g, b) { const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return mx - mn < 25 && mx > 50 && mx < 235; }
+    function isBg(r, g, b) { return r > 245 && g > 245 && b > 245; }
+    function isText(r, g, b) { return r < 45 && g < 45 && b < 45; }
+    function isGray(r, g, b) { const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return mx - mn < 30 && mx > 60 && mx < 230; }
     function goodPx(r, g, b) { return !isBg(r, g, b) && !isText(r, g, b) && !isGray(r, g, b); }
 
-    // 1. 只扫描底部 30% 区域（图例通常位于图纸最底部）
-    const yStart = Math.floor(h * 0.70);
+    // 1. 扫描底部 45% 区域（给两行图例留出足够搜索空间）
+    const yStart = Math.floor(h * 0.55);
     const rowInfos = [];
     for (let y = yStart; y < h; y++) {
       let goodCount = 0;
@@ -3377,52 +3404,43 @@ C25   2</pre>
       }
       if (inSeg && w - segStart >= 2) segments.push({ x0: segStart, x1: w });
       const ratio = goodCount / w;
-      const segScore = Math.min(segments.length, 10) * 0.06;
-      const multiSegBonus = segments.length >= 3 ? 0.12 : 0;
+      const segScore = Math.min(segments.length, 12) * 0.05;
+      const multiSegBonus = segments.length >= 3 ? 0.15 : 0;
       const score = ratio + segScore + multiSegBonus;
       rowInfos[y] = { goodCount, segments, ratio, score };
     }
 
-    // 2. 评分：有效像素比例 + 段数奖励（图例行应有多个小色块段）
-    let bestY = -1, bestScore = 0;
+    // 2. 找连续彩色行段（允许最多 2 行空白间隔，解决两行之间的分隔间隙）
+    const minRowScore = 0.10;
+    const groups = [];
+    let cur = null;
     for (let y = yStart; y < h; y++) {
-      if (rowInfos[y].score > bestScore) { bestScore = rowInfos[y].score; bestY = y; }
+      const r = rowInfos[y];
+      const active = r.score >= minRowScore && r.segments.length >= 2;
+      if (active) {
+        if (!cur) cur = { y0: y, y1: y, rows: [y], score: r.score };
+        else { cur.y1 = y; cur.rows.push(y); cur.score += r.score; }
+      } else if (cur) {
+        if (y - cur.y1 <= 2) { cur.y1 = y; cur.rows.push(y); }
+        else { groups.push(cur); cur = null; }
+      }
     }
-    if (bestY < 0 || bestScore < 0.20) return null;
+    if (cur) groups.push(cur);
+    if (!groups.length) return null;
 
-    // 3. 从 bestY 向上下严格扩展「核心色块条带」：要求同时段数多且比例高，
-    //    避免把图案主体或底部水印/文字误扩进来。
-    const coreSegThresh = 3;
-    const coreRatioThresh = 0.45;
-    const scoreRatioThresh = 0.55;
-    const minScoreThresh = 0.30;
-    const maxExpandUp = Math.round(h * 0.05);
-    const maxExpandDown = Math.round(h * 0.05);
+    groups.forEach(g => {
+      g.height = g.y1 - g.y0 + 1;
+      g.avgScore = g.score / Math.max(1, g.rows.length);
+    });
+    groups.sort((a, b) => {
+      if (b.height !== a.height) return b.height - a.height;
+      return b.avgScore - a.avgScore;
+    });
+    const bestGroup = groups[0];
+    let coreY0 = bestGroup.y0, coreY1 = bestGroup.y1;
 
-    let coreY0 = bestY, coreY1 = bestY;
-    while (coreY0 > Math.max(yStart, bestY - maxExpandUp)) {
-      const r = rowInfos[coreY0 - 1];
-      const good = (r.segments.length >= coreSegThresh && r.ratio >= coreRatioThresh) ||
-                   (r.score >= bestScore * scoreRatioThresh && r.score >= minScoreThresh);
-      if (!good) break;
-      coreY0--;
-    }
-    while (coreY1 < Math.min(h - 1, bestY + maxExpandDown)) {
-      const r = rowInfos[coreY1 + 1];
-      const good = (r.segments.length >= coreSegThresh && r.ratio >= coreRatioThresh) ||
-                   (r.score >= bestScore * scoreRatioThresh && r.score >= minScoreThresh);
-      if (!good) break;
-      coreY1++;
-    }
-
-    // 保底核心高度
-    if (coreY1 - coreY0 + 1 < 8) {
-      coreY0 = Math.max(yStart, bestY - 8);
-      coreY1 = Math.min(h - 1, bestY + 8);
-    }
-
-    // 4. 在核心条带内做 x 方向投影，取最长连续彩色带作为图例主体
-    const gapThresh = Math.max(2, Math.round(w * 0.003));
+    // 3. 在核心区域内做 x 方向投影，取所有有效彩色带的并集（避免只保留最长段而切掉边缘色块）
+    const gapThresh = Math.max(3, Math.round(w * 0.004));
     const runs = [];
     let run = null;
     for (let x = 0; x < w; x++) {
@@ -3441,17 +3459,18 @@ C25   2</pre>
     }
     if (run) runs.push({ x0: run.x0, x1: run.x1 - run.gap });
 
-    const minBlockW = Math.max(4, Math.round(w * 0.007));
+    const minBlockW = Math.max(4, Math.round(w * 0.006));
     const validRuns = runs.filter(r => r.x1 - r.x0 + 1 >= minBlockW);
-    if (validRuns.length < 1) return null;
+    if (!validRuns.length) return null;
 
-    const mainRun = validRuns.reduce((a, b) => (b.x1 - b.x0 > a.x1 - a.x0 ? b : a), { x0: 0, x1: -1 });
-    const stripW = mainRun.x1 - mainRun.x0 + 1;
-    if (stripW < w * 0.08) return null;
+    const firstX = validRuns[0].x0;
+    const lastX = validRuns[validRuns.length - 1].x1;
+    const stripW = lastX - firstX + 1;
+    if (stripW < w * 0.06) return null;
 
-    // 5. 在主体内按饱和度能量峰估算列数（色块间隙很小时比简单 run 更稳）
+    // 4. 在完整条带内按饱和度能量峰估算列数；两行时峰数约为 1 行时的 2 倍
     const energy = new Array(w).fill(0);
-    for (let x = mainRun.x0; x <= mainRun.x1; x++) {
+    for (let x = firstX; x <= lastX; x++) {
       let sum = 0, cnt = 0;
       for (let y = coreY0; y <= coreY1; y++) {
         const i = (y * w + x) * 4;
@@ -3465,37 +3484,41 @@ C25   2</pre>
       for (let d = -2; d <= 2; d++) if (energy[i + d] !== undefined) { sum += energy[i + d]; n++; }
       return sum / n;
     });
-
     const peaks = [];
-    for (let x = mainRun.x0 + 3; x <= mainRun.x1 - 3; x++) {
-      if (smooth[x] > smooth[x - 1] && smooth[x] > smooth[x + 1] && smooth[x] > 5) peaks.push(x);
+    for (let x = firstX + 4; x <= lastX - 4; x++) {
+      if (smooth[x] > smooth[x - 1] && smooth[x] > smooth[x + 1] && smooth[x] > smooth[x - 2] && smooth[x] > smooth[x + 2] && smooth[x] > 4) peaks.push(x);
     }
-    const mergeDist = 8;
-    const groups = [];
+    const mergeDist = Math.max(6, Math.round(stripW / 50));
+    const peakGroups = [];
     for (const p of peaks) {
-      const last = groups[groups.length - 1];
+      const last = peakGroups[peakGroups.length - 1];
       if (last && p - last[last.length - 1] < mergeDist) last.push(p);
-      else groups.push([p]);
+      else peakGroups.push([p]);
     }
-    let estimatedCols = groups.length;
-    const fallbackCols = Math.max(3, Math.round(stripW / 28));
-    if (estimatedCols < 3) estimatedCols = fallbackCols;
-    if (estimatedCols > 60) estimatedCols = 60;
 
-    // 6. 最终 region：核心条带 + 有限上下扩展（包含色号/数量文字，但避免包含底部水印）
     const coreH = coreY1 - coreY0 + 1;
-    const vertExpand = Math.min(Math.round(coreH * 0.6), 22);
-    const y0 = Math.max(yStart, coreY0 - vertExpand);
+    const likelyTwoRow = coreH > Math.max(18, h * 0.022);
+    // 两行图例的峰数约为列数 2 倍，折半估算更准；单行直接用峰数
+    let estimatedCols = likelyTwoRow ? Math.max(3, Math.round(peakGroups.length / 2)) : peakGroups.length;
+    const singleRowFallback = Math.max(3, Math.round(stripW / 32));
+    const twoRowFallback = Math.max(3, Math.round(stripW / 64));
+    if (estimatedCols < 3) estimatedCols = likelyTwoRow ? twoRowFallback : singleRowFallback;
+    if (estimatedCols > 80) estimatedCols = 80;
+
+    // 5. 最终 region：核心条带 + 适度上下扩展（确保包含两行色块及下方数量，但不过大）
+    const vertExpand = Math.min(Math.round(coreH * 0.35), Math.round(h * 0.04), 24);
+    const y0 = Math.max(0, coreY0 - vertExpand);
     const y1 = Math.min(h - 1, coreY1 + vertExpand);
 
     return {
       region: {
-        x: Math.max(0, mainRun.x0 / w),
+        x: Math.max(0, firstX / w),
         y: Math.max(0, y0 / h),
         w: Math.min(1, stripW / w),
         h: Math.min(1, (y1 - y0 + 1) / h)
       },
-      estimatedCols
+      estimatedCols,
+      likelyTwoRow
     };
   }
 
@@ -3885,12 +3908,88 @@ C25   2</pre>
     if (imgWrap) imgWrap.onclick = () => openGalleryImageZoom(g);
   }
 
+  // 在完整图纸上手动框选图例区域，返回归一化 region 给回调
+  function openLegendReselectModal(g, img, onSelected) {
+    const body = `
+      <div class="space-y-2">
+        <div class="text-xs text-mk-sub">在图纸上拖拽框选图例区域，框得越准识别越准。</div>
+        <div id="glr-stage" class="relative inline-block max-w-full overflow-auto rounded-xl border border-mk-sand bg-mk-cream" style="max-height:60vh;">
+          <img id="glr-img" src="${g.image}" class="block max-w-full" alt="${escapeHtml(g.name)}" style="user-select:none;-webkit-user-drag:none;">
+          <div id="glr-rect" class="absolute border-2 border-mk-rose bg-mk-rose/20 pointer-events-none hidden" style="box-shadow:0 0 0 9999px rgba(0,0,0,0.25);"></div>
+        </div>
+        <div class="text-[11px] text-mk-sub text-center">拖动鼠标 / 手指绘制矩形选区</div>
+      </div>`;
+    openModal('📐 框选图例区域：' + g.name, body, { wide: true });
+    setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="closeModal()">取消</button>
+      <button id="glr-confirm" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold" disabled>确认框选</button>`);
+
+    const imgEl = $('#glr-img');
+    const rectEl = $('#glr-rect');
+    let start = null, end = null, dragging = false;
+
+    const getPos = (e) => {
+      const rect = imgEl.getBoundingClientRect();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      return {
+        x: Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)),
+        y: Math.max(0, Math.min(1, (clientY - rect.top) / rect.height))
+      };
+    };
+    const drawRect = () => {
+      if (!start || !end) return;
+      const sx = Math.min(start.x, end.x), sy = Math.min(start.y, end.y);
+      const ex = Math.max(start.x, end.x), ey = Math.max(start.y, end.y);
+      rectEl.style.left = (sx * 100) + '%';
+      rectEl.style.top = (sy * 100) + '%';
+      rectEl.style.width = ((ex - sx) * 100) + '%';
+      rectEl.style.height = ((ey - sy) * 100) + '%';
+      rectEl.classList.remove('hidden');
+    };
+    const startDrag = (e) => {
+      e.preventDefault();
+      dragging = true;
+      start = getPos(e); end = start;
+      drawRect();
+    };
+    const moveDrag = (e) => {
+      if (!dragging) return;
+      e.preventDefault();
+      end = getPos(e);
+      drawRect();
+    };
+    const endDrag = () => {
+      dragging = false;
+      if (start && end) {
+        const dx = Math.abs(end.x - start.x), dy = Math.abs(end.y - start.y);
+        $('#glr-confirm').disabled = dx < 0.02 || dy < 0.02;
+      }
+    };
+
+    imgEl.addEventListener('mousedown', startDrag);
+    imgEl.addEventListener('touchstart', startDrag, { passive: false });
+    window.addEventListener('mousemove', moveDrag);
+    window.addEventListener('touchmove', moveDrag, { passive: false });
+    window.addEventListener('mouseup', endDrag);
+    window.addEventListener('touchend', endDrag);
+
+    $('#glr-confirm').onclick = () => {
+      if (!start || !end) return;
+      const sx = Math.min(start.x, end.x), sy = Math.min(start.y, end.y);
+      const ex = Math.max(start.x, end.x), ey = Math.max(start.y, end.y);
+      if (ex - sx < 0.02 || ey - sy < 0.02) return toast('选区太小，请重新框选', 'warn');
+      closeModal();
+      onSelected({ x: sx, y: sy, w: ex - sx, h: ey - sy });
+    };
+  }
+
   // 图库图纸的「识别图例」：自动定位底部图例区域，AI 视觉读色号与数量
   async function recognizeGalleryLegend(g) {
     const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
     const aiReady = viaProxy || !!(state.settings.enableVision && state.settings.apiKey);
     if (!aiReady) return toast('请先到「设置 → 云端视觉AI」启用图例识别', 'warn');
     if (!g.image) return toast('该图纸没有图片，无法识别图例', 'warn');
+    const baseUrl = state.settings.visionBaseUrl || '';
 
     const bodyEl = openModal('🎨 识别图例：' + g.name, `
       <div class="text-center py-8 text-mk-sub">
@@ -3909,8 +4008,7 @@ C25   2</pre>
       `;
       const det = window.__legendRegionStub ? window.__legendRegionStub(img) : detectLegendRegion(img);
       if (!det || !det.region) throw new Error('未能自动定位图例区域，请尝试到「图纸识别」页手动框选图例');
-      const baseUrl = state.settings.visionBaseUrl || '';
-      const items = await (window.__aiParseLegendStub ? window.__aiParseLegendStub(img, det.region, baseUrl) : aiParseLegend(img, det.region, baseUrl));
+      const items = await (window.__aiParseLegendStub ? window.__aiParseLegendStub(img, det.region, baseUrl, det) : aiParseLegend(img, det.region, baseUrl, det));
       renderGalleryLegendResult(g, img, det.region, items);
     } catch (err) {
       console.error(err);
@@ -3918,10 +4016,35 @@ C25   2</pre>
         <div class="text-center py-6 text-mk-sub">
           <div class="text-2xl mb-2">⚠️</div>
           <div>识别失败：${escapeHtml(err.message || '未知错误')}</div>
-          <div class="text-xs mt-2">可尝试到「图纸识别」页手动框选图例区域后识别。</div>
+          <div class="text-xs mt-2">可点击下方按钮手动框选图例区域后重新识别。</div>
         </div>
       `;
-      setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">关闭</button>`);
+      setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">关闭</button>
+        <button id="gl-fail-reselect" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold">📐 手动框选图例区域</button>`);
+      const failBtn = $('#gl-fail-reselect');
+      if (failBtn) failBtn.onclick = () => {
+        const img2 = new Image();
+        img2.onload = () => {
+          openLegendReselectModal(g, img2, async (newRegion) => {
+            const loadingBody = `
+              <div class="text-center py-8 text-mk-sub">
+                <div class="text-3xl mb-2">🤖</div>
+                <div>正在用新框选区域识别…</div>
+              </div>`;
+            openModal('🎨 识别图例：' + g.name, loadingBody, { wide: true });
+            try {
+              const newItems = await aiParseLegend(img2, newRegion, baseUrl, { likelyTwoRow: false });
+              renderGalleryLegendResult(g, img2, newRegion, newItems);
+            } catch (e) {
+              console.error(e);
+              $('#modal-body').innerHTML = `<div class="text-center py-6 text-mk-sub"><div class="text-2xl mb-2">⚠️</div><div>识别失败：${escapeHtml(e.message || '未知错误')}</div></div>`;
+              setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="closeModal()">关闭</button>`);
+            }
+          });
+        };
+        img2.onerror = () => toast('图片加载失败', 'error');
+        img2.src = g.image;
+      };
     }
   }
 
@@ -3956,6 +4079,9 @@ C25   2</pre>
           <span>图纸「${escapeHtml(g.name)}」识别到 <b id="gl-ncolors">0</b> 个图例色号，可逐行校正后再导出。色号不存在会<span class="text-rose-500 font-semibold">标红</span>。</span>
         </div>
         ${previewUrl ? `<div class="mx-auto max-w-[260px] sm:max-w-[320px] rounded-xl overflow-hidden border border-mk-sand bg-white"><img src="${previewUrl}" class="w-full block" alt="图例区域预览"></div><div class="text-[11px] text-center text-mk-sub -mt-1">识别所用图例区域（可对照校正）</div>` : ''}
+        <div class="flex justify-center">
+          <button id="gl-reselect" class="text-[11px] px-3 py-1.5 rounded-xl bg-white border border-mk-sand text-mk-ink hover:bg-mk-sand/40">📐 重新框选图例区域</button>
+        </div>
         <div id="gl-list" class="flex flex-col gap-1.5 max-h-[40vh] sm:max-h-[44vh] overflow-auto pr-1"></div>
         <div class="flex items-center gap-2 flex-wrap">
           <button id="gl-merge" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-white border border-mk-sand text-mk-ink hover:bg-mk-sand/40">🔁 合并重复色号</button>
@@ -3964,6 +4090,27 @@ C25   2</pre>
       </div>
     `;
     const bodyEl = openModal('🎨 识别结果：' + g.name, body, { wide: true });
+    const baseUrl = state.settings.visionBaseUrl || '';
+
+    const reselectBtn = $('#gl-reselect');
+    if (reselectBtn) reselectBtn.onclick = () => {
+      openLegendReselectModal(g, img, async (newRegion) => {
+        const loadingBody = `
+          <div class="text-center py-8 text-mk-sub">
+            <div class="text-3xl mb-2">🤖</div>
+            <div>正在用新框选区域识别…</div>
+          </div>`;
+        openModal('🎨 识别图例：' + g.name, loadingBody, { wide: true });
+        try {
+          const newItems = await aiParseLegend(img, newRegion, baseUrl, { likelyTwoRow: false });
+          renderGalleryLegendResult(g, img, newRegion, newItems);
+        } catch (e) {
+          console.error(e);
+          $('#modal-body').innerHTML = `<div class="text-center py-6 text-mk-sub"><div class="text-2xl mb-2">⚠️</div><div>识别失败：${escapeHtml(e.message || '未知错误')}</div></div>`;
+          setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="closeModal()">关闭</button>`);
+        }
+      });
+    };
 
     const renderList = () => {
       const list = $('#gl-list'); if (!list) return;
@@ -6710,4 +6857,9 @@ C25   2</pre>
   window.closeModal = closeModal;
   window.openModal = openModal;
   window.setModalFoot = setModalFoot;
+  // 本地测试辅助：把核心算法函数暴露到 window，方便 puppeteer 单元测试
+  if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+    window.__detectLegendRegion = detectLegendRegion;
+    window.__refineLegendRegion = refineLegendRegion;
+  }
 })();
