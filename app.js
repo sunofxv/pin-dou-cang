@@ -5070,6 +5070,8 @@ C25   2</pre>
       const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
       const ready = viaProxy || (state.settings.enableVision && state.settings.apiKey);
       if (!ready) return toast('当前无法用云端视觉：请在「设置 → 云端视觉AI」启用（默认走内置代理）或先填 Key', 'warn', 4000);
+      const n = grid.cols * grid.rows;
+      if (n > 800) toast('网格较大（' + n + ' 格），云端视觉将分块识别，请耐心等待进度完成', 'info', 3500);
     }
     grid.busy = true; grid.cancel = false;
     renderGrid(v);
@@ -5089,20 +5091,65 @@ C25   2</pre>
       toast('识别失败：' + (e && e.message ? e.message : e), 'error');
     }
   }
+  function setGridProgress(pct, text) {
+    const bar = $('#grid-progress-bar'), txt = $('#grid-progress-text');
+    if (bar) bar.style.width = (Math.max(0, Math.min(100, pct || 0))) + '%';
+    if (txt) txt.textContent = text || '';
+  }
   async function gridRecognizeVision(img) {
     const cellPx = gridCellPx();
     const warp = gridWarp(img, grid.align, grid.cols, grid.rows, cellPx);
     grid.warp = warp;
-    const dataUrl = warp.toDataURL('image/png');
-    const res = await callGridVisionAPI(dataUrl, grid.rows, grid.cols, state.settings.apiKey, state.settings.model, state.settings.visionBaseUrl);
-    const g = res.grid || [];
+    // 大模型无法一次吐出几千个色号（会截断/读不清）。切成接近方形的小块：
+    // 每块 <= ~300 格、图片近方形，模型在上下文分辨率下才读得清每个色号；逐块识别后拼回二维数组。
+    const target = 300;
+    const blockN = Math.max(1, Math.round(Math.sqrt(target)));
+    const blockCols = Math.max(1, Math.min(grid.cols, blockN));
+    const blockRows = Math.max(1, Math.min(grid.rows, blockN));
+    const nBc = Math.max(1, Math.ceil(grid.cols / blockCols));
+    const nBr = Math.max(1, Math.ceil(grid.rows / blockRows));
+    const totalBlocks = nBc * nBr;
     grid.cells = [];
-    for (let r = 0; r < grid.rows; r++) {
-      const src = g[r] || [];
-      const row = [];
-      for (let c = 0; c < grid.cols; c++) row.push({ code: gridSanitizeCode(src[c]), src: 'vision', conf: 0 });
-      grid.cells.push(row);
+    for (let r = 0; r < grid.rows; r++) grid.cells.push(new Array(grid.cols).fill(null));
+    let doneBlocks = 0;
+    setGridProgress(2, '准备分块识别（' + grid.cols + '×' + grid.rows + '，共 ' + totalBlocks + ' 块）');
+    for (let br = 0; br < nBr; br++) {
+      if (grid.cancel) throw new Error('已取消');
+      const r0 = br * blockRows, rN = Math.min(grid.rows - r0, blockRows);
+      for (let bc = 0; bc < nBc; bc++) {
+        if (grid.cancel) throw new Error('已取消');
+        const c0 = bc * blockCols, cN = Math.min(grid.cols - c0, blockCols);
+        const x0 = Math.round(c0 * cellPx), y0 = Math.round(r0 * cellPx);
+        const bw = Math.round(cN * cellPx), bh = Math.round(rN * cellPx);
+        const tmp = document.createElement('canvas');
+        tmp.width = bw; tmp.height = bh;
+        const tctx = tmp.getContext('2d');
+        tctx.drawImage(warp, x0, y0, bw, bh, 0, 0, bw, bh);
+        const dataUrl = tmp.toDataURL('image/png');
+        const label = (br + 1) + '/' + nBr + ' 行块 · ' + (bc + 1) + '/' + nBc + ' 列块';
+        setGridProgress(Math.round(doneBlocks / totalBlocks * 100), '识别中 第 ' + (doneBlocks + 1) + '/' + totalBlocks + ' 块（' + label + '）');
+        let res, tries = 0;
+        while (true) {
+          try {
+            res = await callGridVisionAPI(dataUrl, rN, cN, state.settings.apiKey, state.settings.model, state.settings.visionBaseUrl);
+            break;
+          } catch (err) {
+            tries++;
+            if (tries >= 2) throw new Error('第 ' + (doneBlocks + 1) + '/' + totalBlocks + ' 块识别失败：' + (err && err.message ? err.message : err));
+            await new Promise(r => setTimeout(r, 600));
+          }
+        }
+        const g = res.grid || [];
+        for (let i = 0; i < rN; i++) {
+          const src = g[i] || [];
+          for (let c = 0; c < cN; c++)
+            grid.cells[r0 + i][c0 + c] = { code: gridSanitizeCode(src[c]), src: 'vision', conf: 0 };
+        }
+        doneBlocks++;
+        setGridProgress(Math.round(doneBlocks / totalBlocks * 100), '已识别 ' + doneBlocks + '/' + totalBlocks + ' 块');
+      }
     }
+    setGridProgress(100, '识别完成');
   }
   async function gridRecognizeTesseract(img) {
     const cellPx = gridCellPx();
@@ -5228,7 +5275,7 @@ C25   2</pre>
           </div>
           <div class="flex flex-wrap items-center gap-3 mt-3">
             <span class="text-xs text-mk-sub">识别引擎：</span>
-            <label class="text-xs flex items-center gap-1"><input type="radio" name="grid-engine" value="vision" ${grid.engine === 'vision' ? 'checked' : ''}> 云端视觉（整图，快）</label>
+            <label class="text-xs flex items-center gap-1"><input type="radio" name="grid-engine" value="vision" ${grid.engine === 'vision' ? 'checked' : ''}> 云端视觉（分块识别大图）</label>
             <label class="text-xs flex items-center gap-1"><input type="radio" name="grid-engine" value="tesseract" ${grid.engine === 'tesseract' ? 'checked' : ''}> 本地OCR（密集网格更准）</label>
             <button id="grid-recognize" type="button" class="px-4 py-2 rounded-xl bg-gradient-to-r from-violet-400 to-sky-400 text-white text-sm font-semibold hover:opacity-90 sm:ml-auto ${grid.busy ? 'opacity-60 cursor-wait' : ''}" ${grid.busy ? 'disabled' : ''}>${grid.busy ? '⏳ 识别中…' : '🔍 识别色号'}</button>
           </div>
