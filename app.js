@@ -180,6 +180,11 @@
         }
       }
 
+      // 迁移：图库图片补充 legend 字段（旧数据没有该字段，缺省为 null 表示尚未识别图例）
+      if (Array.isArray(merged.gallery)) {
+        merged.gallery.forEach(g => { if (g && g.legend === undefined) g.legend = null; });
+      }
+
       return merged;
     } catch (e) {
       console.warn('读取本地数据失败，使用默认数据', e);
@@ -664,10 +669,19 @@
   // （兼容模型多嘴、带 Markdown 代码块、或返回纯数组的情况）
   function extractJsonContent(content) {
     if (typeof content !== 'string') content = String(content || '{}');
-    try { return JSON.parse(content); } catch (_) {}
+    // 1. 去掉 Markdown 代码块标记（如 ```json、``` 等）
+    let cleaned = content
+      .replace(/^```[a-zA-Z0-9]*\s*/s, '')
+      .replace(/\s*```\s*$/s, '');
+    // 2. 尝试直接解析
+    try { return JSON.parse(cleaned); } catch (_) {}
+    // 3. 去掉 { [ 之前的前导文本和 } ] 之后的尾随文本（兼容模型带说明前缀/后缀）
+    cleaned = cleaned.replace(/^[^{[]*/, '').replace(/[^}\]]*$/, '');
+    try { return JSON.parse(cleaned); } catch (_) {}
+    // 4. 兜底：截取第一个 [ 到最后一个 ]，或第一个 { 到最后一个 }
     const trySlice = (open, close) => {
-      const s = content.indexOf(open), e = content.lastIndexOf(close);
-      if (s >= 0 && e > s) { try { return JSON.parse(content.slice(s, e + 1)); } catch (_) {} }
+      const s = cleaned.indexOf(open), e = cleaned.lastIndexOf(close);
+      if (s >= 0 && e > s) { try { return JSON.parse(cleaned.slice(s, e + 1)); } catch (_) {} }
       return undefined;
     };
     const arr = trySlice('[', ']'); if (arr !== undefined) return arr;
@@ -747,17 +761,17 @@
 任务：识别图例区域内所有「颜色色块」，按阅读顺序（从左到右、从上到下，即先第一行从左到右，再第二行从左到右，以此类推）逐一列出。
 
 严格要求（务必遵守）：
-1. 只识别纯色填充的「色块」本身，忽略白色间隔、黑色网格线、边框、以及色块外的文字说明。
-2. hex 取该色块中心的「主体填充色」，不要取文字颜色、边框颜色或阴影。
+1. 只识别纯色填充的「色块」本身，忽略白色间隔、黑色网格线、边框、表头文字、以及色块外的文字说明。
+2. hex 取该色块中心的「主体填充色」，不要取文字颜色、边框颜色或阴影。如果某一行没有彩色色块（例如全是白色/浅灰背景、表头文字行），不要输出它。
 3. code 只取「色块内部印的色号短码」。绝对不要把色块【下方】的数量数字当成 code。看不清或没印字就填空字符串 ""，不要猜测或编造。尤其不要把无意义的英文单词（如 "no"、"yes"、"all"）填到 code 里。
 4. count 取「色块正下方印的数量数字」（整数，如 12）；若下方没有数字就填 0。
 5. 不要合并相近颜色——只要肉眼可区分的不同色块，就分别列出（含深浅不同的同色系）。
 6. 图片中可能还混有图纸网格、行号、水印、表头文字（如 "色号 名称 数量"）等无关内容，请全部忽略；只识别彩色圆角矩形色块。
 7. 每个色块只输出一条记录，不要重复、不要遗漏。如果图例中有 16 个色块，就必须返回 16 条；有 20 个就返回 20 条。
-8. 只返回一个 JSON，不要任何额外文字或 Markdown。
+8. 只返回一个 JSON，不要任何额外文字或 Markdown。你可以直接返回 JSON 数组，也可以返回 {"colors": [...]} 对象。
 
 返回格式（示例）：
-{"colors":[{"hex":"#FFD700","code":"Y8","count":12},{"hex":"#A52A2A","code":"BR3","count":3}]}`;
+[{"hex":"#FFD700","code":"Y8","count":12},{"hex":"#A52A2A","code":"BR3","count":3}]`;
     const parsed = await callVLM(dataUrl, apiKey, model, prompt, baseUrl);
     const colors = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.colors) ? parsed.colors : []);
     return colors
@@ -949,7 +963,9 @@
     function isText(r, g, b) { return r < 45 && g < 45 && b < 45; }
     // 放宽灰色判定：避免把浅肤色/浅灰等浅色块边缘误过滤
     function isGray(r, g, b) { const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return mx - mn < 18 && mx > 90 && mx < 220; }
-    function goodPx(r, g, b) { return !isBg(r, g, b) && !isText(r, g, b) && !isGray(r, g, b); }
+    // 过滤表头/分隔行的低饱和浅色背景
+    function isPaleBg(r, g, b) { const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return mx > 235 && mx - mn < 30; }
+    function goodPx(r, g, b) { return !isBg(r, g, b) && !isText(r, g, b) && !isGray(r, g, b) && !isPaleBg(r, g, b); }
 
     const rowInfos = [];
     for (let y = 0; y < rh; y++) {
@@ -1331,10 +1347,14 @@
       if (noiseCodes.has(code.toLowerCase())) code = '';
       // 过滤明显是表头/说明文字的行
       if (headerCodes.has(code) || headerCodes.has(code.toLowerCase())) continue;
-      // 如果颜色接近白/黑灰且没有有效 code，也视为文字/间隔而非色块
+      // 如果颜色接近白/黑灰且没有有效 code，也视为文字/间隔/网格而非色块
       const max = Math.max(r, g, b), min = Math.min(r, g, b);
-      const isNearWhite = max > 245 && min > 245;
-      if (isNearWhite && !code) continue;
+      const isNearWhite = max > 240 && min > 235;
+      const isNearBlack = max < 45 && min < 45;
+      const isFlatGray = max - min < 20 && max > 80 && max < 220;
+      if ((isNearWhite || isNearBlack) && !code) continue;
+      // count 为 0 且颜色是浅色/灰色背景、没有有效色号 → 大概率是表头/分隔行/网格
+      if (count === 0 && !code && (isNearWhite || isFlatGray)) continue;
       let colorNumber = '', colorName = '';
       if (code) {
         const bead = beadByCode(code);
@@ -1370,6 +1390,7 @@
     { key: 'recipes',   label: '配方库' },
     { key: 'pattern',   label: '图纸生成器' },
     { key: 'gallery',   label: '图库' },
+    { key: 'grid',      label: '网格图纸' },
     { key: 'logs',      label: '操作记录' },
     { key: 'settings',  label: '设置' }
   ];
@@ -1471,6 +1492,7 @@
     if (key === 'recipes')    renderRecipes(v);
     if (key === 'pattern')    renderPattern(v);
     if (key === 'gallery')    renderGallery(v);
+    if (key === 'grid')       renderGrid(v);
     if (key === 'logs')       renderLogs(v);
     if (key === 'settings')   renderSettings(v);
   }
@@ -2460,6 +2482,25 @@ C25   2</pre>
   let tempDetectedFramePx = null; // 检测到的图纸边框（分析画布像素坐标 {gx0,gy0,gx1,gy1,aw,ah}），用于按行列数重排网格
   let tempLegendMap = [];     // 用户框选图例后解析出的颜色→色号映射 [{r,g,b,hex,colorNumber,colorName,count}]
   let tempLegendRegion = null; // 图例模式：用户框选的图例区域坐标（与图案区 tempCropRegion 分开保存）
+  let tempLegendSourceGalleryId = null; // 若本次图例识别来自图库，记录来源图片 id，识别后可「保存到图库」反填图例信息
+
+  /* ---------- 拼豆模式：网格图纸识别 ---------- */
+  // 用户上传/从图库导入「每个格子都印有色号文字」的拼豆图纸，手动对齐四角 → 透视拉正 →
+  // 逐格识别色号（云端视觉 / 本地 Tesseract）→ 统计色号用量 → 点击色号高亮对应格子。
+  let grid = {
+    image: null,       // 当前图纸 dataURL
+    imgEl: null,       // 已加载的 HTMLImageElement（缓存）
+    cols: 0, rows: 0,  // 网格列/行数
+    quad: null,        // 对齐四边形（归一化 0~1）：{tl,tr,br,bl}，每个含 {x,y}
+    cells: null,       // 识别结果 [rows][cols] = {code:'', src:'', conf:0}
+    engine: 'vision',  // 'vision' | 'tesseract'
+    highlight: null,   // 当前高亮的色号
+    warp: null,        // 透视拉正后的画布（缓存，用于显示与高亮）
+    worker: null,      // Tesseract worker（复用）
+    busy: false,
+    cancel: false
+  };
+  let GV = null;       // 当前 grid 视图容器（供异步回调重渲染）
 
 
   /* ---------- 图纸识别辅助：自动框选、格子检测、画布编辑 ---------- */
@@ -2956,6 +2997,7 @@ C25   2</pre>
   }
 
   function renderRecognize(v) {
+    const srcGallery = tempLegendSourceGalleryId ? (state.gallery.find(x => x.id === tempLegendSourceGalleryId) || null) : null;
     v.innerHTML = `
       <div class="flex flex-col gap-4">
         <section class="mk-card rounded-2xl shadow-soft p-5">
@@ -2970,6 +3012,10 @@ C25   2</pre>
           </label>
 
           <div id="preview" class="mt-4 ${tempImage ? '' : 'hidden'}">
+            ${srcGallery ? `<div class="mb-2 text-xs text-violet-600 bg-violet-50 border border-violet-100 rounded-lg px-3 py-2 flex items-center justify-between gap-2">
+              <span>📚 来自图库：<b>${escapeHtml(srcGallery.name)}</b>，识别后可「保存到图库」反填该图纸的图例信息。</span>
+              <button id="rc-back-gallery" type="button" class="text-violet-500 underline shrink-0">返回图库</button>
+            </div>` : ''}
             <div class="relative inline-block w-full">
               <canvas id="editor-canvas" class="w-full rounded-xl border border-mk-sand cursor-crosshair bg-white" style="max-height:min(62vh, 520px);"></canvas>
               <div id="editor-hint" class="text-[11px] text-mk-sub mt-1">${tempLegendRegion ? '已定位图例区域（紫框）。拖拽紫框/绿框的四边或四角可微调大小，在空白处拖拽可重新框选。' : '在图上拖拽框选<b>图例区域</b>（通常是一整条横向排列的色块）。紫框=图例区，绿框=可选的图案区；框好后可拖拽边框/四角微调大小。'}</div>
@@ -3019,6 +3065,10 @@ C25   2</pre>
                     </span>
                   </div>` : ''}
               </div>
+              ${srcGallery ? `<div class="mt-2 flex items-center justify-between text-sm bg-violet-50 border border-violet-100 rounded-xl px-3 py-2">
+                <span class="text-violet-600">将上方识别结果保存到图库图纸「${escapeHtml(srcGallery.name)}」</span>
+                <button id="legend-save-gallery" type="button" class="px-2.5 py-1 rounded-lg bg-violet-500 text-white text-xs font-semibold hover:opacity-90">💾 保存到图库</button>
+              </div>` : ''}
               <button id="legend-usage" type="button" class="w-full px-3 py-2 rounded-xl bg-mk-mint/70 text-mk-ink text-sm font-semibold hover:bg-mk-mint/90 ${tempLegendMap.length ? '' : 'hidden'}">📊 计算整图用量（先框选图案区域）</button>
             </div>
           </div>
@@ -3054,6 +3104,7 @@ C25   2</pre>
         tempDetectedFramePx = null;
         tempLegendMap = [];
         tempLegendRegion = null;
+        tempLegendSourceGalleryId = null;
         renderRecognize(v);
         // 上传后自动尝试定位图例条
         const img = new Image();
@@ -3213,7 +3264,10 @@ C25   2</pre>
           if (det && det.region) { region = det.region; tempLegendRegion = region; }
         }
         if (!region) return toast('未能自动定位图例区域，请在图上拖拽框选图例条', 'warn');
-        tempLegendMap = await aiParseLegend(img, region, baseUrl);
+        const legendStub = window.__aiParseLegendStub;
+        tempLegendMap = await (legendStub && typeof legendStub === 'function'
+          ? legendStub(img, region, baseUrl)
+          : aiParseLegend(img, region, baseUrl));
         tempLegendRegion = region;   // 锁定图例区，图案区留给第二步框选
         tempCropRegion = null;
         tempDetectedVLines = []; tempDetectedHLines = [];
@@ -3299,6 +3353,22 @@ C25   2</pre>
       toast(`已扣减 ${ok} 种颜色${skip ? `，跳过 ${skip} 种未匹配` : ''}`, 'success');
     };
 
+    // 来自图库：返回图库 / 保存图例结果回图库
+    const backGalleryBtn = $('#rc-back-gallery');
+    if (backGalleryBtn) backGalleryBtn.onclick = () => switchView('gallery');
+    const saveGalleryBtn = $('#legend-save-gallery');
+    if (saveGalleryBtn) saveGalleryBtn.onclick = () => {
+      const g = srcGallery;
+      if (!g) return toast('找不到来源图纸', 'error');
+      const items = tempLegendMap
+        .filter(x => x.colorNumber)
+        .map(x => ({ hex: x.hex || '', colorNumber: x.colorNumber, colorName: x.colorName || '', count: +x.count || 0 }));
+      if (!items.length) return toast('请先识别并保留至少一个色号', 'warn');
+      g.legend = { savedAt: Date.now(), items };
+      save();
+      toast('已保存到图库「' + g.name + '」', 'success');
+    };
+
   }
 
   // 图例模式：用图例色卡统计图案区域每个色号的用量（数量=格子数）
@@ -3379,7 +3449,9 @@ C25   2</pre>
     function isBg(r, g, b) { return r > 245 && g > 245 && b > 245; }
     function isText(r, g, b) { return r < 45 && g < 45 && b < 45; }
     function isGray(r, g, b) { const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return mx - mn < 30 && mx > 60 && mx < 230; }
-    function goodPx(r, g, b) { return !isBg(r, g, b) && !isText(r, g, b) && !isGray(r, g, b); }
+    // 过滤表头/分隔行的低饱和浅色背景（如浅米色、浅粉色、浅灰蓝），避免被当成色块
+    function isPaleBg(r, g, b) { const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return mx > 230 && mx - mn < 35; }
+    function goodPx(r, g, b) { return !isBg(r, g, b) && !isText(r, g, b) && !isGray(r, g, b) && !isPaleBg(r, g, b); }
 
     // 1. 扫描底部 45% 区域（给两行图例留出足够搜索空间）
     const yStart = Math.floor(h * 0.55);
@@ -3790,7 +3862,7 @@ C25   2</pre>
     });
     $$('.g-legend').forEach(b => b.onclick = () => {
       const g = state.gallery.find(x => x.id === b.dataset.id);
-      if (g) recognizeGalleryLegend(g);
+      if (g) openLegendInRecognize(g);
     });
     $$('.g-edit').forEach(b => b.onclick = (e) => {
       e.stopPropagation();
@@ -3847,6 +3919,7 @@ C25   2</pre>
               <button class="g-del text-[11px] px-2.5 py-1.5 rounded-xl bg-rose-50 text-rose-400" data-id="${g.id}">删除</button>
             </div>
           </div>
+          ${g.legend && g.legend.items && g.legend.items.length ? `<div class="mt-1 flex items-center gap-1.5 text-[11px] text-violet-500"><span>🎨 图例 ${g.legend.items.length} 色</span><span class="text-mk-sub">· 共 ${g.legend.items.reduce((s, x) => s + (+x.count || 0), 0)} 颗</span></div>` : ''}
         </div>
       </div>`;
     }
@@ -3880,6 +3953,35 @@ C25   2</pre>
       </div>
     </div>`;
   }
+  // 图库「识别图例」：把当前图片注入「图纸识别」页（自动定位图例），识别后可反填回图库
+  function openLegendInRecognize(g) {
+    if (!g || !g.image) return toast('该图纸没有图片，无法识别图例', 'warn');
+    tempImage = g.image;
+    tempIgnoreColors = [];
+    tempCropRegion = null;
+    tempDetectedVLines = [];
+    tempDetectedHLines = [];
+    tempDetectedFramePx = null;
+    // 反填已有图例结果，便于继续编辑/修正后再保存
+    tempLegendMap = (g.legend && Array.isArray(g.legend.items)) ? g.legend.items.map(it => {
+      const rgb = hexToRgb(it.hex || '') || [0, 0, 0];
+      return { r: rgb[0], g: rgb[1], b: rgb[2], hex: it.hex || '', colorNumber: it.colorNumber || '', colorName: it.colorName || '', count: +it.count || 0 };
+    }) : [];
+    tempLegendRegion = null;
+    tempLegendSourceGalleryId = g.id;
+    switchView('recognize');
+    // 切换视图后自动定位图例区域
+    const img = new Image();
+    img.onload = () => {
+      const det = detectLegendRegion(img);
+      if (det && det.region) { tempLegendRegion = det.region; }
+      drawEditor();
+      if (det && det.region) toast('已自动定位图例区域，可拖拽边框/四角微调', 'success');
+      else toast('未能自动定位，请在图纸上拖拽框选图例区域', 'warn');
+    };
+    img.src = tempImage;
+  }
+
   function viewGallery(g) {
     const made = g.status === 'made';
     const body = `
@@ -3896,6 +3998,7 @@ C25   2</pre>
           <div><b>作者：</b>${escapeHtml(g.author || '—')}</div>
           <div><b>状态：</b>${made ? '已拼' : '未拼'}</div>
           <div><b>添加时间：</b>${fmtTime(g.createdAt)}</div>
+          ${g.legend && g.legend.items && g.legend.items.length ? `<div class="mt-1"><b>图例：</b>${g.legend.items.length} 色 · 共 ${g.legend.items.reduce((s, x) => s + (+x.count || 0), 0)} 颗<div class="mt-1 flex flex-wrap gap-1">${g.legend.items.map(it => `<span class="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full bg-violet-50 text-violet-600"><span class="w-3 h-3 rounded-full inline-block" style="background:${it.hex || '#ccc'}"></span>${escapeHtml(it.colorNumber)}${it.count ? (' ×' + it.count) : ''}</span>`).join('')}</div></div>` : ''}
         </div>
       </div>`;
     openModal('图纸详情：' + g.name, body, { wide: true });
@@ -3906,276 +4009,6 @@ C25   2</pre>
     $('#g-edit2').onclick = () => { galleryEditId = g.id; closeModal(); renderGallery($('#view')); };
     const imgWrap = $('#g-detail-img-wrap');
     if (imgWrap) imgWrap.onclick = () => openGalleryImageZoom(g);
-  }
-
-  // 在完整图纸上手动框选图例区域，返回归一化 region 给回调
-  function openLegendReselectModal(g, img, onSelected) {
-    const body = `
-      <div class="space-y-2">
-        <div class="text-xs text-mk-sub">在图纸上拖拽框选图例区域，框得越准识别越准。</div>
-        <div id="glr-stage" class="relative inline-block max-w-full overflow-auto rounded-xl border border-mk-sand bg-mk-cream" style="max-height:60vh;">
-          <img id="glr-img" src="${g.image}" class="block max-w-full" alt="${escapeHtml(g.name)}" style="user-select:none;-webkit-user-drag:none;">
-          <div id="glr-rect" class="absolute border-2 border-mk-rose bg-mk-rose/20 pointer-events-none hidden" style="box-shadow:0 0 0 9999px rgba(0,0,0,0.25);"></div>
-        </div>
-        <div class="text-[11px] text-mk-sub text-center">拖动鼠标 / 手指绘制矩形选区</div>
-      </div>`;
-    openModal('📐 框选图例区域：' + g.name, body, { wide: true });
-    setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="closeModal()">取消</button>
-      <button id="glr-confirm" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold" disabled>确认框选</button>`);
-
-    const imgEl = $('#glr-img');
-    const rectEl = $('#glr-rect');
-    let start = null, end = null, dragging = false;
-
-    const getPos = (e) => {
-      const rect = imgEl.getBoundingClientRect();
-      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-      return {
-        x: Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)),
-        y: Math.max(0, Math.min(1, (clientY - rect.top) / rect.height))
-      };
-    };
-    const drawRect = () => {
-      if (!start || !end) return;
-      const sx = Math.min(start.x, end.x), sy = Math.min(start.y, end.y);
-      const ex = Math.max(start.x, end.x), ey = Math.max(start.y, end.y);
-      rectEl.style.left = (sx * 100) + '%';
-      rectEl.style.top = (sy * 100) + '%';
-      rectEl.style.width = ((ex - sx) * 100) + '%';
-      rectEl.style.height = ((ey - sy) * 100) + '%';
-      rectEl.classList.remove('hidden');
-    };
-    const startDrag = (e) => {
-      e.preventDefault();
-      dragging = true;
-      start = getPos(e); end = start;
-      drawRect();
-    };
-    const moveDrag = (e) => {
-      if (!dragging) return;
-      e.preventDefault();
-      end = getPos(e);
-      drawRect();
-    };
-    const endDrag = () => {
-      dragging = false;
-      if (start && end) {
-        const dx = Math.abs(end.x - start.x), dy = Math.abs(end.y - start.y);
-        $('#glr-confirm').disabled = dx < 0.02 || dy < 0.02;
-      }
-    };
-
-    imgEl.addEventListener('mousedown', startDrag);
-    imgEl.addEventListener('touchstart', startDrag, { passive: false });
-    window.addEventListener('mousemove', moveDrag);
-    window.addEventListener('touchmove', moveDrag, { passive: false });
-    window.addEventListener('mouseup', endDrag);
-    window.addEventListener('touchend', endDrag);
-
-    $('#glr-confirm').onclick = () => {
-      if (!start || !end) return;
-      const sx = Math.min(start.x, end.x), sy = Math.min(start.y, end.y);
-      const ex = Math.max(start.x, end.x), ey = Math.max(start.y, end.y);
-      if (ex - sx < 0.02 || ey - sy < 0.02) return toast('选区太小，请重新框选', 'warn');
-      closeModal();
-      onSelected({ x: sx, y: sy, w: ex - sx, h: ey - sy });
-    };
-  }
-
-  // 图库图纸的「识别图例」：自动定位底部图例区域，AI 视觉读色号与数量
-  async function recognizeGalleryLegend(g) {
-    const viaProxy = !state.settings.visionBaseUrl || !state.settings.visionBaseUrl.trim() || state.settings.visionBaseUrl.trim().indexOf('/api/') === 0;
-    const aiReady = viaProxy || !!(state.settings.enableVision && state.settings.apiKey);
-    if (!aiReady) return toast('请先到「设置 → 云端视觉AI」启用图例识别', 'warn');
-    if (!g.image) return toast('该图纸没有图片，无法识别图例', 'warn');
-    const baseUrl = state.settings.visionBaseUrl || '';
-
-    const bodyEl = openModal('🎨 识别图例：' + g.name, `
-      <div class="text-center py-8 text-mk-sub">
-        <div class="text-3xl mb-2">⏳</div>
-        <div>正在加载图片并定位图例区域…</div>
-      </div>
-    `, { wide: true });
-
-    try {
-      const img = await loadImage(g.image);
-      bodyEl.innerHTML = `
-        <div class="text-center py-8 text-mk-sub">
-          <div class="text-3xl mb-2">🤖</div>
-          <div>已定位图例区域，AI 识别中…</div>
-        </div>
-      `;
-      const det = window.__legendRegionStub ? window.__legendRegionStub(img) : detectLegendRegion(img);
-      if (!det || !det.region) throw new Error('未能自动定位图例区域，请尝试到「图纸识别」页手动框选图例');
-      const items = await (window.__aiParseLegendStub ? window.__aiParseLegendStub(img, det.region, baseUrl, det) : aiParseLegend(img, det.region, baseUrl, det));
-      renderGalleryLegendResult(g, img, det.region, items);
-    } catch (err) {
-      console.error(err);
-      bodyEl.innerHTML = `
-        <div class="text-center py-6 text-mk-sub">
-          <div class="text-2xl mb-2">⚠️</div>
-          <div>识别失败：${escapeHtml(err.message || '未知错误')}</div>
-          <div class="text-xs mt-2">可点击下方按钮手动框选图例区域后重新识别。</div>
-        </div>
-      `;
-      setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">关闭</button>
-        <button id="gl-fail-reselect" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold">📐 手动框选图例区域</button>`);
-      const failBtn = $('#gl-fail-reselect');
-      if (failBtn) failBtn.onclick = () => {
-        const img2 = new Image();
-        img2.onload = () => {
-          openLegendReselectModal(g, img2, async (newRegion) => {
-            const loadingBody = `
-              <div class="text-center py-8 text-mk-sub">
-                <div class="text-3xl mb-2">🤖</div>
-                <div>正在用新框选区域识别…</div>
-              </div>`;
-            openModal('🎨 识别图例：' + g.name, loadingBody, { wide: true });
-            try {
-              const newItems = await aiParseLegend(img2, newRegion, baseUrl, { likelyTwoRow: false });
-              renderGalleryLegendResult(g, img2, newRegion, newItems);
-            } catch (e) {
-              console.error(e);
-              $('#modal-body').innerHTML = `<div class="text-center py-6 text-mk-sub"><div class="text-2xl mb-2">⚠️</div><div>识别失败：${escapeHtml(e.message || '未知错误')}</div></div>`;
-              setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="closeModal()">关闭</button>`);
-            }
-          });
-        };
-        img2.onerror = () => toast('图片加载失败', 'error');
-        img2.src = g.image;
-      };
-    }
-  }
-
-  // 图例识别结果弹窗：可逐行校正色号/数量，色号不存在标红，支持合并重复色号，移动端适配
-  function renderGalleryLegendResult(g, img, region, items) {
-    // 工作副本（可编辑），每项 {colorNumber,colorName,count,hex,bad,removed}
-    let work = items.map(it => ({
-      colorNumber: it.colorNumber || '', colorName: it.colorName || '',
-      count: (+it.count || 0), hex: it.hex || '', bad: false, removed: false
-    }));
-    const hasCount = work.some(x => x.count > 0);
-
-    // 图例区域裁剪预览（用于对照校正）
-    let previewUrl = '';
-    try {
-      if (img) {
-        const r = refineLegendRegion(img, region);
-        previewUrl = cropRegionToDataURL(img, r) || cropRegionToDataURL(img, region) || '';
-      }
-    } catch (e) { previewUrl = ''; }
-
-    const recheck = () => {
-      work.forEach(it => {
-        it.bad = !!(it.colorNumber && !beadByNumber(it.colorNumber.trim().toUpperCase()));
-      });
-    };
-    recheck();
-
-    const body = `
-      <div class="space-y-3">
-        <div class="flex flex-col sm:flex-row sm:items-center gap-2 text-xs text-mk-sub">
-          <span>图纸「${escapeHtml(g.name)}」识别到 <b id="gl-ncolors">0</b> 个图例色号，可逐行校正后再导出。色号不存在会<span class="text-rose-500 font-semibold">标红</span>。</span>
-        </div>
-        ${previewUrl ? `<div class="mx-auto max-w-[260px] sm:max-w-[320px] rounded-xl overflow-hidden border border-mk-sand bg-white"><img src="${previewUrl}" class="w-full block" alt="图例区域预览"></div><div class="text-[11px] text-center text-mk-sub -mt-1">识别所用图例区域（可对照校正）</div>` : ''}
-        <div class="flex justify-center">
-          <button id="gl-reselect" class="text-[11px] px-3 py-1.5 rounded-xl bg-white border border-mk-sand text-mk-ink hover:bg-mk-sand/40">📐 重新框选图例区域</button>
-        </div>
-        <div id="gl-list" class="flex flex-col gap-1.5 max-h-[40vh] sm:max-h-[44vh] overflow-auto pr-1"></div>
-        <div class="flex items-center gap-2 flex-wrap">
-          <button id="gl-merge" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-white border border-mk-sand text-mk-ink hover:bg-mk-sand/40">🔁 合并重复色号</button>
-          <span id="gl-warn" class="text-[11px] text-rose-500"></span>
-        </div>
-      </div>
-    `;
-    const bodyEl = openModal('🎨 识别结果：' + g.name, body, { wide: true });
-    const baseUrl = state.settings.visionBaseUrl || '';
-
-    const reselectBtn = $('#gl-reselect');
-    if (reselectBtn) reselectBtn.onclick = () => {
-      openLegendReselectModal(g, img, async (newRegion) => {
-        const loadingBody = `
-          <div class="text-center py-8 text-mk-sub">
-            <div class="text-3xl mb-2">🤖</div>
-            <div>正在用新框选区域识别…</div>
-          </div>`;
-        openModal('🎨 识别图例：' + g.name, loadingBody, { wide: true });
-        try {
-          const newItems = await aiParseLegend(img, newRegion, baseUrl, { likelyTwoRow: false });
-          renderGalleryLegendResult(g, img, newRegion, newItems);
-        } catch (e) {
-          console.error(e);
-          $('#modal-body').innerHTML = `<div class="text-center py-6 text-mk-sub"><div class="text-2xl mb-2">⚠️</div><div>识别失败：${escapeHtml(e.message || '未知错误')}</div></div>`;
-          setModalFoot(`<button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="closeModal()">关闭</button>`);
-        }
-      });
-    };
-
-    const renderList = () => {
-      const list = $('#gl-list'); if (!list) return;
-      list.innerHTML = work.map((it, i) => {
-        const cn = (it.colorNumber || '').trim().toUpperCase();
-        return `
-        <div class="flex items-center gap-1.5 p-1.5 rounded-lg border ${it.removed ? 'opacity-40 bg-mk-sand/20' : 'bg-white border-mk-sand'} ${it.bad ? 'border-rose-400 ring-1 ring-rose-200' : ''}">
-          <span class="w-5 h-5 rounded-full swatch shrink-0" style="background:${it.hex || '#ccc'}"></span>
-          <input class="gl-cn flex-1 min-w-0 w-16 px-1.5 py-1 rounded-lg bg-white border ${it.bad ? 'border-rose-400' : 'border-mk-sand'} text-xs font-semibold uppercase" data-i="${i}" value="${escapeHtml(cn)}" placeholder="色号">
-          <input class="gl-cn-name flex-1 min-w-0 w-16 px-1.5 py-1 rounded-lg bg-white border border-mk-sand text-xs" data-i="${i}" value="${escapeHtml(it.colorName || '')}" placeholder="名称">
-          <input class="gl-cnt w-14 px-1.5 py-1 rounded-lg bg-white border border-mk-sand text-xs text-right" data-i="${i}" type="number" min="0" value="${it.count || 0}">
-          <button class="gl-rm text-mk-sub px-1.5 ${it.removed ? 'text-emerald-500' : 'text-rose-400'}" data-i="${i}" title="${it.removed ? '恢复' : '删除'}">${it.removed ? '↺' : '✕'}</button>
-        </div>`;
-      }).join('');
-      list.querySelectorAll('.gl-cn').forEach(inp => inp.oninput = () => { const it = work[+inp.dataset.i]; it.colorNumber = (inp.value || '').toUpperCase(); recheck(); paintWarnings(); });
-      list.querySelectorAll('.gl-cn-name').forEach(inp => inp.oninput = () => { work[+inp.dataset.i].colorName = inp.value; });
-      list.querySelectorAll('.gl-cnt').forEach(inp => inp.oninput = () => { const v = parseInt(inp.value, 10); work[+inp.dataset.i].count = isNaN(v) ? 0 : v; paintWarnings(); });
-      list.querySelectorAll('.gl-rm').forEach(b => b.onclick = () => { const it = work[+b.dataset.i]; it.removed = !it.removed; renderList(); });
-    };
-    const paintWarnings = () => {
-      const nColors = work.filter(x => !x.removed && x.colorNumber).length;
-      const elN = $('#gl-ncolors'); if (elN) elN.textContent = nColors;
-      const badList = work.filter(x => x.bad && !x.removed);
-      const warn = $('#gl-warn');
-      if (warn) warn.textContent = badList.length ? ('⚠️ ' + badList.length + ' 个色号不存在，请修正后再加入补货') : '';
-    };
-    renderList(); paintWarnings();
-
-    $('#gl-merge').onclick = () => {
-      const map = {}; let merged = 0;
-      const next = [];
-      work.forEach(it => {
-        if (it.removed) { next.push(it); return; }
-        const key = (it.colorNumber || '').trim().toUpperCase();
-        if (!key) { next.push(it); return; }
-        if (map[key] != null) { next[map[key]].count += it.count || 0; merged++; }
-        else { map[key] = next.length; next.push(it); }
-      });
-      work = next; renderList(); paintWarnings();
-      toast(merged ? ('已合并 ' + merged + ' 个重复色号') : '没有可合并的重复色号', merged ? 'success' : 'info');
-    };
-
-    setModalFoot(`
-      <button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="closeModal()">关闭</button>
-      <button id="gl-copy" class="px-4 py-2 rounded-xl bg-mk-lav text-mk-ink font-semibold">📄 复制清单</button>
-      <button id="gl-restock" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold">📥 加入补货清单</button>
-    `);
-    const activeItems = () => work.filter(x => !x.removed && x.colorNumber);
-    $('#gl-copy').onclick = () => {
-      const rows = activeItems();
-      if (!rows.length) return toast('没有可导出的色号', 'warn');
-      const lines = ['图例识别：' + g.name, '色号\t名称\t数量'];
-      rows.forEach(it => lines.push((it.colorNumber) + '\t' + (it.colorName || '') + '\t' + (it.count || 0)));
-      const text = lines.join('\n');
-      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => toast('已复制图例清单', 'success'), () => copyTextFallback(text));
-      else copyTextFallback(text);
-    };
-    $('#gl-restock').onclick = () => {
-      const rows = activeItems();
-      const bad = rows.filter(x => !beadByNumber(x.colorNumber));
-      if (bad.length) return toast('存在不存在的色号（' + bad.map(x => x.colorNumber).join('、') + '），请先修正', 'error');
-      const valid = rows.filter(x => x.count > 0);
-      if (!valid.length) return toast('请至少给一个色号填写数量', 'warn');
-      addItemsToRestock(valid.map(it => ({ colorNumber: it.colorNumber, portions: 1, perQty: it.count })), '来自图库「' + g.name + '」图例识别');
-    };
   }
 
   function openAddGalleryModal() {
@@ -4279,7 +4112,7 @@ C25   2</pre>
         state.gallery.unshift({
           id: 'g' + (t + i).toString(36) + Math.random().toString(36).slice(2, 6),
           name, platform: (it.platform || '').trim(), author: (it.author || '').trim(),
-          image: it.img, status: it.status,
+          image: it.img, status: it.status, legend: null,
           createdAt: t + i
         });
       });

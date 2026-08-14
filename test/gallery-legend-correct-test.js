@@ -1,6 +1,5 @@
-// 聚焦测试：图例识别结果可校正、不存在标红、合并重复、复制/加入补货走校正数据。
-// 通过 window.__aiParseLegendStub 注入已知结果（含不存在色号 Z9、重复色号 A1 两条），
-// 绕过真实视觉 API，验证后校验与编辑逻辑。
+// 端到端测试（新流程）：图库「识别图例」→ 跳转到「图纸识别」页（自动定位）→ AI 识别（用 stub 绕过真实视觉 API）→ 「保存到图库」反填图例信息。
+// 验证：视图切换、识别结果渲染、保存到图库后 g.legend 写入 localStorage。
 // 用法：先启动 `python -m http.server 8137`，再 `node test/gallery-legend-correct-test.js`
 const puppeteer = require('C:/Users/木子/.workbuddy/binaries/node/workspace/node_modules/puppeteer-core');
 const CHROME = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
@@ -10,15 +9,14 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 const SETTINGS = { enableVision: true, apiKey: '', model: 'glm-4v-flash', visionBaseUrl: '', sampleTolerance: 48, scaleFactor: 1, recognizeMode: 'legend', gridCols: 0, gridRows: 0, cellAspect: 0.555, gridOCREnabled: false, replenishThreshold: 100, restockExportCols: ['record', 'colorNumber', 'portions', 'perQty', 'beads'] };
 
-function seed() {
-  const cvs = `data:image/svg+xml;base64,${Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="80" height="60"><rect width="80" height="60" fill="#f0f0f0"/></svg>').toString('base64')}`;
+function seed(image) {
   return {
     beads: [
       { id: 'b1', colorNumber: 'A1', colorName: '红', hex: '#ef4444', location: '', stock: 100, threshold: 0 },
       { id: 'b2', colorNumber: 'B2', colorName: '蓝', hex: '#3b82f6', location: '', stock: 50, threshold: 0 }
     ],
     logs: [], recipes: [], mappings: [],
-    gallery: [{ id: 'g1', name: '测试图', platform: '', author: '', status: 'unmade', image: cvs, createdAt: Date.now() }],
+    gallery: [{ id: 'g1', name: '测试两行图例', platform: '', author: '', status: 'unmade', image, legend: null, createdAt: Date.now() }],
     profile: { nickname: '', avatar: '' }, settings: SETTINGS, restockRecords: []
   };
 }
@@ -28,79 +26,93 @@ function seed() {
   const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new', args: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'] });
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+    await page.setViewport({ width: 800, height: 1000 });
     page.on('pageerror', e => { if (!/tailwind is not defined/i.test(e.message)) errors.push('PAGEERROR: ' + e.message); });
+
+    // 在页面上下文中绘制模拟图纸（上方图案 + 底部两行彩色图例，确保 detectLegendRegion 能定位）
+    const imageDataUrl = await page.evaluate(() => {
+      const W = 600, H = 800;
+      const c = document.createElement('canvas');
+      c.width = W; c.height = H;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, W, H);
+      const colors = ['#ef4444', '#3b82f6', '#22c55e', '#f59e0b', '#a855f7'];
+      for (let y = 20; y < H * 0.58; y += 18)
+        for (let x = 20; x < W - 20; x += 18) {
+          ctx.fillStyle = colors[(Math.floor(x / 18) + Math.floor(y / 18)) % colors.length];
+          ctx.fillRect(x, y, 14, 14);
+        }
+      const legendColors = ['#ef4444', '#3b82f6', '#22c55e', '#f59e0b', '#a855f7', '#ec4899', '#14b8a6', '#f97316', '#84cc16', '#06b6d4',
+        '#6366f1', '#8b5cf6', '#d946ef', '#f43f5e', '#10b981', '#0ea5e9', '#f59e0b', '#64748b', '#94a3b8', '#cbd5e1'];
+      const rowY = [H * 0.68, H * 0.82];
+      const colW = (W - 40) / 10, blockW = colW * 0.78, blockH = H * 0.08;
+      legendColors.forEach((color, i) => {
+        const x = 20 + (i % 10) * colW + (colW - blockW) / 2, y = rowY[Math.floor(i / 10)];
+        ctx.fillStyle = color; ctx.fillRect(x, y, blockW, blockH);
+        ctx.fillStyle = '#000000'; ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(String((i % 10) + 1), x + blockW / 2, y + blockH + 16);
+      });
+      return c.toDataURL('image/png');
+    });
+
     await page.evaluateOnNewDocument((k, s) => {
       localStorage.setItem(k, s);
+      // 用桩函数绕过真实视觉 API：返回 3 个固定色号+数量
       window.__aiParseLegendStub = (img, region, baseUrl) => Promise.resolve([
         { r: 239, g: 68, b: 68, hex: '#ef4444', colorNumber: 'A1', colorName: '红', count: 10 },
         { r: 59, g: 130, b: 246, hex: '#3b82f6', colorNumber: 'B2', colorName: '蓝', count: 20 },
-        { r: 0, g: 0, b: 0, hex: '#000000', colorNumber: 'Z9', colorName: '', count: 5 },
-        { r: 239, g: 68, b: 68, hex: '#ef4444', colorNumber: 'A1', colorName: '红', count: 7 }
+        { r: 34, g: 197, b: 94, hex: '#22c55e', colorNumber: 'C3', colorName: '绿', count: 30 }
       ]);
-      window.__legendRegionStub = (img) => ({ region: { x: 0, y: 0.7, w: 1, h: 0.3 } });
-    }, KEY, JSON.stringify(seed()));
+    }, KEY, JSON.stringify(seed(imageDataUrl)));
+
     await page.goto(FILE, { waitUntil: 'domcontentloaded' });
     await sleep(600);
 
+    // 进入图库
     await page.evaluate(() => { const b = [...document.querySelectorAll('#nav .nav-btn')].find(x => x.textContent.trim() === '图库'); if (b) b.click(); });
     await sleep(400);
+
+    // 点击「识别图例」→ 应跳转到「图纸识别」页
     await page.evaluate(() => { const b = document.querySelector('.g-legend'); if (b) b.click(); });
-    // 等待识别结果渲染（桩立即返回）
-    await sleep(1500);
+    await sleep(1200); // 等 switchView + 自动定位(detectLegendRegion) 完成
 
-    const diag = await page.evaluate(() => ({
-      title: document.querySelector('#modal-root h3')?.textContent || '',
-      body: (document.querySelector('#modal-body')?.textContent || '').slice(0, 120),
-      stub: typeof window.__aiParseLegendStub,
-      regionStub: typeof window.__legendRegionStub
+    const afterClick = await page.evaluate(() => ({
+      hasCanvas: !!document.querySelector('#editor-canvas'),
+      hasBack: !!document.querySelector('#rc-back-gallery'),
+      hasSave: !!document.querySelector('#legend-save-gallery'),
+      aiBtn: !!document.querySelector('#ai-parse-legend')
     }));
-    console.log('DIAG=', JSON.stringify(diag));
+    console.log('AFTER CLICK=', JSON.stringify(afterClick));
 
-    const title = await page.evaluate(() => document.querySelector('#modal-root h3')?.textContent || '');
-    const opened = title.includes('识别结果');
-    console.log('modalTitle=', title, opened ? '✅ RESULT MODAL' : '❌ NO RESULT MODAL');
+    // 点击「AI 识别图例」
+    await page.evaluate(() => { const b = document.querySelector('#ai-parse-legend'); if (b) b.click(); });
+    await sleep(1000);
 
-    const rowCount = await page.$$eval('#gl-list .gl-cn', els => els.length);
-    console.log('rows=', rowCount, rowCount === 4 ? '✅ 4 ROWS' : '❌ ROW COUNT');
+    const afterParse = await page.evaluate(() => ({
+      items: document.querySelectorAll('#legend-items .legend-item').length,
+      saveBtn: !!document.querySelector('#legend-save-gallery')
+    }));
+    console.log('AFTER PARSE=', JSON.stringify(afterParse));
 
-    // 不存在色号 Z9 应标红（边框 border-rose-400 或 ring-rose-200）
-    const hasBad = await page.$$eval('#gl-list > div', divs => divs.some(d => d.className.includes('rose')));
-    console.log(hasBad ? '✅ 不存在色号标红' : '❌ 未标红');
-
-    // 手动框选入口应存在
-    const hasReselect = await page.evaluate(() => !!document.querySelector('#gl-reselect'));
-    console.log(hasReselect ? '✅ 手动框选入口存在' : '❌ 缺少手动框选入口');
-
-    // 点击「合并重复色号」
-    await page.evaluate(() => document.querySelector('#gl-merge').click());
-    await sleep(300);
-    const rowCountAfterMerge = await page.$$eval('#gl-list .gl-cn', els => els.length);
-    console.log('rowsAfterMerge=', rowCountAfterMerge, rowCountAfterMerge === 3 ? '✅ MERGE -> 3 ROWS' : '❌ MERGE FAIL');
-
-    // 把 Z9 改成不存在->改为 B2 已存在；这里改为一个真实色号 A1 重名？改 Z9 -> B2 让那份也有效
-    await page.evaluate(() => {
-      const inp = [...document.querySelectorAll('#gl-list .gl-cn')].find(e => e.value === 'Z9');
-      if (inp) { inp.value = 'B2'; inp.dispatchEvent(new Event('input', { bubbles: true })); }
-    });
-    await sleep(200);
-
-    // 加入补货清单：应校验无不存在色号后生成记录（A1 合并后 17、B2 25）
-    await page.evaluate(() => document.querySelector('#gl-restock').click());
+    // 点击「保存到图库」
+    await page.evaluate(() => { const b = document.querySelector('#legend-save-gallery'); if (b) b.click(); });
     await sleep(500);
-    const afterRestock = await page.evaluate((k) => {
-      const s = JSON.parse(localStorage.getItem(k));
-      const rs = s.restockRecords;
-      return { count: rs.length, names: rs.map(r => r.name), items: rs[0] ? rs[0].items : [] };
-    }, KEY);
-    console.log('afterRestock=', JSON.stringify(afterRestock));
 
-    const ok = errors.length === 0 && opened && rowCount === 4 && hasBad && hasReselect &&
-      rowCountAfterMerge === 3 && afterRestock.count === 1;
-    console.log(ok ? '✅ GALLERY LEGEND CORRECT PASS' : '❌ GALLERY LEGEND CORRECT FAIL');
+    const saved = await page.evaluate((k) => {
+      const st = JSON.parse(localStorage.getItem(k));
+      const g = st.gallery.find(x => x.id === 'g1');
+      return g && g.legend ? { count: g.legend.items.length, first: g.legend.items[0] } : null;
+    }, KEY);
+    console.log('SAVED LEGEND=', JSON.stringify(saved));
+
+    const ok = afterClick.hasCanvas && afterClick.hasBack && afterClick.hasSave &&
+      afterParse.items === 3 && saved && saved.count === 3 && saved.first.colorNumber === 'A1';
+
+    console.log(ok ? '✅ GALLERY→RECOGNIZE→SAVE PASS' : '❌ GALLERY→RECOGNIZE→SAVE FAIL');
     console.log('PAGEERRORS:', errors);
-    console.log('RESULT_OK=' + (ok ? '1' : '0'));
-    process.exitCode = ok ? 0 : 1;
+    console.log('RESULT_OK=' + (ok && errors.length === 0 ? '1' : '0'));
+    process.exitCode = ok && errors.length === 0 ? 0 : 1;
   } catch (e) {
     console.error('TEST ERROR:', e && e.stack || e);
     process.exitCode = 1;
