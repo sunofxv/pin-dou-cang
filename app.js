@@ -5165,14 +5165,14 @@ C25   2</pre>
     cv.addEventListener('touchstart', (e) => down(e), { passive: false });
     cv.addEventListener('touchmove', (e) => move(e), { passive: false });
     cv.addEventListener('touchend', up);
-    cv.addEventListener('wheel', (e) => {
+    cv.onwheel = (e) => {
       if (!grid.align) return;
       e.preventDefault();
       const f = e.deltaY < 0 ? 1.1 : 0.9;
       grid.zoom = Math.min(5, Math.max(0.3, (grid.zoom || 1) * f));
       gridDrawAlign();
-    }, { passive: false });
-    cv.addEventListener('dblclick', () => { grid.zoom = 1; gridDrawAlign(); });
+    };
+    cv.ondblclick = () => { grid.zoom = 1; gridDrawAlign(); };
   }
   function gridBindResult() {
     const cv = $('#grid-result-canvas');
@@ -5293,6 +5293,7 @@ C25   2</pre>
       gridBindAlign();
       gridEnsureImage(() => {
         if (!grid.align) gridInitAlign();
+        gridBindAlign();
         gridDrawAlign();
         if (grid.cols === 0 && grid.rows === 0) gridAutoDetect();
       });
