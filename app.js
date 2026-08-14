@@ -5417,9 +5417,9 @@ C25   2</pre>
           ${!hasImg ? `<div class="mt-4 text-sm text-mk-sub">还没有图纸。点「上传图纸」选择本地图片，或「从图库导入」已保存的图纸。</div>` : ''}
         </section>
 
-        ${hasImg ? `
+        ${hasImg && grid.cropped ? `
         <section class="mk-card rounded-2xl shadow-soft p-5">
-          <h3 class="font-bold mb-2">① 对齐网格</h3>
+          <h3 class="font-bold mb-2">② 对齐网格</h3>
           <p class="text-[11px] text-mk-sub mb-2">把图上的<span class="text-rose-500 font-semibold">红色十字</span>中心点拖到图纸某个网格交叉点上，再调「格子大小」让网格贴合图纸格子（可旋转校正倾斜）。先填列数/行数，或点「自动检测」。</p>
           <div class="relative inline-block w-full">
             <div class="grid-canvas-wrap w-full rounded-xl border border-mk-sand bg-white overflow-auto" style="max-height:min(58vh,520px)"><canvas id="grid-align-canvas" class="block" style="touch-action:none;width:100%;height:auto;"></canvas></div>
@@ -5444,9 +5444,24 @@ C25   2</pre>
             <div class="h-2 rounded-full bg-mk-sand overflow-hidden"><div id="grid-progress-bar" class="h-full bg-mk-rose" style="width:0%"></div></div>
             <div id="grid-progress-text" class="text-[11px] text-mk-sub mt-1"></div>
           </div>
-        </section>` : ''}
+        </section>` :''}
 
-        ${hasCells ? `
+${hasImg && !grid.cropped ? `
+        <section class="mk-card rounded-2xl shadow-soft p-5">
+          <h3 class="font-bold mb-2">① 剪裁图纸</h3>
+          <p class="text-[11px] text-mk-sub mb-2">拖拽框选网格区域，去掉边缘空白后「确认剪裁」进入对齐。或「跳过剪裁」直接用整张图。</p>
+          <div class="relative inline-block w-full">
+            <div class="w-full rounded-xl border border-mk-sand bg-white overflow-hidden" style="max-height:min(58vh,520px)">
+              <canvas id="grid-crop-canvas" class="block w-full" style="touch-action:none"></canvas>
+            </div>
+          </div>
+          <div class="flex gap-2 mt-3">
+            <button id="grid-crop-ok" type="button" class="px-4 py-2 rounded-xl bg-gradient-to-r from-violet-400 to-sky-400 text-white text-sm font-semibold hover:opacity-90">✓ 确认剪裁</button>
+            <button id="grid-crop-skip" type="button" class="px-4 py-2 rounded-xl bg-white border border-mk-sand text-mk-sub text-sm hover:bg-mk-sand/30">跳过剪裁</button>
+          </div>
+        </section>` :''}
+
+${hasCells ? `
         <section class="mk-card rounded-2xl shadow-soft p-5">
           <h3 class="font-bold mb-2">② 识别结果（${grid.rows} 行 × ${grid.cols} 列）</h3>
           <div class="relative inline-block w-full">
