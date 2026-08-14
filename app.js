@@ -3045,9 +3045,9 @@ C25   2</pre>
                 return `<button id="ai-parse-legend" type="button" ${aiReady ? '' : 'disabled title="请先到「设置 → 云端视觉AI」启用（默认走内置云端代理）"'} class="w-full px-3 py-2 rounded-xl text-sm font-semibold ${aiReady ? 'bg-gradient-to-r from-violet-400 to-sky-400 text-white hover:opacity-90' : 'bg-gray-100 text-gray-400 cursor-not-allowed'} ${tempLegendMap.length ? 'hidden' : ''}">🤖 AI识别图例（云端视觉自动读色号）</button>${aiReady ? '' : '<p class="text-[10px] text-center text-mk-sub mt-1">到「设置 → 云端视觉AI」启用即可使用（默认走内置代理，无需填 Key）</p>'}`;
               })()}
               <div id="legend-list" class="${tempLegendMap.length ? '' : 'hidden'}">
-                <div class="flex items-center justify-between mb-1">
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 mb-1">
                   <div class="text-xs text-mk-sub">已解析 <b>${tempLegendMap.length}</b> 个色号${tempLegendMap.some(x => x.count > 0) ? '（含数量）' : ''}（色号/数量可点击编辑）：</div>
-                  <button id="clear-legend" type="button" class="text-xs text-rose-400 hover:underline">清空图例</button>
+                  <button id="clear-legend" type="button" class="text-xs text-rose-400 hover:underline self-start">清空图例</button>
                 </div>
                 <div id="legend-items" class="flex flex-col gap-1.5 max-h-52 overflow-auto pr-1">
                   ${tempLegendMap.map((it, i) => `
@@ -3738,7 +3738,7 @@ C25   2</pre>
     const total = rc.items.reduce((s, i) => s + i.qty, 0);
     const gridBadge = rc.grid ? `<span class="text-[11px] px-2 py-0.5 rounded-full bg-mk-mint/60 text-mk-ink whitespace-nowrap">📐 ${rc.grid.cols}×${rc.grid.rows} 图纸</span>` : '';
     return `<div class="mk-card rounded-2xl shadow-soft p-4">
-      <div class="flex items-center justify-between gap-2">
+      <div class="flex flex-wrap items-center justify-between gap-2">
         <div class="font-bold truncate">${escapeHtml(rc.name)}</div>
         <div class="flex items-center gap-1.5 shrink-0">
           ${gridBadge}
