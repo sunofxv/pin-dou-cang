@@ -576,12 +576,12 @@
     root.innerHTML = `
       <div class="fixed inset-0 z-40 bg-black/30 flex items-center justify-center p-4" id="modal-overlay">
         <div class="mk-card rounded-2xl shadow-soft w-full ${widthCls} max-h-[88vh] flex flex-col" style="${widthStyle}">
-          <div class="flex items-center justify-between px-5 py-4 border-b border-mk-sand">
+          <div class="flex items-center justify-between flex-wrap gap-2 px-5 py-4 border-b border-mk-sand">
             <h3 class="font-bold text-lg">${escapeHtml(title)}</h3>
             <button class="text-mk-sub hover:text-mk-ink text-xl leading-none" id="modal-close">×</button>
           </div>
-          <div class="p-5 overflow-auto" id="modal-body">${bodyHtml}</div>
-          <div class="px-5 py-3 border-t border-mk-sand flex justify-end gap-2" id="modal-foot"></div>
+          <div class="p-4 sm:p-5 overflow-auto" id="modal-body">${bodyHtml}</div>
+          <div class="px-5 py-3 border-t border-mk-sand flex flex-wrap justify-end gap-2" id="modal-foot"></div>
         </div>
       </div>`;
     $('#modal-close').onclick = () => { if (onClose) onClose(); closeModal(); };
@@ -1612,7 +1612,7 @@
 
       <div class="grid md:grid-cols-2 gap-4">
         <section id="low-stock-section" class="mk-card rounded-2xl shadow-soft p-5">
-          <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
             <h3 class="font-bold">🚨 低库存预警（低于补货阈值）</h3>
             ${low.length ? '<button id="add-to-restock" type="button" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-mk-lav/70 text-mk-ink hover:bg-mk-lav/90">📥 添加到补货清单</button>' : ''}
           </div>
@@ -1628,7 +1628,7 @@
       </div>
 
       <section class="mk-card rounded-2xl shadow-soft p-5 mt-4">
-        <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
           <h3 class="font-bold">🎨 库存色号概览</h3>
           <div class="flex gap-2">
             <button id="dash-in" class="px-3 py-1.5 rounded-xl text-sm font-semibold bg-emerald-500 text-white shadow-soft">入库</button>
@@ -1776,9 +1776,9 @@
     const name = b ? b.colorName : (it.colorNumber ? '未知色号' : '请填写色号');
     const total = (it.portions || 0) * (it.perQty || 0);
     return `
-    <div class="rs-item flex items-center gap-2 mb-2 bg-white/60 rounded-xl px-2 py-2" data-rid="${r.id}" data-iid="${it.id}">
-      <span class="w-6 h-6 rounded-full swatch shrink-0" style="background:${hex}"></span>
-      <div class="flex flex-col w-28 shrink-0">
+    <div class="rs-item grid grid-cols-[auto_1fr_auto_auto_auto] sm:flex sm:items-center gap-2 mb-2 bg-white/60 rounded-xl px-2 py-2" data-rid="${r.id}" data-iid="${it.id}">
+      <span class="w-6 h-6 rounded-full swatch shrink-0 self-center" style="background:${hex}"></span>
+      <div class="flex flex-col min-w-0">
         <input class="ri-color w-full px-1.5 py-1 rounded-lg bg-white border border-mk-sand text-xs font-semibold" data-rid="${r.id}" data-iid="${it.id}" value="${escapeHtml(it.colorNumber)}" placeholder="色号">
         <span class="text-[10px] text-mk-sub truncate px-0.5">${escapeHtml(name)}</span>
       </div>
@@ -1794,7 +1794,7 @@
         数量
         <span class="text-sm font-bold text-mk-ink">${total}</span>
       </div>
-      <button class="ri-del ml-auto px-2 py-1 rounded-lg text-xs text-rose-500 hover:bg-rose-50" data-rid="${r.id}" data-iid="${it.id}" title="删除该项">✕</button>
+      <button class="ri-del px-2 py-1 rounded-lg text-xs text-rose-500 hover:bg-rose-50 self-center" data-rid="${r.id}" data-iid="${it.id}" title="删除该项">✕</button>
     </div>`;
   }
 
@@ -1811,18 +1811,18 @@
       : `<span class="rs-name-text flex-1 min-w-0 px-2 py-1.5 rounded-xl hover:bg-white/60 text-sm font-bold cursor-pointer truncate" data-id="${r.id}" title="点击折叠/展开">${escapeHtml(r.name || '')}</span>
          <button class="rs-name-edit ml-1 px-1.5 py-1 rounded-lg text-xs text-mk-sub hover:bg-mk-sand/40 hover:text-mk-ink" data-id="${r.id}" title="修改名称">✏️</button>`;
     const head = `
-      <div class="flex items-center gap-2 mb-2">
+      <div class="flex items-center gap-2 mb-2 flex-wrap">
         <button class="rs-toggle text-mk-sub text-lg leading-none px-1" data-id="${r.id}" title="${collapsed ? '展开' : '折叠'}">${collapsed ? '▸' : '▾'}</button>
         ${nameHtml}
         <span class="text-[11px] text-mk-sub whitespace-nowrap">${itemCount} 项 · ${total} 颗</span>
       </div>
-      <div class="flex items-center gap-2 mb-2 flex-wrap">
+      <div class="flex flex-wrap gap-2 mb-2">
         ${mode === 'pending'
           ? `<button class="rs-stock-all px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600" data-id="${r.id}">✅ 一键入库</button>
              <button class="rs-add-item px-3 py-1.5 rounded-xl text-xs font-semibold bg-mk-rose text-white hover:bg-mk-rose/90" data-id="${r.id}">➕ 新增清单</button>`
           : `<button class="rs-undo px-3 py-1.5 rounded-xl text-xs font-semibold bg-amber-500 text-white hover:bg-amber-600" data-id="${r.id}">↩️ 撤销入库</button>`}
-        <button class="rs-del-record ml-auto px-3 py-1.5 rounded-xl text-xs font-semibold bg-white border border-mk-sand text-rose-500 hover:bg-rose-50" data-id="${r.id}">🗑️ 删除记录</button>
-        <span class="text-[11px] text-mk-sub whitespace-nowrap">${timeLabel}</span>
+        <button class="rs-del-record px-3 py-1.5 rounded-xl text-xs font-semibold bg-white border border-mk-sand text-rose-500 hover:bg-rose-50" data-id="${r.id}">🗑️ 删除记录</button>
+        <span class="text-[11px] text-mk-sub whitespace-nowrap ml-auto self-center">${timeLabel}</span>
       </div>`;
     const itemsHtml = collapsed ? '' :
       `<div class="space-y-1 mt-1">${(r.items || []).map(it => restockItemRow(r, it)).join('') || '<div class="text-xs text-mk-sub text-center py-2">暂无清单项，点「新增清单」添加色号</div>'}</div>`;
@@ -1845,7 +1845,7 @@
       <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
         <h2 class="text-xl font-bold">📥 补货管理</h2>
         ${restockTab === 'pending'
-          ? `<div class="flex gap-2">
+          ? `<div class="flex gap-2 flex-wrap">
               <button id="rs-copy" class="px-4 py-2 rounded-xl bg-white border border-mk-sand text-mk-ink font-semibold hover:bg-mk-sand/40">📄 复制清单</button>
               <button id="rs-export-cfg" class="px-4 py-2 rounded-xl bg-white border border-mk-sand text-mk-ink font-semibold hover:bg-mk-sand/40">⚙️ 导出列</button>
               <button id="rs-recognize" class="px-4 py-2 rounded-xl bg-white border border-mk-sand text-mk-ink font-semibold hover:bg-mk-sand/40">📷 识别色号</button>
@@ -3722,7 +3722,7 @@ C25   2</pre>
   /* ===================== 14. 配方库 ===================== */
   function renderRecipes(v) {
     v.innerHTML = `
-      <div class="flex items-center justify-between mb-4">
+      <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
         <h2 class="text-xl font-bold">📚 配方库</h2>
         <span class="text-sm text-mk-sub">共 ${state.recipes.length} 个配方（仅预览/预扣，不直接扣减）</span>
       </div>
@@ -3919,16 +3919,16 @@ C25   2</pre>
           </div>
         </div>
         <div class="mt-2">
-          <div class="font-bold truncate">${escapeHtml(g.name)}</div>
+          <div class="font-bold truncate text-sm sm:text-base">${escapeHtml(g.name)}</div>
           <div class="text-xs text-mk-sub mt-0.5 truncate">${g.platform ? '📦 ' + escapeHtml(g.platform) : ''}${g.platform && g.author ? ' · ' : ''}${g.author ? '✍️ ' + escapeHtml(g.author) : ''}</div>
-          <div class="mt-2 flex items-center justify-between">
-            <span class="text-[11px] px-2 py-0.5 rounded-full ${made ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}">${made ? '✓ 已拼' : '○ 未拼'}</span>
-            <div class="flex gap-1.5 flex-wrap justify-end">
-              <button class="g-legend text-[11px] px-2.5 py-1.5 rounded-xl bg-violet-50 text-violet-500" data-id="${g.id}">🎨 识别图例</button>
-              <button class="g-grid text-[11px] px-2.5 py-1.5 rounded-xl bg-indigo-50 text-indigo-500" data-id="${g.id}">🧩 网格识别</button>
-              <button class="g-edit text-[11px] px-2.5 py-1.5 rounded-xl bg-sky-50 text-sky-500" data-id="${g.id}">编辑</button>
-              <button class="g-toggle text-[11px] px-2.5 py-1.5 rounded-xl ${made ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600'}" data-id="${g.id}">${made ? '标记未拼' : '标记已拼'}</button>
-              <button class="g-del text-[11px] px-2.5 py-1.5 rounded-xl bg-rose-50 text-rose-400" data-id="${g.id}">删除</button>
+          <div class="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <span class="text-[11px] px-2 py-0.5 rounded-full self-start ${made ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}">${made ? '✓ 已拼' : '○ 未拼'}</span>
+            <div class="flex gap-1.5 flex-wrap">
+              <button class="g-legend text-[11px] px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl bg-violet-50 text-violet-500" data-id="${g.id}">🎨 识别图例</button>
+              <button class="g-grid text-[11px] px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl bg-indigo-50 text-indigo-500" data-id="${g.id}">🧩 网格识别</button>
+              <button class="g-edit text-[11px] px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl bg-sky-50 text-sky-500" data-id="${g.id}">编辑</button>
+              <button class="g-toggle text-[11px] px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl ${made ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600'}" data-id="${g.id}">${made ? '标记未拼' : '标记已拼'}</button>
+              <button class="g-del text-[11px] px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl bg-rose-50 text-rose-400" data-id="${g.id}">删除</button>
             </div>
           </div>
           ${g.legend && g.legend.items && g.legend.items.length ? `<div class="g-legend-preview mt-1 flex items-center gap-1.5 text-[11px] text-violet-500 cursor-pointer hover:text-violet-600" data-id="${g.id}"><span>🎨 图例 ${g.legend.items.length} 色</span><span class="text-mk-sub">· 共 ${g.legend.items.reduce((s, x) => s + (+x.count || 0), 0)} 颗</span></div>` : ''}
@@ -4373,9 +4373,9 @@ C25   2</pre>
     v.innerHTML = `
       <div class="grid lg:grid-cols-2 gap-4">
         <!-- 个人信息 -->
-        <section class="mk-card rounded-2xl shadow-soft p-5 lg:col-span-2">
+        <section class="mk-card rounded-2xl shadow-soft p-4 sm:p-5 lg:col-span-2">
           <h3 class="font-bold mb-4">👤 个人信息</h3>
-          <div class="flex flex-row items-start gap-4">
+          <div class="flex flex-col sm:flex-row sm:items-start gap-4">
             <div class="relative shrink-0">
               <img id="settings-avatar-preview" src="${avatarUrl}" class="w-16 h-16 sm:w-20 sm:h-20 rounded-full object-cover bg-white border border-mk-sand shadow-soft">
               <label class="absolute bottom-0 right-0 bg-white rounded-full p-1 shadow cursor-pointer hover:bg-mk-sand text-[10px] border border-mk-sand" title="更换头像">
@@ -4395,8 +4395,8 @@ C25   2</pre>
         </section>
 
         <!-- 色卡对照表 -->
-        <section class="mk-card rounded-2xl shadow-soft p-5">
-          <div class="flex items-center justify-between mb-3">
+        <section class="mk-card rounded-2xl shadow-soft p-4 sm:p-5">
+          <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
             <h3 class="font-bold">🎨 自定义色号映射（覆盖色卡）</h3>
             <button id="map-add" class="px-3 py-1.5 rounded-xl bg-mk-lav text-mk-ink text-sm font-semibold">+ 新增映射</button>
           </div>
@@ -4423,7 +4423,7 @@ C25   2</pre>
         </section>
 
         <!-- 补货阈值设置 -->
-        <section class="mk-card rounded-2xl shadow-soft p-5">
+        <section class="mk-card rounded-2xl shadow-soft p-4 sm:p-5">
           <h3 class="font-bold mb-3">📦 补货阈值设置</h3>
           <label class="text-sm block mb-2">全局补货阈值（库存低于此值即预警，默认 100）
             <input id="replenish-thr" type="number" min="0" step="1" class="w-full mt-1 px-3 py-2 rounded-xl bg-white/70 border border-mk-sand" value="${state.settings.replenishThreshold}">
@@ -4432,7 +4432,7 @@ C25   2</pre>
         </section>
 
         <!-- 数据：导入导出 / 备份恢复 -->
-        <section class="mk-card rounded-2xl shadow-soft p-5 lg:col-span-2">
+        <section class="mk-card rounded-2xl shadow-soft p-4 sm:p-5 lg:col-span-2">
           <h3 class="font-bold mb-3">💾 数据管理</h3>
           <div class="flex flex-wrap gap-2">
             <button id="exp-xlsx" class="px-4 py-2 rounded-xl bg-mk-mint text-mk-ink font-semibold">导出库存 Excel</button>
@@ -4447,7 +4447,7 @@ C25   2</pre>
         </section>
 
         <!-- 图库图片管理 -->
-        <section class="mk-card rounded-2xl shadow-soft p-5 lg:col-span-2">
+        <section class="mk-card rounded-2xl shadow-soft p-4 sm:p-5 lg:col-span-2">
           <h3 class="font-bold mb-3">🖼️ 图库图片管理</h3>
           <div class="flex flex-wrap items-center gap-3">
             <button id="compress-gallery" class="px-4 py-2 rounded-xl bg-mk-sky text-mk-ink font-semibold">压缩图库图片</button>
@@ -4457,7 +4457,7 @@ C25   2</pre>
         </section>
 
         <!-- 账户与云端同步 -->
-        <section class="mk-card rounded-2xl shadow-soft p-5 lg:col-span-2">
+        <section class="mk-card rounded-2xl shadow-soft p-4 sm:p-5 lg:col-span-2">
           <h3 class="font-bold mb-3">☁️ 账户与云端同步</h3>
           ${accountSyncInner('acc')}
         </section>
@@ -4884,7 +4884,8 @@ C25   2</pre>
     const Hpx = Math.max(1, Math.round(img.height * (Wpx / img.width)));
     cv.width = Wpx; cv.height = Hpx;
     cv.style.aspectRatio = Wpx + '/' + Hpx;
-    cv.style.maxWidth = '100%';
+    cv.style.maxWidth = 'none';
+    cv.style.width = ((grid.zoom || 1) * 100) + '%';
     cv.style.height = 'auto';
     const ctx = cv.getContext('2d');
     ctx.drawImage(img, 0, 0, Wpx, Hpx);
@@ -5167,11 +5168,11 @@ C25   2</pre>
     cv.addEventListener('wheel', (e) => {
       if (!grid.align) return;
       e.preventDefault();
-      const f = e.deltaY < 0 ? 1.05 : 0.95;
-      grid.align.cell = Math.min(0.5, Math.max(0.002, grid.align.cell * f));
-      const ce = $('#grid-cell'); if (ce) ce.value = Math.round(grid.align.cell * grid.imgEl.width);
+      const f = e.deltaY < 0 ? 1.1 : 0.9;
+      grid.zoom = Math.min(5, Math.max(0.3, (grid.zoom || 1) * f));
       gridDrawAlign();
     }, { passive: false });
+    cv.addEventListener('dblclick', () => { grid.zoom = 1; gridDrawAlign(); });
   }
   function gridBindResult() {
     const cv = $('#grid-result-canvas');
@@ -5213,7 +5214,7 @@ C25   2</pre>
           <h3 class="font-bold mb-2">① 对齐网格</h3>
           <p class="text-[11px] text-mk-sub mb-2">把图上的<span class="text-rose-500 font-semibold">红色十字</span>中心点拖到图纸某个网格交叉点上，再调「格子大小」让网格贴合图纸格子（可旋转校正倾斜）。先填列数/行数，或点「自动检测」。</p>
           <div class="relative inline-block w-full">
-            <div class="grid-canvas-wrap w-full rounded-xl border border-mk-sand bg-white overflow-hidden" style="max-height:min(58vh,520px)"><canvas id="grid-align-canvas" class="block" style="touch-action:none;width:100%;height:auto;"></canvas></div>
+            <div class="grid-canvas-wrap w-full rounded-xl border border-mk-sand bg-white overflow-auto" style="max-height:min(58vh,520px)"><canvas id="grid-align-canvas" class="block" style="touch-action:none;width:100%;height:auto;"></canvas></div>
           </div>
           <div class="flex flex-wrap items-center gap-3 mt-3">
             <label class="text-xs text-mk-sub">列数 <input id="grid-cols" type="number" min="1" max="400" value="${grid.cols || ''}" class="w-16 px-2 py-1 rounded bg-mk-sand/30 border border-mk-sand text-sm"></label>
@@ -5223,13 +5224,13 @@ C25   2</pre>
           <div class="flex flex-wrap items-center gap-3 mt-3">
             <label class="text-xs text-mk-sub">格子大小(px) <input id="grid-cell" type="number" min="2" max="4000" value="${grid.align ? Math.round(grid.align.cell * grid.imgEl.width) : ''}" class="w-20 px-2 py-1 rounded bg-mk-sand/30 border border-mk-sand text-sm"></label>
             <label class="text-xs text-mk-sub">旋转(°) <input id="grid-rot" type="number" min="-45" max="45" step="0.5" value="${grid.align ? (grid.align.rot * 180 / Math.PI).toFixed(1) : 0}" class="w-20 px-2 py-1 rounded bg-mk-sand/30 border border-mk-sand text-sm"></label>
-            <span class="text-[11px] text-mk-sub">滚轮在图上可缩放格子</span>
+            <span class="text-[11px] text-mk-sub">滚轮在图上缩放图片（双击复位）· 格子大小用上方「格子大小(px)」调</span>
           </div>
           <div class="flex flex-wrap items-center gap-3 mt-3">
             <span class="text-xs text-mk-sub">识别引擎：</span>
             <label class="text-xs flex items-center gap-1"><input type="radio" name="grid-engine" value="vision" ${grid.engine === 'vision' ? 'checked' : ''}> 云端视觉（整图，快）</label>
             <label class="text-xs flex items-center gap-1"><input type="radio" name="grid-engine" value="tesseract" ${grid.engine === 'tesseract' ? 'checked' : ''}> 本地OCR（密集网格更准）</label>
-            <button id="grid-recognize" type="button" class="ml-auto px-4 py-2 rounded-xl bg-gradient-to-r from-violet-400 to-sky-400 text-white text-sm font-semibold hover:opacity-90 ${grid.busy ? 'opacity-60 cursor-wait' : ''}" ${grid.busy ? 'disabled' : ''}>${grid.busy ? '⏳ 识别中…' : '🔍 识别色号'}</button>
+            <button id="grid-recognize" type="button" class="px-4 py-2 rounded-xl bg-gradient-to-r from-violet-400 to-sky-400 text-white text-sm font-semibold hover:opacity-90 sm:ml-auto ${grid.busy ? 'opacity-60 cursor-wait' : ''}" ${grid.busy ? 'disabled' : ''}>${grid.busy ? '⏳ 识别中…' : '🔍 识别色号'}</button>
           </div>
           <div id="grid-progress" class="mt-2 ${grid.busy ? '' : 'hidden'}">
             <div class="h-2 rounded-full bg-mk-sand overflow-hidden"><div id="grid-progress-bar" class="h-full bg-mk-rose" style="width:0%"></div></div>
@@ -5370,7 +5371,7 @@ C25   2</pre>
                 <img id="p-img-preview" class="w-full rounded-xl border border-mk-sand block" />
                 <div id="p-img-mask" class="absolute inset-0 rounded-xl overflow-hidden hidden"></div>
               </div>`}
-            ${pImage ? `<div class="flex items-center justify-between mt-2 text-[11px] text-mk-sub"><span>📌 浅色区=识别的图案</span><button id="p-img-zoom" class="px-2 py-0.5 rounded-lg bg-mk-rose text-white font-semibold" title="在大窗口里预览并剪裁（操作更方便）">🔍 点图放大</button></div>` : ''}
+            ${pImage ? `<div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 mt-2 text-[11px] text-mk-sub"><span>📌 浅色区=识别的图案</span><button id="p-img-zoom" class="px-2 py-0.5 rounded-lg bg-mk-rose text-white font-semibold self-start" title="在大窗口里预览并剪裁（操作更方便）">🔍 点图放大</button></div>` : ''}
             <div class="flex flex-wrap gap-2 mt-2 ${pImage ? '' : 'hidden'}" id="p-crop-bar">
               <button id="p-crop-toggle" class="text-xs px-2.5 py-1.5 rounded-xl ${pImageCropMode ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub border border-mk-sand'}" title="${pImageCropMode ? '保存当前选区并退出编辑' : '进入剪裁编辑模式（4 角 + 4 边 + 内部拖动）'}">${pImageCropMode ? '✓ 完成剪裁' : '✂️ 剪裁'}</button>
               <button id="p-crop-reset" class="text-xs px-2.5 py-1.5 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" title="选区重置为整张图">↺ 重置选区</button>
@@ -5386,7 +5387,7 @@ C25   2</pre>
               <button class="preset-board px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-white/70 text-mk-sub border border-mk-sand" data-preset="14">小板 14</button>
               <button class="preset-board px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-white/70 text-mk-sub border border-mk-sand" data-preset="6">迷你 6</button>
             </div>
-            <div class="flex items-end gap-2">
+            <div class="flex flex-col sm:flex-row sm:items-end gap-2">
               <label class="text-sm flex-1">列（宽）<input id="p-icols" type="number" min="2" max="150" value="${pCols}" class="w-full mt-1 px-2 py-1.5 rounded-xl bg-white/70 border border-mk-sand"></label>
               <label class="text-sm flex-1">行（高）<input id="p-irows" type="number" min="2" max="150" value="${pRows}" class="w-full mt-1 px-2 py-1.5 rounded-xl bg-white/70 border border-mk-sand"></label>
             </div>
@@ -5410,7 +5411,7 @@ C25   2</pre>
 
           <!-- 色板（仅拥有色卡） -->
           <section class="mk-card rounded-2xl shadow-soft p-4">
-            <div class="flex items-center justify-between mb-1">
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-1">
               <h3 class="font-bold">🎨 色板（仅你拥有的色卡）</h3>
               <button id="p-pal-numbers" class="text-xs px-2.5 py-1 rounded-lg ${pPaletteShowNumbers ? 'bg-mk-rose text-white' : 'bg-white/70 text-mk-sub border border-mk-sand'}" title="切换色板色块上是否叠加色号">🔢 色号</button>
             </div>
@@ -5450,7 +5451,7 @@ C25   2</pre>
           </section>
 
           <section class="mk-card rounded-2xl shadow-soft p-4">
-            <div class="flex items-center justify-between mb-2">
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-2">
               <h3 class="font-bold">📋 用料清单</h3>
               <span id="p-total" class="text-sm text-mk-sub"></span>
             </div>
