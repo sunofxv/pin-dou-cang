@@ -2883,11 +2883,15 @@ C25   2</pre>
     img.onload = () => {
       const rect = cv.parentElement.getBoundingClientRect();
       const maxW = Math.min(cv.parentElement.clientWidth || rect.width, 720);
-      const scale = Math.min(1, maxW / img.width, 420 / img.height);
+      // 移动端优先按宽度撑满；高度由图片比例自然决定，CSS max-height 再做兜底
+      const scale = Math.min(1, maxW / img.width);
       const dw = Math.round(img.width * scale);
       const dh = Math.round(img.height * scale);
       cv.width = dw; cv.height = dh;
-      cv.style.width = dw + 'px'; cv.style.height = dh + 'px';
+      cv.style.width = '100%';
+      cv.style.height = 'auto';
+      cv.style.maxHeight = 'min(62vh, 520px)';
+      cv.style.display = 'block';
       const ctx = cv.getContext('2d');
       ctx.clearRect(0, 0, dw, dh);
       ctx.drawImage(img, 0, 0, dw, dh);
@@ -3001,25 +3005,25 @@ C25   2</pre>
     const srcGallery = tempLegendSourceGalleryId ? (state.gallery.find(x => x.id === tempLegendSourceGalleryId) || null) : null;
     v.innerHTML = `
       <div class="flex flex-col gap-4">
-        <section class="mk-card rounded-2xl shadow-soft p-5">
+        <section class="mk-card rounded-2xl shadow-soft p-4 sm:p-5">
           <h2 class="text-xl font-bold mb-1">🖼️ 图纸识别（图例模式）</h2>
           <p class="text-sm text-mk-sub mb-4">上传拼豆图纸，程序会自动定位底部的「颜色图例」条；定位不准时可拖拽边框/四角微调。</p>
 
-          <label class="block border-2 border-dashed border-mk-brown rounded-2xl p-6 text-center cursor-pointer hover:bg-white/50 transition">
+          <label class="block border-2 border-dashed border-mk-brown rounded-2xl p-4 sm:p-6 text-center cursor-pointer hover:bg-white/50 transition">
             <input id="img-input" type="file" accept="image/png,image/jpeg" class="hidden">
             <div class="text-4xl">📤</div>
-            <div class="mt-2 font-semibold">点击上传图纸图片</div>
+            <div class="mt-2 font-semibold text-sm sm:text-base">点击上传图纸图片</div>
             <div class="text-xs text-mk-sub">自动识别图纸底部的色块图例（每个色块内印色号、下方印数量）</div>
           </label>
 
           <div id="preview" class="mt-4 ${tempImage ? '' : 'hidden'}">
-            ${srcGallery ? `<div class="mb-2 text-xs text-violet-600 bg-violet-50 border border-violet-100 rounded-lg px-3 py-2 flex items-center justify-between gap-2">
-              <span>📚 来自图库：<b>${escapeHtml(srcGallery.name)}</b>，识别后可「保存到图库」反填该图纸的图例信息。</span>
-              <button id="rc-back-gallery" type="button" class="text-violet-500 underline shrink-0">返回图库</button>
+            ${srcGallery ? `<div class="mb-2 text-xs text-violet-600 bg-violet-50 border border-violet-100 rounded-lg px-3 py-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <span class="leading-relaxed">📚 来自图库：<b>${escapeHtml(srcGallery.name)}</b>，识别后可「保存到图库」反填该图纸的图例信息。</span>
+              <button id="rc-back-gallery" type="button" class="text-violet-500 underline shrink-0 text-xs sm:text-sm">返回图库</button>
             </div>` : ''}
-            <div class="relative inline-block w-full">
-              <canvas id="editor-canvas" class="w-full rounded-xl border border-mk-sand cursor-crosshair bg-white" style="max-height:min(62vh, 520px);"></canvas>
-              <div id="editor-hint" class="text-[11px] text-mk-sub mt-1">${tempLegendRegion ? '已定位图例区域（紫框）。拖拽紫框/绿框的四边或四角可微调大小，在空白处拖拽可重新框选。' : '在图上拖拽框选<b>图例区域</b>（通常是一整条横向排列的色块）。紫框=图例区，绿框=可选的图案区；框好后可拖拽边框/四角微调大小。'}</div>
+            <div class="relative w-full">
+              <canvas id="editor-canvas" class="w-full rounded-xl border border-mk-sand cursor-crosshair bg-white"></canvas>
+              <div id="editor-hint" class="text-[11px] text-mk-sub mt-1.5 leading-relaxed">${tempLegendRegion ? '已定位图例区域（紫框）。拖拽紫框/绿框的四边或四角可微调大小，在空白处拖拽可重新框选。' : '在图上拖拽框选<b>图例区域</b>（通常是一整条横向排列的色块）。紫框=图例区，绿框=可选的图案区；框好后可拖拽边框/四角微调大小。'}</div>
             </div>
             <div class="flex flex-wrap gap-2 mt-2">
               <button id="auto-legend-region" type="button" class="px-3 py-1.5 rounded-lg bg-mk-lav/70 text-mk-ink text-xs font-semibold hover:bg-mk-lav/90">🎯 自动框选图例区域</button>
@@ -3030,9 +3034,9 @@ C25   2</pre>
           <div class="mt-4 space-y-3">
             <!-- 图例识别：自动/手动框选图例 → 解析颜色 → 生成色号清单 → 框选图案 → 统计用量 -->
             <div id="legend-options" class="space-y-2">
-              <p class="text-[11px] text-mk-sub"><b>第一步</b>：上传后程序会<b>自动定位</b>图纸底部的图例条（紫框）。若定位不准，可拖拽紫框的四边/四角微调大小，或在空白处拖拽重新框选。<br>点「🤖 AI识别图例」读出色号与数量；识别后若调整了紫框，可点「🔄 重新解析」按新框重新识别。若图例下方已印数量，识别后可直接「存为配方 / 扣减库存」，<b>无需再框选图案</b>。</p>
-              <div class="flex items-center justify-between text-sm bg-white/60 rounded-xl px-3 py-2">
-                <span class="text-xs text-mk-sub">自动定位图例后，点右侧按钮重新识别（会根据当前紫框重新读取色号与数量）：</span>
+              <p class="text-[11px] text-mk-sub leading-relaxed"><b>第一步</b>：上传后程序会<b>自动定位</b>图纸底部的图例条（紫框）。若定位不准，可拖拽紫框的四边/四角微调大小，或在空白处拖拽重新框选。<br>点「🤖 AI识别图例」读出色号与数量；识别后若调整了紫框，可点「🔄 重新解析」按新框重新识别。若图例下方已印数量，识别后可直接「存为配方 / 扣减库存」，<b>无需再框选图案</b>。</p>
+              <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-sm bg-white/60 rounded-xl px-3 py-2">
+                <span class="text-xs text-mk-sub leading-relaxed">自动定位图例后，点右侧按钮重新识别（会根据当前紫框重新读取色号与数量）：</span>
                 <button id="parse-legend" type="button" class="px-3 py-1.5 rounded-lg bg-mk-lav/70 text-mk-ink text-xs font-semibold hover:bg-mk-lav/90 whitespace-nowrap">${tempLegendMap.length ? '🔄 重新解析' : '🎨 解析图例'}</button>
               </div>
               ${(() => {
@@ -3058,7 +3062,7 @@ C25   2</pre>
                   `).join('')}
                 </div>
                 ${tempLegendMap.some(x => x.count > 0) ? `
-                  <div class="mt-2 flex items-center justify-between text-sm bg-mk-lav/30 rounded-xl px-3 py-2">
+                  <div class="mt-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-sm bg-mk-lav/30 rounded-xl px-3 py-2">
                     <span>共 <b class="text-mk-ink">${tempLegendMap.filter(x => x.count > 0).length}</b> 色 · <b class="text-mk-ink">${tempLegendMap.reduce((s, x) => s + (+x.count || 0), 0)}</b> 颗</span>
                     <span class="flex gap-2">
                       <button id="legend-save" type="button" class="px-2.5 py-1 rounded-lg bg-mk-lav text-mk-ink text-xs font-semibold hover:bg-mk-lav/80">存为配方</button>
@@ -3066,16 +3070,16 @@ C25   2</pre>
                     </span>
                   </div>` : ''}
               </div>
-              ${srcGallery ? `<div class="mt-2 flex items-center justify-between text-sm bg-violet-50 border border-violet-100 rounded-xl px-3 py-2">
-                <span class="text-violet-600">将上方识别结果保存到图库图纸「${escapeHtml(srcGallery.name)}」</span>
-                <button id="legend-save-gallery" type="button" class="px-2.5 py-1 rounded-lg bg-violet-500 text-white text-xs font-semibold hover:opacity-90">💾 保存到图库</button>
+              ${srcGallery ? `<div class="mt-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-sm bg-violet-50 border border-violet-100 rounded-xl px-3 py-2">
+                <span class="text-violet-600 leading-relaxed">将上方识别结果保存到图库图纸「${escapeHtml(srcGallery.name)}」</span>
+                <button id="legend-save-gallery" type="button" class="px-2.5 py-1 rounded-lg bg-violet-500 text-white text-xs font-semibold hover:opacity-90 whitespace-nowrap">💾 保存到图库</button>
               </div>` : ''}
               <button id="legend-usage" type="button" class="w-full px-3 py-2 rounded-xl bg-mk-mint/70 text-mk-ink text-sm font-semibold hover:bg-mk-mint/90 ${tempLegendMap.length ? '' : 'hidden'}">📊 计算整图用量（先框选图案区域）</button>
             </div>
           </div>
         </section>
 
-        <section class="mk-card rounded-2xl shadow-soft p-5">
+        <section class="mk-card rounded-2xl shadow-soft p-4 sm:p-5">
           <h3 class="font-bold mb-3">📋 使用说明</h3>
           <ol class="text-sm text-mk-ink/80 space-y-2 list-decimal list-inside">
             <li>上传图纸图片。</li>
@@ -3840,12 +3844,12 @@ C25   2</pre>
         <h2 class="text-xl font-bold">🖼️ 图库</h2>
         <button id="gallery-add" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold shadow-soft">+ 添加图纸</button>
       </div>
-      <div class="grid grid-cols-3 gap-3 mb-5">
+      <div class="grid grid-cols-3 gap-2 sm:gap-3 mb-5">
         ${gStatCard('全部', all.length, galleryFilter === 'all')}
         ${gStatCard('未拼', unmade.length, galleryFilter === 'unmade')}
         ${gStatCard('已拼', made.length, galleryFilter === 'made')}
       </div>
-      ${list.length ? `<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">${list.map(galleryCard).join('')}</div>`
+      ${list.length ? `<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">${list.map(galleryCard).join('')}</div>`
         : '<div class="mk-card rounded-2xl shadow-soft p-8 text-center text-mk-sub">还没有图纸，点右上角「+ 添加图纸」上传吧 🌟</div>'}`;
     $('#gallery-add').onclick = openAddGalleryModal;
     $$('.g-filter').forEach(b => b.onclick = () => { galleryFilter = b.dataset.f; galleryEditId = null; renderGallery(v); });
@@ -3896,8 +3900,8 @@ C25   2</pre>
   }
   function gStatCard(label, val, active) {
     const f = label === '全部' ? 'all' : (label === '未拼' ? 'unmade' : 'made');
-    return `<button class="g-filter mk-card rounded-2xl shadow-soft p-4 text-center ${active ? 'ring-2 ring-mk-rose' : 'hover:scale-[1.02]'} transition" data-f="${f}">
-      <div class="text-2xl font-bold text-mk-ink">${val}</div>
+    return `<button class="g-filter mk-card rounded-2xl shadow-soft p-3 sm:p-4 text-center ${active ? 'ring-2 ring-mk-rose' : 'hover:scale-[1.02]'} transition" data-f="${f}">
+      <div class="text-xl sm:text-2xl font-bold text-mk-ink">${val}</div>
       <div class="text-xs text-mk-sub mt-1">${label}</div>
     </button>`;
   }
@@ -4879,6 +4883,9 @@ C25   2</pre>
     const Wpx = 1000;
     const Hpx = Math.max(1, Math.round(img.height * (Wpx / img.width)));
     cv.width = Wpx; cv.height = Hpx;
+    cv.style.aspectRatio = Wpx + '/' + Hpx;
+    cv.style.maxWidth = '100%';
+    cv.style.height = 'auto';
     const ctx = cv.getContext('2d');
     ctx.drawImage(img, 0, 0, Wpx, Hpx);
     if (!grid.align) return;
@@ -5206,7 +5213,7 @@ C25   2</pre>
           <h3 class="font-bold mb-2">① 对齐网格</h3>
           <p class="text-[11px] text-mk-sub mb-2">把图上的<span class="text-rose-500 font-semibold">红色十字</span>中心点拖到图纸某个网格交叉点上，再调「格子大小」让网格贴合图纸格子（可旋转校正倾斜）。先填列数/行数，或点「自动检测」。</p>
           <div class="relative inline-block w-full">
-            <canvas id="grid-align-canvas" class="w-full rounded-xl border border-mk-sand bg-white" style="max-height:min(58vh,520px); touch-action:none;"></canvas>
+            <div class="grid-canvas-wrap w-full rounded-xl border border-mk-sand bg-white overflow-hidden" style="max-height:min(58vh,520px)"><canvas id="grid-align-canvas" class="block" style="touch-action:none;width:100%;height:auto;"></canvas></div>
           </div>
           <div class="flex flex-wrap items-center gap-3 mt-3">
             <label class="text-xs text-mk-sub">列数 <input id="grid-cols" type="number" min="1" max="400" value="${grid.cols || ''}" class="w-16 px-2 py-1 rounded bg-mk-sand/30 border border-mk-sand text-sm"></label>
@@ -5234,7 +5241,7 @@ C25   2</pre>
         <section class="mk-card rounded-2xl shadow-soft p-5">
           <h3 class="font-bold mb-2">② 识别结果（${grid.rows} 行 × ${grid.cols} 列）</h3>
           <div class="relative inline-block w-full">
-            <canvas id="grid-result-canvas" class="w-full rounded-xl border border-mk-sand bg-white" style="max-height:min(72vh,680px); touch-action:none;"></canvas>
+            <div class="grid-canvas-wrap-result w-full rounded-xl border border-mk-sand bg-white overflow-hidden" style="max-height:min(72vh,680px)"><canvas id="grid-result-canvas" class="block" style="touch-action:none;width:100%;height:auto;"></canvas></div>
           </div>
           <div class="flex flex-wrap items-center gap-2 mt-2">
             <span class="text-[11px] text-mk-sub">点击上方格子可改色号；点击下方色号可高亮对应格子。</span>
