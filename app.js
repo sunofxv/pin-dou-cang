@@ -4921,6 +4921,7 @@ C25   2</pre>
   }
   // 将原图按对齐参数映射到输出画布（与 gridDrawAlign 同款 proven 渲染方式）
   // 核心思路：算出"输出每像素对应原图多少像素"的缩放比，直接 drawImage 整图缩放+旋转
+  // v6: 用已验证正确的 gridCellCenter 坐标逐格截取——与 gridDrawAlign 共享同一套坐标计算
   function gridWarp(img, align, cols, rows, cellPx) {
     const iw = img.width || img.naturalWidth || 1, ih = img.height || img.naturalHeight || 1;
     if (iw < 2 || ih < 2) { console.warn('[gridWarp] 无效图像尺寸:', iw, ih); const e=document.createElement('canvas');e.width=1;e.height=1;return e; }
@@ -4930,24 +4931,25 @@ C25   2</pre>
     const octx = out.getContext('2d');
     octx.fillStyle = '#fff'; octx.fillRect(0, 0, W, H);
     const cellSrc = (align.cell || 0.03) * iw;
-    // 关键缩放比：输出画布中每像素对应原图 cellSrc/cellPx 像素（通常≈1.0）
-    const pxPerSrc = cellPx / Math.max(1, cellSrc);
-    // 网格总尺寸（原图像素）
-    const gw = cols * cellSrc, gh = rows * cellSrc;
-    // 输出画布需要覆盖的原图区域（以网格中心为基准，考虑旋转外接矩形放大）
-    const cosA = Math.abs(Math.cos(align.rot || 0)), sinA = Math.abs(Math.sin(align.rot || 0));
-    const vw = gw * cosA + gh * sinA, vh = gw * sinA + gh * cosA;
-    const gcx = (align.cx || 0.5) * iw, gcy = (align.cy || 0.5) * ih;
-    octx.save();
-    octx.translate(W / 2, H / 2);
-    if (align.rot) octx.rotate(align.rot);
-    // 将原图的 [gcx-vw/2, gcy-vh/2, vw, vh] 区域映射到输出 [-W/2,-H/2,W,H]
-    octx.drawImage(img,
-      gcx - vw / 2, gcy - vh / 2, vw, vh,   // 源矩形（原图坐标）
-      -W / 2, -H / 2, W, H                   // 目标矩形（画布中心坐标系）
-    );
-    octx.restore();
-    console.log('[gridWarp] ok', iw+'x'+ih, '->', W+'x'+H, 'cellSrc='+cellSrc.toFixed(1)+'pxPerSrc='+pxPerSrc.toFixed(3));
+    const halfSrc = cellSrc * 0.5;
+    let drawn = 0, outOfBounds = 0;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        // 复用 gridCellCenter（与 gridDrawAlign 网格线同一套坐标，已验证正确）
+        const ctr = gridCellCenter(align, r, c, iw, ih);
+        let sx = ctr.x - halfSrc, sy = ctr.y - halfSrc;
+        let sw = cellSrc, sh = cellSrc;
+        // 边界 clamp
+        if (sx < 0) { sw += sx; sx = 0; }
+        if (sy < 0) { sh += sy; sy = 0; }
+        if (sx + sw > iw) sw = iw - sx;
+        if (sy + sh > ih) sh = ih - sy;
+        if (sw <= 0 || sh <= 0) { outOfBounds++; continue; }
+        octx.drawImage(img, sx, sy, sw, sh, c * cellPx, r * cellPx, cellPx, cellPx);
+        drawn++;
+      }
+    }
+    console.log('[gridWarp] v6 ok', iw+'x'+ih, '->', W+'x'+H, 'cellSrc='+cellSrc.toFixed(1), 'drawn='+drawn, 'oob='+outOfBounds);
     return out;
   }
   function gridSanitizeCode(s) {
