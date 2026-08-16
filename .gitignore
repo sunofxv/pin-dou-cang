@@ -16,3 +16,8 @@ tmp-test/
 # Capacitor 安卓原生工程（CI 自动生成，不入库）
 android/
 node_modules/
+
+# dotnet 构建产物 / 临时脚本
+desktop-launcher/src/bin/
+desktop-launcher/src/obj/
+tmp-*.js
