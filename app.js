@@ -4856,7 +4856,7 @@ C25   2</pre>
   // 按对齐参数把网格区域拉正为 rows×cols 矩形画布（补偿旋转），cellPx=输出每格像素
   function gridWarp(img, align, cols, rows, cellPx) {
     const iw = img.width, ih = img.height;
-    const { w, h, ctx } = createAnalysisCanvas(img, 4000);
+    const { w, h, ctx, scale } = createAnalysisCanvas(img, 4000);
     const src = ctx.getImageData(0, 0, w, h).data;
     const W = Math.max(1, cols * cellPx), H = Math.max(1, rows * cellPx);
     const out = document.createElement('canvas');
@@ -4864,6 +4864,9 @@ C25   2</pre>
     const octx = out.getContext('2d');
     const od = octx.createImageData(W, H);
     const cellSrc = align.cell * iw, cos = Math.cos(align.rot), sin = Math.sin(align.rot);
+    // 坐标缩放：createAnalysisCanvas 可能对图片放大/缩小(scale)，
+    // 采样坐标(sx,sy)在原图空间，需乘以 scale 才能正确索引到缩放后的 src 数据
+    const sc = scale || 1;
     for (let dy = 0; dy < H; dy++) {
       const r = Math.floor(dy / cellPx);
       const inV = (dy - r * cellPx + 0.5) / cellPx - 0.5;     // 格内纵向偏移(格单位)
@@ -4871,8 +4874,8 @@ C25   2</pre>
         const c = Math.floor(dx / cellPx);
         const inU = (dx - c * cellPx + 0.5) / cellPx - 0.5;   // 格内横向偏移
         const tu = (c - (cols - 1) / 2) + inU, tv = (r - (rows - 1) / 2) + inV;
-        const sx = align.cx * iw + tu * cellSrc * cos - tv * cellSrc * sin;
-        const sy = align.cy * ih + tu * cellSrc * sin + tv * cellSrc * cos;
+        const sx = (align.cx * iw + tu * cellSrc * cos - tv * cellSrc * sin) * sc;
+        const sy = (align.cy * ih + tu * cellSrc * sin + tv * cellSrc * cos) * sc;
         let x0 = Math.floor(sx), y0 = Math.floor(sy);
         let fx = sx - x0, fy = sy - y0;
         let x1 = x0 + 1, y1 = y0 + 1;
