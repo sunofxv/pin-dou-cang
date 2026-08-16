@@ -7580,6 +7580,8 @@ ${hasCells ? `
     });
   }
   renderNav();
+  const brand = $('#brand');
+  if (brand) brand.onclick = () => switchView('dashboard');
   switchView('dashboard');
   enableSwipeNavigation();
   // 把弹窗相关函数暴露到 window，让 inline onclick（如 `onclick="closeModal()"`）能正常执行
