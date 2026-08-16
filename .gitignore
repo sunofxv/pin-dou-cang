@@ -12,3 +12,7 @@ test/
 .DS_Store
 Thumbs.db
 tmp-test/
+
+# Capacitor 安卓原生工程（CI 自动生成，不入库）
+android/
+node_modules/

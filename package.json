@@ -1,0 +1,1 @@
+{"name": "pindoucang", "private": true, "devDependencies": {"@capacitor/cli": "^6.1.0"}, "dependencies": {"@capacitor/core": "^6.1.0", "@capacitor/android": "^6.1.0"}}
