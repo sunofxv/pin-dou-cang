@@ -3915,7 +3915,7 @@ C25   2</pre>
       const g = state.gallery.find(x => x.id === b.dataset.id);
       if (g) openLegendInRecognize(g);
     });
-    $$('.g-legend-preview').forEach(b => b.onclick = (e) => {
+    $$('.g-legend-info').forEach(b => b.onclick = (e) => {
       e.stopPropagation();
       const g = state.gallery.find(x => x.id === b.dataset.id);
       if (g) openGalleryLegendPreview(g);
@@ -3964,19 +3964,25 @@ C25   2</pre>
           </div>
         </div>
         <div class="mt-2">
-          <div class="font-bold truncate text-sm sm:text-base">${escapeHtml(g.name)}</div>
+          <div class="font-bold text-sm sm:text-base flex items-center gap-1">
+            <span class="truncate">${escapeHtml(g.name)}</span>
+            <button class="g-edit text-mk-sub hover:text-sky-500 transition shrink-0" data-id="${g.id}" title="编辑">✏️</button>
+          </div>
           <div class="text-xs text-mk-sub mt-0.5 truncate">${g.platform ? '📦 ' + escapeHtml(g.platform) : ''}${g.platform && g.author ? ' · ' : ''}${g.author ? '✍️ ' + escapeHtml(g.author) : ''}</div>
           <div class="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <span class="text-[11px] px-2 py-0.5 rounded-full self-start ${made ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}">${made ? '✓ 已拼' : '○ 未拼'}</span>
+            <span class="text-[11px] px-2 py-0.5 rounded-full self-start whitespace-nowrap ${made ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}">${made ? '✓ 已拼' : '○ 未拼'}</span>
             <div class="flex gap-1.5 flex-wrap">
-              <button class="g-legend text-[11px] px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl bg-violet-50 text-violet-500" data-id="${g.id}">🎨 识别图例</button>
+              ${g.legend && g.legend.items && g.legend.items.length ? `
+              <button class="g-legend-info text-[11px] px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl bg-violet-50 text-violet-500" data-id="${g.id}">📋 图例信息</button>
+              <button class="g-legend text-[11px] px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl bg-violet-50 text-violet-500" data-id="${g.id}">🔄 重新识别</button>
+              ` : `
+              <button class="g-legend text-[11px] px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl bg-violet-50 text-violet-500" data-id="${g.id}">🎨 去识别</button>
+              `}
               <button class="g-grid text-[11px] px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl bg-indigo-50 text-indigo-500" data-id="${g.id}">🧩 网格识别</button>
-              <button class="g-edit text-[11px] px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl bg-sky-50 text-sky-500" data-id="${g.id}">编辑</button>
               <button class="g-toggle text-[11px] px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl ${made ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600'}" data-id="${g.id}">${made ? '标记未拼' : '标记已拼'}</button>
               <button class="g-del text-[11px] px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl bg-rose-50 text-rose-400" data-id="${g.id}">删除</button>
             </div>
           </div>
-          ${g.legend && g.legend.items && g.legend.items.length ? `<div class="g-legend-preview mt-1 flex items-center gap-1.5 text-[11px] text-violet-500 cursor-pointer hover:text-violet-600" data-id="${g.id}"><span>🎨 图例 ${g.legend.items.length} 色</span><span class="text-mk-sub">· 共 ${g.legend.items.reduce((s, x) => s + (+x.count || 0), 0)} 颗</span></div>` : ''}
         </div>
       </div>`;
     }
