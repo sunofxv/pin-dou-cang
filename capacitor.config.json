@@ -1,1 +1,1 @@
-{"appId": "online.pindoucang.app", "appName": "拼豆豆仓", "webDir": ".", "server": {"androidScheme": "https"}}
+{"appId": "online.pindoucang.app", "appName": "拼豆豆仓", "webDir": ".", "include": ["index.html", "app.js", "config.js", "favicon.png"], "server": {"androidScheme": "https"}}
