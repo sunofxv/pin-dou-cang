@@ -4880,8 +4880,10 @@ C25   2</pre>
     const total = Math.max(1, grid.cols * grid.rows);
     return Math.max(16, Math.min(48, Math.floor(Math.sqrt(12_000_000 / total))));
   }
-  // 按对齐参数把网格区域逐格截取为 rows×cols 矩形画布（补偿旋转），cellPx=输出每格像素
-  // 重写：用逐格 drawImage 截取替代像素级采样——直接操作原图尺寸，彻底消除缩放坐标错位问题
+  // 用 Canvas 2D 变换链将原图映射到输出画布——零手动坐标计算，浏览器硬件加速采样
+  // 变换链（图像空间 → 输出空间）：
+  //   translate(-cx*iw, -cy*ih) → rotate(rot) → scale(cellPx/cellSrc) → translate(W/2, H/2)
+  //   即：图像像素经"网格中心归原点→旋转对齐→缩放到输出分辨率→移到画布中心"
   function gridWarp(img, align, cols, rows, cellPx) {
     const iw = img.width, ih = img.height;
     const W = Math.max(1, cols * cellPx), H = Math.max(1, rows * cellPx);
@@ -4891,20 +4893,14 @@ C25   2</pre>
     octx.fillStyle = '#fff';
     octx.fillRect(0, 0, W, H);
     const cellSrc = align.cell * iw;
-    const cos = Math.cos(align.rot), sin = Math.sin(align.rot);
-    // 稍微扩大源裁剪区以容忍旋转导致的格子外接矩形增大
-    const margin = cellSrc * 0.05;
-    const half = cellSrc / 2 + margin;
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const dx = c - (cols - 1) / 2, dy = r - (rows - 1) / 2;
-        const cx = align.cx * iw + dx * cellSrc * cos - dy * cellSrc * sin;
-        const cy = align.cy * ih + dx * cellSrc * sin + dy * cellSrc * cos;
-        const sx = Math.max(0, cx - half), sy = Math.max(0, cy - half);
-        const sw = Math.min(iw - sx, half * 2), sh = Math.min(ih - sy, half * 2);
-        octx.drawImage(img, sx, sy, sw, sh, c * cellPx, r * cellPx, cellPx, cellPx);
-      }
-    }
+    octx.save();
+    // Canvas 变换逆序指定、正序执行：
+    octx.translate(W / 2, H / 2);            // 最后：输出画布中心
+    octx.scale(cellPx / cellSrc, cellPx / cellSrc); // 缩放：原图像素→输出像素比
+    octx.rotate(align.rot);                 // 旋转：网格相对图纸的偏转角
+    octx.translate(-align.cx * iw, -align.cy * ih); // 首先：网格中心归原点
+    octx.drawImage(img, 0, 0);
+    octx.restore();
     return out;
   }
   function gridSanitizeCode(s) {
