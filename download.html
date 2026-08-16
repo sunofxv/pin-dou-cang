@@ -19,8 +19,22 @@
   .card p{margin:6px 0;font-size:13px;color:var(--sub);line-height:1.6}
   .badge{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--lav);color:var(--ink)}
   .badge.soon{background:#FFF3C4}
-  a.btn{display:inline-block;margin-top:10px;padding:10px 16px;border-radius:14px;background:var(--ink);color:#fff;font-weight:700;font-size:14px;text-decoration:none}
-  a.btn.alt{background:var(--sky);color:var(--ink)}
+  .btn{display:inline-block;margin-top:10px;padding:10px 16px;border-radius:14px;background:var(--ink);color:#fff;font-weight:700;font-size:14px;text-decoration:none;border:none;font-family:inherit;cursor:pointer}
+  .btn.alt{background:var(--sky);color:var(--ink)}
+  .btn.installed{background:var(--lav);color:var(--ink);cursor:default}
+  /* iOS 添加主屏幕引导浮层 */
+  .mask{position:fixed;inset:0;background:rgba(50,38,30,.5);display:none;align-items:center;justify-content:center;z-index:50;padding:18px}
+  .mask.on{display:flex}
+  .hint{background:#fff;border-radius:22px;max-width:340px;width:100%;padding:22px 20px;text-align:center;box-shadow:0 24px 60px -14px rgba(0,0,0,.45)}
+  .hint h3{margin:0 0 16px;font-size:18px}
+  .sbar{position:relative;height:48px;background:#F2F2F4;border-radius:14px;display:flex;align-items:center;justify-content:space-between;padding:0 18px;margin:0 auto;max-width:300px}
+  .sbar .ic{width:22px;height:22px;border-radius:6px;background:#C7C7CC;display:inline-block}
+  .sbar .share{width:28px;height:28px;border-radius:8px;background:#FF9500;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:15px;box-shadow:0 0 0 4px rgba(255,149,0,.22)}
+  .ring{position:absolute;top:-6px;right:14px;background:#FF3B30;color:#fff;font-size:11px;font-weight:700;padding:2px 7px;border-radius:999px;box-shadow:0 2px 6px rgba(255,59,48,.5)}
+  .arrow{font-size:22px;margin:4px 0 2px;animation:bob 1s infinite}
+  @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(6px)}}
+  .hint p{font-size:13px;color:var(--sub);line-height:1.7;margin:10px 0 0}
+  .hint .close{margin-top:16px;padding:9px 18px;border:none;border-radius:12px;background:var(--ink);color:#fff;font-weight:700;font-size:14px;cursor:pointer}
   code{background:#F3E9DD;padding:1px 6px;border-radius:6px;font-size:12px}
   ol{margin:6px 0 0;padding-left:20px;font-size:13px;color:var(--sub);line-height:1.7}
   .foot{margin-top:26px;text-align:center;font-size:12px;color:var(--sub)}
@@ -56,9 +70,29 @@
         <li>选择「添加到主屏幕」，即可把当前页面保存到桌面</li>
         <li>桌面出现「拼豆豆仓」图标，点开即用</li>
       </ol>
+      <button class="btn" id="ios-add-btn" type="button">📲 添加到主屏幕</button>
     </div>
   </div>
   <p class="foot"><a href="/">← 返回拼豆豆仓网页版</a></p>
+</div>
+
+<!-- iOS 添加到主屏幕引导浮层 -->
+<div class="mask" id="ios-mask">
+  <div class="hint">
+    <h3>📲 添加到主屏幕</h3>
+    <div class="sbar">
+      <span class="ic"></span>
+      <span class="share">⬆</span>
+      <span class="ic"></span>
+      <span class="ring">① 点这里</span>
+    </div>
+    <div class="arrow">⬇️</div>
+    <p>
+      <b>② 在弹出的菜单中选「添加到主屏幕」</b><br>
+      ③ 点右上角「添加」，桌面即出现「拼豆豆仓」图标，点开即用。
+    </p>
+    <button class="close" id="ios-mask-close" type="button">我知道了</button>
+  </div>
 </div>
 <script>
   (function () {
@@ -71,6 +105,34 @@
     if (os) {
       var el = document.getElementById('card-' + os);
       if (el) { el.classList.add('me'); el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    }
+
+    // iOS「添加到主屏幕」按钮
+    var addBtn = document.getElementById('ios-add-btn');
+    var mask = document.getElementById('ios-mask');
+    var isIOS = /iPhone|iPad|iPod/i.test(ua);
+    if (addBtn) {
+      // 已以 App（standalone）模式运行时，按钮变为「已添加」
+      if (isIOS && navigator.standalone === true) {
+        addBtn.textContent = '✅ 已在主屏幕（App 模式）';
+        addBtn.classList.add('installed');
+      }
+      addBtn.onclick = function () {
+        if (isIOS && navigator.standalone === true) {
+          alert('✅ 你已成功把拼豆豆仓添加到主屏幕，当前正以 App 模式运行。');
+          return;
+        }
+        if (!isIOS) {
+          alert('📱 此功能需在 iPhone / iPad 的 Safari 浏览器中打开本页面后使用：\n点底部分享按钮 → 添加到主屏幕');
+          return;
+        }
+        mask.classList.add('on');
+      };
+    }
+    if (mask) {
+      var closeMask = function () { mask.classList.remove('on'); };
+      document.getElementById('ios-mask-close').onclick = closeMask;
+      mask.onclick = function (e) { if (e.target === mask) closeMask(); };
     }
   })();
 </script>
