@@ -1645,6 +1645,21 @@
             </button>`).join('')}
         </div>
         <p class="text-xs text-mk-sub mt-2">💡 点击色号可跳转到「豆子仓库」对应色号；右上角按钮可批量入库 / 出库。</p>
+      </section>
+
+      <section class="mk-card rounded-2xl shadow-soft p-5 mt-4">
+        <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <h3 class="font-bold">📲 下载桌面 / 手机 App</h3>
+          <a href="download.html" class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-mk-lav/70 text-mk-ink hover:bg-mk-lav/90">查看所有平台 →</a>
+        </div>
+        <div class="flex flex-col sm:flex-row items-center gap-4">
+          <div id="home-qr" class="p-2 bg-white rounded-xl shadow-soft shrink-0"></div>
+          <div class="text-sm text-mk-sub">
+            <p>手机 / 电脑扫码，选择对应平台下载安装：</p>
+            <p class="mt-1 font-semibold text-mk-ink">🪟 Windows　🍎 Mac　🤖 安卓　📱 iPhone</p>
+            <p class="mt-1">iOS 推荐用 Safari「分享 → 添加到主屏幕」一步变 App。</p>
+          </div>
+        </div>
       </section>`;
 
     $$('.dash-color', v).forEach(btn => btn.onclick = (e) => {
@@ -1678,6 +1693,26 @@
     });
     const atr = $('#add-to-restock');
     if (atr) atr.onclick = () => addToRestockList();
+
+    // 首页「下载 App」二维码：指向下载落地页（自适应当前域名，localhost 也能用）
+    const qrBox = $('#home-qr');
+    if (qrBox) {
+      qrBox.innerHTML = '';
+      const dlUrl = location.origin + '/download.html';
+      if (window.QRCode) {
+        try {
+          new window.QRCode(qrBox, {
+            text: dlUrl, width: 132, height: 132,
+            colorDark: '#5B5147', colorLight: '#ffffff',
+            correctLevel: window.QRCode.CorrectLevel.M
+          });
+        } catch (e) {
+          qrBox.innerHTML = '<a class="text-xs text-mk-sub underline" href="download.html">扫码下载（点此打开）</a>';
+        }
+      } else {
+        qrBox.innerHTML = '<a class="text-xs text-mk-sub underline" href="download.html">扫码下载（点此打开）</a>';
+      }
+    }
   }
   function statCard(label, val, icon, grad, valColor = 'text-mk-ink', action = '') {
     const actionAttr = action ? ` data-action="${action}"` : '';
@@ -4880,27 +4915,35 @@ C25   2</pre>
     const total = Math.max(1, grid.cols * grid.rows);
     return Math.max(16, Math.min(48, Math.floor(Math.sqrt(12_000_000 / total))));
   }
-  // 用 Canvas 2D 变换链将原图映射到输出画布——零手动坐标计算，浏览器硬件加速采样
-  // 变换链（图像空间 → 输出空间）：
-  //   translate(-cx*iw, -cy*ih) → rotate(rot) → scale(cellPx/cellSrc) → translate(W/2, H/2)
-  //   即：图像像素经"网格中心归原点→旋转对齐→缩放到输出分辨率→移到画布中心"
+  // 将原图按对齐参数映射到输出画布（与 gridDrawAlign 同款 proven 渲染方式）
+  // 核心思路：算出"输出每像素对应原图多少像素"的缩放比，直接 drawImage 整图缩放+旋转
   function gridWarp(img, align, cols, rows, cellPx) {
-    const iw = img.width, ih = img.height;
+    const iw = img.width || img.naturalWidth || 1, ih = img.height || img.naturalHeight || 1;
+    if (iw < 2 || ih < 2) { console.warn('[gridWarp] 无效图像尺寸:', iw, ih); const e=document.createElement('canvas');e.width=1;e.height=1;return e; }
     const W = Math.max(1, cols * cellPx), H = Math.max(1, rows * cellPx);
     const out = document.createElement('canvas');
     out.width = W; out.height = H;
     const octx = out.getContext('2d');
-    octx.fillStyle = '#fff';
-    octx.fillRect(0, 0, W, H);
-    const cellSrc = align.cell * iw;
+    octx.fillStyle = '#fff'; octx.fillRect(0, 0, W, H);
+    const cellSrc = (align.cell || 0.03) * iw;
+    // 关键缩放比：输出画布中每像素对应原图 cellSrc/cellPx 像素（通常≈1.0）
+    const pxPerSrc = cellPx / Math.max(1, cellSrc);
+    // 网格总尺寸（原图像素）
+    const gw = cols * cellSrc, gh = rows * cellSrc;
+    // 输出画布需要覆盖的原图区域（以网格中心为基准，考虑旋转外接矩形放大）
+    const cosA = Math.abs(Math.cos(align.rot || 0)), sinA = Math.abs(Math.sin(align.rot || 0));
+    const vw = gw * cosA + gh * sinA, vh = gw * sinA + gh * cosA;
+    const gcx = (align.cx || 0.5) * iw, gcy = (align.cy || 0.5) * ih;
     octx.save();
-    // Canvas 变换逆序指定、正序执行：
-    octx.translate(W / 2, H / 2);            // 最后：输出画布中心
-    octx.scale(cellPx / cellSrc, cellPx / cellSrc); // 缩放：原图像素→输出像素比
-    octx.rotate(align.rot);                 // 旋转：网格相对图纸的偏转角
-    octx.translate(-align.cx * iw, -align.cy * ih); // 首先：网格中心归原点
-    octx.drawImage(img, 0, 0);
+    octx.translate(W / 2, H / 2);
+    if (align.rot) octx.rotate(align.rot);
+    // 将原图的 [gcx-vw/2, gcy-vh/2, vw, vh] 区域映射到输出 [-W/2,-H/2,W,H]
+    octx.drawImage(img,
+      gcx - vw / 2, gcy - vh / 2, vw, vh,   // 源矩形（原图坐标）
+      -W / 2, -H / 2, W, H                   // 目标矩形（画布中心坐标系）
+    );
     octx.restore();
+    console.log('[gridWarp] ok', iw+'x'+ih, '->', W+'x'+H, 'cellSrc='+cellSrc.toFixed(1)+'pxPerSrc='+pxPerSrc.toFixed(3));
     return out;
   }
   function gridSanitizeCode(s) {
