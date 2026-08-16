@@ -669,23 +669,27 @@
   // （兼容模型多嘴、带 Markdown 代码块、或返回纯数组的情况）
   function extractJsonContent(content) {
     if (typeof content !== 'string') content = String(content || '{}');
-    // 1. 去掉 Markdown 代码块标记（如 ```json、``` 等）
-    let cleaned = content
-      .replace(/^```[a-zA-Z0-9]*\s*/s, '')
-      .replace(/\s*```\s*$/s, '');
-    // 2. 尝试直接解析
+    let cleaned = content;
+    // 1. 去掉 Markdown 代码块标记（```json ...``` 或 ``` ...```）
+    cleaned = cleaned.replace(/^`{3}[a-zA-Z0-9]*\s*\n?/s, '').replace(/\n?\s*`{3}\s*$/s, '');
+    // 2. 直接尝试解析
     try { return JSON.parse(cleaned); } catch (_) {}
-    // 3. 去掉 { [ 之前的前导文本和 } ] 之后的尾随文本（兼容模型带说明前缀/后缀）
-    cleaned = cleaned.replace(/^[^{[]*/, '').replace(/[^}\]]*$/, '');
+    // 3. 去掉 JSON 前后的非 JSON 文字（模型有时附带说明文字）
+    cleaned = cleaned.replace(/^[^\[{]*/, '').replace(/[^\]}]*$/, '');
     try { return JSON.parse(cleaned); } catch (_) {}
-    // 4. 兜底：截取第一个 [ 到最后一个 ]，或第一个 { 到最后一个 }
-    const trySlice = (open, close) => {
-      const s = cleaned.indexOf(open), e = cleaned.lastIndexOf(close);
-      if (s >= 0 && e > s) { try { return JSON.parse(cleaned.slice(s, e + 1)); } catch (_) {} }
-      return undefined;
-    };
-    const arr = trySlice('[', ']'); if (arr !== undefined) return arr;
-    const obj = trySlice('{', '}'); if (obj !== undefined) return obj;
+    // 4. 兜底：提取最外层 [...] 数组
+    const arrS = cleaned.indexOf('['), arrE = cleaned.lastIndexOf(']');
+    if (arrS >= 0 && arrE > arrS) { try { return JSON.parse(cleaned.slice(arrS, arrE + 1)); } catch (_) {} }
+    // 5. 兜底：提取最外层 {...} 对象
+    const objS = cleaned.indexOf('{'), objE = cleaned.lastIndexOf('}');
+    if (objS >= 0 && objE > objS) { try { return JSON.parse(cleaned.slice(objS, objE + 1)); } catch (_) {} }
+    // 6. 最后尝试：逐行找看起来像 JSON 的行
+    const lines = content.split('\n').map(l => l.trim()).filter(Boolean);
+    for (const line of lines) {
+      if ((line.startsWith('[') || line.startsWith('{')) && (line.endsWith(']') || line.endsWith('}'))) {
+        try { return JSON.parse(line); } catch (_) {}
+      }
+    }
     throw new Error('无法解析 AI 返回内容：' + content.slice(0, 200));
   }
   async function callVLM(dataUrl, apiKey, model, prompt, baseUrl) {
@@ -5250,10 +5254,14 @@ C25   2</pre>
             break;
           } catch (err) {
             tries++;
-            if (tries >= 2) throw new Error('第 ' + (doneBlocks + 1) + '/' + totalBlocks + ' 块识别失败：' + (err && err.message ? err.message : err));
+            if (tries >= 2) {
+              console.warn('[grid] 第 ' + (doneBlocks + 1) + '/' + totalBlocks + ' 块识别失败，已跳过：' + (err && err.message ? err.message : err));
+              break;
+            }
             await new Promise(r => setTimeout(r, 600));
           }
         }
+        if (!res) { doneBlocks++; setGridProgress(Math.round(doneBlocks / totalBlocks * 100), '已跳过 ' + doneBlocks + '/' + totalBlocks + ' 块'); continue; }
         const g = res.grid || [];
         for (let i = 0; i < rN; i++) {
           const src = g[i] || [];
