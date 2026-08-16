@@ -53,6 +53,20 @@ jobs:
           npx cap sync android 2>&1
           echo "cap sync exit code: $?"
 
+      - name: Apply website favicon as app icon + app name
+        run: |
+          echo "== 用网站 favicon 覆盖默认 Capacitor 图标 =="
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            cp -v assets/android-icons/mipmap-$d/ic_launcher.png android/app/src/main/res/mipmap-$d/ic_launcher.png
+            cp -v assets/android-icons/mipmap-$d/ic_launcher_round.png android/app/src/main/res/mipmap-$d/ic_launcher_round.png
+          done
+          # 移除默认自适应图标(anydpi-v26)，避免回退到 Capacitor 自带背景/前景
+          rm -rf android/app/src/main/res/mipmap-anydpi-v26 || true
+          # 确保应用名为「拼豆豆仓」
+          sed -i 's|<string name="app_name">[^<]*</string>|<string name="app_name">拼豆豆仓</string>|' android/app/src/main/res/values/strings.xml
+          grep -n "app_name" android/app/src/main/res/values/strings.xml
+          echo "icon + name applied"
+
       - name: Build debug APK
         working-directory: android
         run: |
@@ -65,6 +79,6 @@ jobs:
           tag: android
           allowUpdates: true
           name: 拼豆豆仓安卓 App
-          body: 自动构建的可安装 APK（需 Android 5.1+，安装时允许「未知来源」）。
-          artifacts: android/app/build/outputs/apk/debug/app-debug.apk
+          body: 拼豆豆仓官方安卓安装包（需 Android 5.1+，安装时允许「未知来源」）。下载后直接安装，桌面即出现「拼豆豆仓」图标，点开即用。
+          artifacts: android/app/build/outputs/apk/debug/app-debug.apk:pindoucang-android.apk
           token: ${{ secrets.GITHUB_TOKEN }}
