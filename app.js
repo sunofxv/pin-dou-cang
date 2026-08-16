@@ -667,81 +667,40 @@
   // baseUrl 缺省走 OpenAI；可填任意 OpenAI 兼容端点（如 DeepSeek / 通义千问等），提升国内可用性。
   // 鲁棒解析 AI 返回：先整体解析，失败再分别尝试截取 [..] / {..} 块
   // （兼容模型多嘴、带 Markdown 代码块、或返回纯数组的情况）
-  function extractJsonContent(content) {
-    if (typeof content !== 'string') content = String(content || '{}');
-    // 最激进清理：全局删除所有反引号代码块标记（不限于首尾）
-    let cleaned = content.replace(/`{3}[a-z]*\n?/gi, '').replace(/\n?`{3}/g, '');
-    // 尝试直接解析
-    try { return JSON.parse(cleaned); } catch (_) {}
-    // 去掉 JSON 首尾的非 JSON 文字
-    cleaned = cleaned.replace(/^[^\[{]*/, '').replace(/[^\]}]*$/, '');
-    try { return JSON.parse(cleaned); } catch (_) {}
-    // 提取最外层 [...]
-    const arrS = cleaned.indexOf('['), arrE = cleaned.lastIndexOf(']');
-    if (arrS >= 0 && arrE > arrS) { try { return JSON.parse(cleaned.slice(arrS, arrE + 1)); } catch (_) {} }
-    // 提取最外层 {...}
-    const objS = cleaned.indexOf('{'), objE = cleaned.lastIndexOf('}');
-    if (objS >= 0 && objE > objS) { try { return JSON.parse(cleaned.slice(objS, objE + 1)); } catch (_) {} }
-    // 逐行扫描找 JSON
-    const lines = content.split('\n').map(l => l.trim()).filter(Boolean);
-    for (const line of lines) {
-      const t = line.replace(/`{3}/g, '').trim();
-      if ((t.startsWith('[') || t.startsWith('{')) && (t.endsWith(']') || t.endsWith('}'))) {
-        try { return JSON.parse(t); } catch (_) {}
-      }
+    function extractJsonContent(raw) {
+    let s = String(raw || '').trim();
+    if (!s) return '';
+    // 第1层：去掉首尾所有 markdown 标记（含嵌套/重复）
+    s = s.replace(/```\w*\n?/g, '').replace(/\x60{3}/g, '');
+    // 第2层：直接尝试
+    try { const j = JSON.parse(s); return JSON.stringify(j); } catch(e) {}
+    // 第3层：去首尾非JSON字符
+    const m1 = s.match(/\[[\s\S]*\]/);
+    if (m1) { try { JSON.parse(m1[0]); return m1[0]; } catch(e) {} }
+    const m2 = s.match(/\{[\s\S]*\}/);
+    if (m2) { try { JSON.parse(m2[0]); return m2[0]; } catch(e) {} }
+    // 第4层：逐行扫描找JSON行或数组行
+    for (const line of s.split('\n')) {
+      const l = line.trim().replace(/^\x60+|\x60+$/g, '');
+      if (!l) continue;
+      if (l.startsWith('[') && l.endsWith(']')) { try { JSON.parse(l); return l; } catch(e) {} }
+      if (l.startsWith('{') && l.endsWith('}')) { try { JSON.parse(l); return l; } catch(e) {} }
     }
-    throw new Error('无法解析 AI 返回内容：' + content.slice(0, 200));
+    // 第5层：提取第一个 [ 到最后一个 ] 的内容
+    const si = s.indexOf('['), ei = s.lastIndexOf(']');
+    if (si >= 0 && ei > si) {
+      const sub = s.substring(si, ei + 1);
+      try { JSON.parse(sub); return sub; } catch(e) {}
+    }
+    // 第6层：提取第一个 { 到最后一个 } 的内容  
+    const ci = s.indexOf('{'), cei = s.lastIndexOf('}');
+    if (ci >= 0 && cei > ci) {
+      const sub = s.substring(ci, cei + 1);
+      try { JSON.parse(sub); return sub; } catch(e) {}
+    }
+    console.warn('[extractJson] 全部fallback失败，原始长度:', s.length, '前100字:', s.slice(0, 100));
+    return '';
   }
-  async function callVLM(dataUrl, apiKey, model, prompt, baseUrl) {
-    // 代理模式：visionBaseUrl 为空或指向同源 /api/* 时，前端不带 Key，
-    // 由 Vercel Serverless 函数（api/legend-vision.js）用服务端环境变量里的智谱 Key 转发。
-    const viaProxy = !baseUrl || !baseUrl.trim() || baseUrl.trim().indexOf('/api/') === 0;
-    if (viaProxy) {
-      // 代理模式统一走智谱（ZHIPU_API_KEY）。未显式给智谱模型时默认用稳定的 glm-4v-flash（免费、识别色号够用）。
-      const zhipuModel = (model && String(model).toLowerCase().startsWith('glm')) ? model : 'glm-4v-flash';
-      const res = await fetch('/api/legend-vision', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: dataUrl, model: zhipuModel, prompt })
-      });
-      if (!res.ok) {
-        let msg = '代理服务返回 ' + res.status;
-        try {
-          const e = await res.json();
-          if (e && e.error) {
-            msg = e.error;
-            if (e.detail) msg += '：' + e.detail.slice(0, 240);
-          }
-        } catch (_) {}
-        throw new Error(msg);
-      }
-      const j = await res.json();
-      const content = (j && j.content) || '{}';
-      return extractJsonContent(content);
-    }
-    // 直连（用户自填 Key + OpenAI 兼容端点，如本地/自托管）
-    const url = baseUrl.trim();
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
-      body: JSON.stringify({
-        model: model || 'gpt-4o-mini',
-        messages: [{ role: 'user', content: [
-          { type: 'text', text: prompt },
-          { type: 'image_url', image_url: { url: dataUrl } }
-        ] }]
-      })
-    });
-    if (!res.ok) {
-      let detail = '';
-      try { const e = await res.json(); detail = (e.error && e.error.message) || JSON.stringify(e); } catch (_) {}
-      throw new Error('Vision API ' + res.status + (detail ? '：' + detail : ''));
-    }
-    const j = await res.json();
-    const content = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '{}';
-    return extractJsonContent(content);
-  }
-  // 归一化单个图例条目：解析 hex / code / count，并防御模型把「内部色号」与「下方数量」互换
   function normalizeLegendItem(c) {
     c = c || {};
     let hex = (c.hex || '').trim();
@@ -5031,21 +4990,26 @@ C25   2</pre>
     ctx.beginPath(); ctx.arc(ctr.x, ctr.y, 6, 0, Math.PI * 2); ctx.fillStyle = '#ef4444'; ctx.fill();
     ctx.restore();
   }
-  // 结果画布：拉正图 + 网格线 + 高亮
+  // 结果画布：拉正图 + 网格线 + 高亮（用 RAF 确保 DOM 已就绪）
   function gridDrawResult() {
     const cv = $('#grid-result-canvas');
-    console.log('[gridDrawResult] cv=', !!cv, 'warp=', !!grid.warp, 'cells=', !!(grid.cells && grid.cells.length));
-    if (!cv || !grid.warp || !grid.cells) return;
+    console.log('[gridDrawResult] START cv=', !!cv, 'warp=', !!grid.warp, 'cells=', !!(grid.cells && grid.cells.length));
+    if (!cv || !grid.warp || !grid.cells) { console.warn('[gridDrawResult] EARLY RETURN'); return; }
     const w = grid.warp.width, h = grid.warp.height;
+    // 先设尺寸再画（设 width/height 会清空画布，必须在 drawImage 前）
     cv.width = w; cv.height = h;
-    cv.style.aspectRatio = w + '/' + h;
-    cv.style.maxWidth = '100%';
-    cv.style.height = 'auto';
+    // 确保可见：强制内联样式覆盖任何 CSS 冲突
+    cv.style.cssText = 'display:block;width:100%;height:auto;border:2px solid #8b5cf6;min-height:200px;';
     const ctx = cv.getContext('2d');
     ctx.drawImage(grid.warp, 0, 0);
-    // 诊断：确认 drawImage 后画布中心像素
-    const d = ctx.getImageData(Math.floor(w/2), Math.floor(h/2), 1, 1).data;
-    console.log('[gridDrawResult] drew', w+'x'+h, 'center=('+d[0]+','+d[1]+','+d[2]+')', (d[0]>250&&d[1]>250&&d[2]>250)?'⚠️STILL_WHITE':'✅HAS_CONTENT');
+    // 诊断：确认 drawImage 后四角+中心像素
+    const corners = [
+      ctx.getImageData(0, 0, 1, 1).data,
+      ctx.getImageData(w-1, 0, 1, 1).data,
+      ctx.getImageData(0, h-1, 1, 1).data,
+      ctx.getImageData(Math.floor(w/2), Math.floor(h/2), 1, 1).data
+    ];
+    console.log('[gridDrawResult] OK drew', w+'x'+h, 'TL='+corners[0].slice(0,3).join(',')+' TR='+corners[1].slice(0,3).join(',')+' BL='+corners[2].slice(0,3).join(',')+' C='+corners[3].slice(0,3).join(','));
     const cw = w / grid.cols, ch = h / grid.rows;
     ctx.strokeStyle = 'rgba(0,0,0,0.12)'; ctx.lineWidth = 1;
     for (let c = 0; c <= grid.cols; c++) { ctx.beginPath(); ctx.moveTo(c * cw, 0); ctx.lineTo(c * cw, h); ctx.stroke(); }
