@@ -6,13 +6,13 @@
 1. 解压 `mac-build.zip`
 2. 打开「终端」，进入解压目录
 3. 运行：`bash build-mac.sh`
-4. 得到 `PinDouDouCang.app` 和 `PinDouDouCang-mac.zip`
+4. 得到 `拼豆豆仓.app` 和 `拼豆豆仓-mac.zip`
 
 ## 安装
-- 把 `PinDouDouCang.app` 拖到「应用程序」文件夹即可。
+- 把 `拼豆豆仓.app` 拖到「应用程序」文件夹即可。
 - 首次打开若被 Gatekeeper 拦截（提示「无法验证开发者」）：
   - 右键 App → 打开；或
-  - 终端执行 `xattr -cr /Applications/PinDouDouCang.app`
+  - 终端执行 `xattr -cr /Applications/拼豆豆仓.app`
 
 ## 说明
 双击 App 会调用系统默认浏览器打开 https://pindoucang.online。若要改成打开本地离线文件，把网站文件与 App 放一起并修改脚本里的 `URL` 即可。
