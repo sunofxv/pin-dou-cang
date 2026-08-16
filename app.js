@@ -4201,8 +4201,10 @@ C25   2</pre>
     };
     updateApplyDisabled();
   }
-  // 保持比例缩放图片为 data URL（不裁剪），用于图库缩略图
-  function fitImageToDataURL(file, maxEdge = 900) {
+  // 保持比例缩放图片为 data URL（不裁剪），用于图库存储。
+  // 为保证后续图纸识别/网格识别有足够清晰度，默认保存 1600px 长边、JPEG 0.88；
+  // 如 localStorage 空间紧张，可去「设置 → 图库图片管理」手动压缩。
+  function fitImageToDataURL(file, maxEdge = 1600) {
     return new Promise((resolve, reject) => {
       const img = new Image();
       const url = URL.createObjectURL(file);
@@ -4213,8 +4215,10 @@ C25   2</pre>
         const canvas = document.createElement('canvas');
         canvas.width = w; canvas.height = h;
         const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, w, h);
         ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/jpeg', 0.80));
+        resolve(canvas.toDataURL('image/jpeg', 0.88));
       };
       img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('图片加载失败')); };
       img.src = url;
