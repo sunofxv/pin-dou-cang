@@ -2508,7 +2508,8 @@ C25   2</pre>
 
   // 将图片缩放到最大边 <= max，返回 {canvas, ctx, scale, w, h}
   function createAnalysisCanvas(img, max = 1200) {
-    const scale = Math.min(1, max / Math.max(img.width, img.height));
+    // 大图缩小到 max，小图允许放大到 max（最多 4 倍），让图例/色块更清晰。
+    const scale = Math.min(4, max / Math.max(img.width, img.height));
     const w = Math.max(1, Math.round(img.width * scale));
     const h = Math.max(1, Math.round(img.height * scale));
     const canvas = document.createElement('canvas');
@@ -2881,19 +2882,24 @@ C25   2</pre>
     if (!cv || !tempImage) return;
     const img = new Image();
     img.onload = () => {
-      const rect = cv.parentElement.getBoundingClientRect();
-      const maxW = Math.min(cv.parentElement.clientWidth || rect.width, 720);
-      // 移动端优先按宽度撑满；高度由图片比例自然决定，CSS max-height 再做兜底
-      const scale = Math.min(1, maxW / img.width);
+      const dpr = Math.min(window.devicePixelRatio || 1, 2); // 最多 2x 高清，平衡性能与清晰度
+      const parentW = cv.parentElement.clientWidth || cv.parentElement.getBoundingClientRect().width || img.width;
+      // 桌面端给足够大的显示尺寸，移动端仍按宽度撑满；高度由图片比例自然决定
+      const displayMaxW = window.innerWidth >= 768 ? Math.min(parentW, 1400) : parentW;
+      const displayMaxH = window.innerHeight * 0.72; // 提高到 72vh
+      const scale = Math.min(displayMaxW / img.width, displayMaxH / img.height, 1);
       const dw = Math.round(img.width * scale);
       const dh = Math.round(img.height * scale);
-      cv.width = dw; cv.height = dh;
+      // canvas 内部像素 = 显示尺寸 × DPR，保证高分屏/放大后仍清晰
+      cv.width = Math.max(1, Math.round(dw * dpr));
+      cv.height = Math.max(1, Math.round(dh * dpr));
       cv.style.width = '100%';
       cv.style.height = 'auto';
-      cv.style.maxHeight = 'min(62vh, 520px)';
+      cv.style.maxHeight = displayMaxH + 'px';
       cv.style.display = 'block';
       const ctx = cv.getContext('2d');
-      ctx.clearRect(0, 0, dw, dh);
+      ctx.clearRect(0, 0, cv.width, cv.height);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.drawImage(img, 0, 0, dw, dh);
       // 图例模式：图例区(紫)与图案区(绿)分别绘制
       if (state.settings.recognizeMode === 'legend') {
