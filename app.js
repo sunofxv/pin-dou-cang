@@ -5034,6 +5034,7 @@ C25   2</pre>
   // 结果画布：拉正图 + 网格线 + 高亮
   function gridDrawResult() {
     const cv = $('#grid-result-canvas');
+    console.log('[gridDrawResult] cv=', !!cv, 'warp=', !!grid.warp, 'cells=', !!(grid.cells && grid.cells.length));
     if (!cv || !grid.warp || !grid.cells) return;
     const w = grid.warp.width, h = grid.warp.height;
     cv.width = w; cv.height = h;
@@ -5042,6 +5043,9 @@ C25   2</pre>
     cv.style.height = 'auto';
     const ctx = cv.getContext('2d');
     ctx.drawImage(grid.warp, 0, 0);
+    // 诊断：确认 drawImage 后画布中心像素
+    const d = ctx.getImageData(Math.floor(w/2), Math.floor(h/2), 1, 1).data;
+    console.log('[gridDrawResult] drew', w+'x'+h, 'center=('+d[0]+','+d[1]+','+d[2]+')', (d[0]>250&&d[1]>250&&d[2]>250)?'⚠️STILL_WHITE':'✅HAS_CONTENT');
     const cw = w / grid.cols, ch = h / grid.rows;
     ctx.strokeStyle = 'rgba(0,0,0,0.12)'; ctx.lineWidth = 1;
     for (let c = 0; c <= grid.cols; c++) { ctx.beginPath(); ctx.moveTo(c * cw, 0); ctx.lineTo(c * cw, h); ctx.stroke(); }
