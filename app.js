@@ -2893,7 +2893,10 @@ C25   2</pre>
       // canvas 内部像素 = 显示尺寸 × DPR，保证高分屏/放大后仍清晰
       cv.width = Math.max(1, Math.round(dw * dpr));
       cv.height = Math.max(1, Math.round(dh * dpr));
-      cv.style.width = '100%';
+      // 小图不要强制拉伸到 100% 容器宽度，否则浏览器插值会模糊；
+      // 按计算出的显示尺寸 dw 渲染，max-width:100% 保证大图不溢出。
+      cv.style.width = dw + 'px';
+      cv.style.maxWidth = '100%';
       cv.style.height = 'auto';
       cv.style.maxHeight = displayMaxH + 'px';
       cv.style.display = 'block';
@@ -3028,7 +3031,7 @@ C25   2</pre>
               <button id="rc-back-gallery" type="button" class="text-violet-500 underline shrink-0 text-xs sm:text-sm">返回图库</button>
             </div>` : ''}
             <div class="relative w-full">
-              <canvas id="editor-canvas" class="w-full rounded-xl border border-mk-sand cursor-crosshair bg-white"></canvas>
+              <canvas id="editor-canvas" class="rounded-xl border border-mk-sand cursor-crosshair bg-white mx-auto"></canvas>
               <div id="editor-hint" class="text-[11px] text-mk-sub mt-1.5 leading-relaxed">${tempLegendRegion ? '已定位图例区域（紫框）。拖拽紫框/绿框的四边或四角可微调大小，在空白处拖拽可重新框选。' : '在图上拖拽框选<b>图例区域</b>（通常是一整条横向排列的色块）。紫框=图例区，绿框=可选的图案区；框好后可拖拽边框/四角微调大小。'}</div>
             </div>
             <div class="flex flex-wrap gap-2 mt-2">
