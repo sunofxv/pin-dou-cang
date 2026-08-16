@@ -669,25 +669,25 @@
   // （兼容模型多嘴、带 Markdown 代码块、或返回纯数组的情况）
   function extractJsonContent(content) {
     if (typeof content !== 'string') content = String(content || '{}');
-    let cleaned = content;
-    // 1. 去掉 Markdown 代码块标记（```json ...``` 或 ``` ...```）
-    cleaned = cleaned.replace(/^`{3}[a-zA-Z0-9]*\s*\n?/s, '').replace(/\n?\s*`{3}\s*$/s, '');
-    // 2. 直接尝试解析
+    // 最激进清理：全局删除所有反引号代码块标记（不限于首尾）
+    let cleaned = content.replace(/`{3}[a-z]*\n?/gi, '').replace(/\n?`{3}/g, '');
+    // 尝试直接解析
     try { return JSON.parse(cleaned); } catch (_) {}
-    // 3. 去掉 JSON 前后的非 JSON 文字（模型有时附带说明文字）
+    // 去掉 JSON 首尾的非 JSON 文字
     cleaned = cleaned.replace(/^[^\[{]*/, '').replace(/[^\]}]*$/, '');
     try { return JSON.parse(cleaned); } catch (_) {}
-    // 4. 兜底：提取最外层 [...] 数组
+    // 提取最外层 [...]
     const arrS = cleaned.indexOf('['), arrE = cleaned.lastIndexOf(']');
     if (arrS >= 0 && arrE > arrS) { try { return JSON.parse(cleaned.slice(arrS, arrE + 1)); } catch (_) {} }
-    // 5. 兜底：提取最外层 {...} 对象
+    // 提取最外层 {...}
     const objS = cleaned.indexOf('{'), objE = cleaned.lastIndexOf('}');
     if (objS >= 0 && objE > objS) { try { return JSON.parse(cleaned.slice(objS, objE + 1)); } catch (_) {} }
-    // 6. 最后尝试：逐行找看起来像 JSON 的行
+    // 逐行扫描找 JSON
     const lines = content.split('\n').map(l => l.trim()).filter(Boolean);
     for (const line of lines) {
-      if ((line.startsWith('[') || line.startsWith('{')) && (line.endsWith(']') || line.endsWith('}'))) {
-        try { return JSON.parse(line); } catch (_) {}
+      const t = line.replace(/`{3}/g, '').trim();
+      if ((t.startsWith('[') || t.startsWith('{')) && (t.endsWith(']') || t.endsWith('}'))) {
+        try { return JSON.parse(t); } catch (_) {}
       }
     }
     throw new Error('无法解析 AI 返回内容：' + content.slice(0, 200));
@@ -4921,7 +4921,7 @@ C25   2</pre>
   }
   // 将原图按对齐参数映射到输出画布（与 gridDrawAlign 同款 proven 渲染方式）
   // 核心思路：算出"输出每像素对应原图多少像素"的缩放比，直接 drawImage 整图缩放+旋转
-  // v6: 用已验证正确的 gridCellCenter 坐标逐格截取——与 gridDrawAlign 共享同一套坐标计算
+  // v7: gridCellCenter逐格截取 + 像素采样诊断 + 整图fallback
   function gridWarp(img, align, cols, rows, cellPx) {
     const iw = img.width || img.naturalWidth || 1, ih = img.height || img.naturalHeight || 1;
     if (iw < 2 || ih < 2) { console.warn('[gridWarp] 无效图像尺寸:', iw, ih); const e=document.createElement('canvas');e.width=1;e.height=1;return e; }
@@ -4935,11 +4935,9 @@ C25   2</pre>
     let drawn = 0, outOfBounds = 0;
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
-        // 复用 gridCellCenter（与 gridDrawAlign 网格线同一套坐标，已验证正确）
         const ctr = gridCellCenter(align, r, c, iw, ih);
         let sx = ctr.x - halfSrc, sy = ctr.y - halfSrc;
         let sw = cellSrc, sh = cellSrc;
-        // 边界 clamp
         if (sx < 0) { sw += sx; sx = 0; }
         if (sy < 0) { sh += sy; sy = 0; }
         if (sx + sw > iw) sw = iw - sx;
@@ -4949,10 +4947,13 @@ C25   2</pre>
         drawn++;
       }
     }
-    console.log('[gridWarp] v6 ok', iw+'x'+ih, '->', W+'x'+H, 'cellSrc='+cellSrc.toFixed(1), 'drawn='+drawn, 'oob='+outOfBounds);
+    // 诊断：采样中心像素确认是否有非白内容
+    const diag = octx.getImageData(Math.floor(W/2), Math.floor(H/2), 1, 1).data;
+    const isWhite = diag[0]>250 && diag[1]>250 && diag[2]>250;
+    console.log('[gridWarp] v7', iw+'x'+ih, '->', W+'x'+H, 'cellSrc='+cellSrc.toFixed(1),
+      'drawn='+drawn, 'oob='+outOfBounds, 'centerPixel=('+diag[0]+','+diag[1]+','+diag[2]+')', isWhite?'⚠️WHITE':'✅CONTENT');
     return out;
-  }
-  function gridSanitizeCode(s) {
+  }  function gridSanitizeCode(s) {
     if (!s) return '';
     return String(s).toUpperCase().replace(/[\s\u3000]+/g, '').replace(/[^A-Z0-9-]/g, '').trim();
   }
