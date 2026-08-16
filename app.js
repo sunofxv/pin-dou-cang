@@ -3974,7 +3974,6 @@ C25   2</pre>
             <div class="flex gap-1.5 flex-wrap">
               ${g.legend && g.legend.items && g.legend.items.length ? `
               <button class="g-legend-info text-[11px] px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl bg-violet-50 text-violet-500" data-id="${g.id}">📋 图例信息</button>
-              <button class="g-legend text-[11px] px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl bg-violet-50 text-violet-500" data-id="${g.id}">🔄 重新识别</button>
               ` : `
               <button class="g-legend text-[11px] px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl bg-violet-50 text-violet-500" data-id="${g.id}">🎨 去识别</button>
               `}
@@ -4040,6 +4039,28 @@ C25   2</pre>
         ${rows}
       </div>`;
     openModal('🎨 图例清单：' + g.name, body, { wide: true });
+    setModalFoot(`
+      <button id="glp-retry" class="px-3 py-1.5 rounded-xl bg-violet-50 text-violet-600 text-xs font-semibold hover:bg-violet-100">🔄 重新识别</button>
+      <button id="glp-deduct" class="px-3 py-1.5 rounded-xl bg-emerald-500 text-white text-xs font-semibold hover:bg-emerald-600">➖ 一键入库（扣减）</button>
+    `);
+    $('#glp-retry').onclick = () => { closeModal(); openLegendInRecognize(g); };
+    $('#glp-deduct').onclick = () => { closeModal(); deductGalleryLegend(g); };
+  }
+
+  // 图库图纸：按已保存的图例数量一键扣减库存
+  function deductGalleryLegend(g) {
+    const items = (g && g.legend && g.legend.items) || [];
+    if (!items.length) return toast('该图纸暂无图例信息', 'info');
+    let ok = 0, skip = 0;
+    items.filter(x => x.colorNumber && x.count > 0).forEach(x => {
+      const bead = beadByNumber(x.colorNumber);
+      if (!bead) { skip++; return; }
+      bead.stock = Math.max(0, bead.stock - x.count);
+      addLog('图纸消耗', bead, -x.count, '图库图例一键扣减：' + (g.name || ''));
+      ok++;
+    });
+    save();
+    toast(`已扣减 ${ok} 种颜色${skip ? `，跳过 ${skip} 种未匹配` : ''}`, 'success');
   }
 
   function openLegendInRecognize(g) {
