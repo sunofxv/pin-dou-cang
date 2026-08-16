@@ -4859,44 +4859,31 @@ C25   2</pre>
     const total = Math.max(1, grid.cols * grid.rows);
     return Math.max(16, Math.min(48, Math.floor(Math.sqrt(12_000_000 / total))));
   }
-  // 按对齐参数把网格区域拉正为 rows×cols 矩形画布（补偿旋转），cellPx=输出每格像素
+  // 按对齐参数把网格区域逐格截取为 rows×cols 矩形画布（补偿旋转），cellPx=输出每格像素
+  // 重写：用逐格 drawImage 截取替代像素级采样——直接操作原图尺寸，彻底消除缩放坐标错位问题
   function gridWarp(img, align, cols, rows, cellPx) {
     const iw = img.width, ih = img.height;
-    const { w, h, ctx, scale } = createAnalysisCanvas(img, 4000);
-    const src = ctx.getImageData(0, 0, w, h).data;
     const W = Math.max(1, cols * cellPx), H = Math.max(1, rows * cellPx);
     const out = document.createElement('canvas');
     out.width = W; out.height = H;
     const octx = out.getContext('2d');
-    const od = octx.createImageData(W, H);
-    const cellSrc = align.cell * iw, cos = Math.cos(align.rot), sin = Math.sin(align.rot);
-    // 坐标缩放：createAnalysisCanvas 可能对图片放大/缩小(scale)，
-    // 采样坐标(sx,sy)在原图空间，需乘以 scale 才能正确索引到缩放后的 src 数据
-    const sc = scale || 1;
-    for (let dy = 0; dy < H; dy++) {
-      const r = Math.floor(dy / cellPx);
-      const inV = (dy - r * cellPx + 0.5) / cellPx - 0.5;     // 格内纵向偏移(格单位)
-      for (let dx = 0; dx < W; dx++) {
-        const c = Math.floor(dx / cellPx);
-        const inU = (dx - c * cellPx + 0.5) / cellPx - 0.5;   // 格内横向偏移
-        const tu = (c - (cols - 1) / 2) + inU, tv = (r - (rows - 1) / 2) + inV;
-        const sx = (align.cx * iw + tu * cellSrc * cos - tv * cellSrc * sin) * sc;
-        const sy = (align.cy * ih + tu * cellSrc * sin + tv * cellSrc * cos) * sc;
-        let x0 = Math.floor(sx), y0 = Math.floor(sy);
-        let fx = sx - x0, fy = sy - y0;
-        let x1 = x0 + 1, y1 = y0 + 1;
-        if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
-        if (x1 > w - 1) x1 = w - 1; if (y1 > h - 1) y1 = h - 1;
-        const i00 = (y0 * w + x0) * 4, i10 = (y0 * w + x1) * 4, i01 = (y1 * w + x0) * 4, i11 = (y1 * w + x1) * 4;
-        const oi = (dy * W + dx) * 4;
-        for (let k = 0; k < 3; k++) {
-          const a = src[i00 + k], b = src[i10 + k], d = src[i01 + k], e = src[i11 + k];
-          od.data[oi + k] = (a * (1 - fx) + b * fx) * (1 - fy) + (d * (1 - fx) + e * fx) * fy;
-        }
-        od.data[oi + 3] = 255;
+    octx.fillStyle = '#fff';
+    octx.fillRect(0, 0, W, H);
+    const cellSrc = align.cell * iw;
+    const cos = Math.cos(align.rot), sin = Math.sin(align.rot);
+    // 稍微扩大源裁剪区以容忍旋转导致的格子外接矩形增大
+    const margin = cellSrc * 0.05;
+    const half = cellSrc / 2 + margin;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const dx = c - (cols - 1) / 2, dy = r - (rows - 1) / 2;
+        const cx = align.cx * iw + dx * cellSrc * cos - dy * cellSrc * sin;
+        const cy = align.cy * ih + dx * cellSrc * sin + dy * cellSrc * cos;
+        const sx = Math.max(0, cx - half), sy = Math.max(0, cy - half);
+        const sw = Math.min(iw - sx, half * 2), sh = Math.min(ih - sy, half * 2);
+        octx.drawImage(img, sx, sy, sw, sh, c * cellPx, r * cellPx, cellPx, cellPx);
       }
     }
-    octx.putImageData(od, 0, 0);
     return out;
   }
   function gridSanitizeCode(s) {
