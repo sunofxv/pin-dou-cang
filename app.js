@@ -245,6 +245,39 @@
       else if (currentView === 'recognize') renderRecognize($('#view'));
     }
   }
+  // 把尚未入库（仍是内联 base64）的图库图片写入 IndexedDB，并从内存/落盘数据剥离。
+  // 返回成功迁移的张数。供 save() 容量不足自动兜底与设置页手动按钮共用。
+  async function migrateUnsavedGalleryImages() {
+    const need = (state.gallery || []).filter(g => g && g.image && !g.imageStored);
+    if (!need.length) return 0;
+    let ok = 0;
+    for (const g of need) {
+      try {
+        g.imageId = g.imageId || g.id;
+        await imgDBPut(g.imageId, g.image);
+        g.imageStored = true;
+        delete g.image;
+        ok++;
+      } catch (e) { console.warn('迁移图片失败', g.id, e); }
+    }
+    return ok;
+  }
+  // 容量不足且无法自动迁移时的弹窗
+  function showQuotaModal(approxKB) {
+    openModal('本地存储空间不足', `
+      <div class="space-y-3 text-sm">
+        <p>当前数据约 <strong>${approxKB}KB</strong>，已超过浏览器 localStorage 容量上限。</p>
+        <p>图库原图现默认存于浏览器 IndexedDB（容量大得多），通常不会触顶。若仍不足，多为其他数据异常，可：</p>
+        <ul class="list-disc pl-5 space-y-1 text-mk-sub">
+          <li>导出备份后，恢复默认数据再导入</li>
+          <li>检查是否有损坏的大字段</li>
+        </ul>
+      </div>`);
+    setModalFoot(`
+      <button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">稍后再说</button>
+      <button id="save-fail-go-settings" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold">去设置查看</button>`);
+    $('#save-fail-go-settings').onclick = () => { closeModal(); switchView('settings'); };
+  }
 
   /* ===================== 2. 存储与会话状态 ===================== */
   let state = load();
@@ -314,19 +347,17 @@
       const isQuota = e && (e.name === 'QuotaExceededError' || /quota|exceeded|storage/i.test(e.message));
       const approxKB = Math.round(str.length / 1024);
       if (isQuota) {
-        openModal('本地存储空间不足', `
-          <div class="space-y-3 text-sm">
-            <p>当前数据约 <strong>${approxKB}KB</strong>，已超过浏览器 localStorage 容量上限。</p>
-            <p>图库原图现默认存于浏览器 IndexedDB（容量大得多），通常不会触顶。若仍不足，多为其他数据异常，可：</p>
-            <ul class="list-disc pl-5 space-y-1 text-mk-sub">
-              <li>导出备份后，恢复默认数据再导入</li>
-              <li>检查是否有损坏的大字段</li>
-            </ul>
-          </div>`);
-        setModalFoot(`
-          <button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">稍后再说</button>
-          <button id="save-fail-go-settings" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold">去设置查看</button>`);
-        $('#save-fail-go-settings').onclick = () => { closeModal(); switchView('settings'); };
+        // 自动把未入库图片搬入 IndexedDB，成功则剥离后重试保存
+        migrateUnsavedGalleryImages().then((migrated) => {
+          if (migrated) {
+            try {
+              save();
+              toast('已自动把 ' + migrated + ' 张图纸图片转入 IndexedDB，保存成功', 'success', 3500);
+            } catch (e2) { showQuotaModal(approxKB); }
+          } else {
+            showQuotaModal(approxKB);
+          }
+        });
       } else {
         toast('保存失败：' + e.message, 'error', 6000);
       }
@@ -4769,6 +4800,7 @@ C25   2</pre>
             </div>
           </div>
           <div class="flex flex-wrap gap-2">
+            <button id="migrate-gallery" class="px-4 py-2 rounded-xl bg-mk-mint text-mk-ink font-semibold">迁移旧图到 IndexedDB</button>
             <button id="compress-gallery" class="px-4 py-2 rounded-xl bg-mk-sky text-mk-ink font-semibold">标准压缩</button>
             <button id="compress-gallery-strong" class="px-4 py-2 rounded-xl bg-mk-peach text-mk-ink font-semibold">强力压缩</button>
             <button id="purge-made" class="px-4 py-2 rounded-xl bg-rose-100 text-rose-500 font-semibold">删除已拼图片</button>
@@ -4819,6 +4851,11 @@ C25   2</pre>
     $('#restore').onclick = () => $('#restore-file').click();
     $('#restore-file').onchange = e => { if (e.target.files[0]) restoreAll(e.target.files[0]); };
     $('#reset').onclick = () => { if (confirm('将恢复为默认 221 色卡（每色 1000 颗），并清空所有日志、配方与自定义映射，且不可恢复。确定？')) { state = defaultState(); save(); toast('已恢复默认数据', 'success'); switchView('dashboard'); } };
+    $('#migrate-gallery').onclick = async () => {
+      const n = await migrateUnsavedGalleryImages();
+      if (n) { save(); renderSettings($('#view')); toast('已迁移 ' + n + ' 张图片到 IndexedDB', 'success'); }
+      else toast('没有需要迁移的图片（已全部在 IndexedDB 中）', 'info');
+    };
     $('#compress-gallery').onclick = () => compressGalleryImages({ maxEdge: 1000, quality: 0.80, label: '标准' });
     $('#compress-gallery-strong').onclick = () => compressGalleryImages({ maxEdge: 800, quality: 0.70, label: '强力' });
     $('#purge-made').onclick = () => purgeGalleryImages('made', '已拼');
