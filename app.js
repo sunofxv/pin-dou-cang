@@ -134,13 +134,121 @@
         // 单个色号在「豆子仓库」里可单独设置覆盖值（阈值填 0 = 使用此全局值）。
         replenishThreshold: 100,
         // 补货清单导出列预设：数组即输出顺序，仅列出的列会导出；默认全选
-        restockExportCols: ['record', 'colorNumber', 'portions', 'perQty', 'beads']
+        restockExportCols: ['record', 'colorNumber', 'portions', 'perQty', 'beads'],
+        // 图库图片是否同步备份到 Supabase Storage（需配置存储桶 + RLS），默认关闭
+        backupImages: false
       }
     };
   }
 
+  /* ===================== 2.0 图片 IndexedDB 存储（大体积图片不进 localStorage） ===================== */
+  // 图库原图体积大，直接塞进 localStorage 极易触顶（约 5MB）。改为：
+  // - localStorage 只存图库元数据 + imageId 引用（imageStored 标记已入库）；
+  // - 图片 dataURL 本体存在浏览器 IndexedDB（按设备/域名隔离，配额数百 MB~GB）；
+  // - 可选：把图片同步到 Supabase Storage 做云端备份（设置开关控制）。
+  const IMG_DB_NAME = 'pindou_images';
+  const IMG_DB_VERSION = 1;
+  const IMG_STORE = 'images';
+  let _imgDBPromise = null;
+  function openImgDB() {
+    if (_imgDBPromise) return _imgDBPromise;
+    _imgDBPromise = new Promise((resolve, reject) => {
+      if (!('indexedDB' in window)) { reject(new Error('当前浏览器不支持 IndexedDB')); return; }
+      const req = indexedDB.open(IMG_DB_NAME, IMG_DB_VERSION);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(IMG_STORE)) db.createObjectStore(IMG_STORE, { keyPath: 'id' });
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('IndexedDB 打开失败'));
+    });
+    return _imgDBPromise;
+  }
+  async function imgDBPut(id, dataURL) {
+    const db = await openImgDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IMG_STORE, 'readwrite');
+      tx.objectStore(IMG_STORE).put({ id, data: dataURL });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+  async function imgDBGet(id) {
+    const db = await openImgDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IMG_STORE, 'readonly');
+      const rq = tx.objectStore(IMG_STORE).get(id);
+      rq.onsuccess = () => resolve(rq.result ? rq.result.data : null);
+      rq.onerror = () => reject(rq.error);
+    });
+  }
+  async function imgDBDel(id) {
+    const db = await openImgDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IMG_STORE, 'readwrite');
+      tx.objectStore(IMG_STORE).delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+  // 序列化用于落盘/上传的 state：图库大图已从 localStorage 剥离（只保留 imageId + imageStored 引用）。
+  // 未成功入库（imageStored=false）的图片仍保留在 localStorage 作为兜底，避免丢图。
+  function serializeState() {
+    const out = Object.assign({}, state);
+    out.gallery = (state.gallery || []).map(g => {
+      if (!g || !g.imageId || !g.imageStored) return g; // 未入库图片仍保留在 localStorage 兜底
+      const c = Object.assign({}, g);
+      delete c.image;
+      return c;
+    });
+    return JSON.stringify(out);
+  }
+  // 把图库图片落盘：优先 IndexedDB；若开启云端备份则同步到 Supabase Storage。
+  // 成功后置 imageStored=true（save 时即从 localStorage 剥离该图片），失败则保留 localStorage 兜底。
+  async function persistGalleryImage(g) {
+    if (!g || !g.imageId || !g.image) return;
+    let ok = false;
+    try { await imgDBPut(g.imageId, g.image); ok = true; }
+    catch (e) { console.warn('图片写入 IndexedDB 失败，回退到 localStorage', g.imageId, e); }
+    if (ok && state.settings.backupImages) {
+      try { await backupImageToCloud(g.imageId, g.image); }
+      catch (e) { console.warn('图片云端备份失败（已存本地）', g.imageId, e); }
+    }
+    g.imageStored = ok;
+    save();
+  }
+  // 启动时把旧数据（图片直接内嵌在 state）迁移到 IndexedDB
+  async function migrateLegacyGalleryImages() {
+    const legacy = (state.gallery || []).filter(g => g && g.image && !g.imageId);
+    if (legacy.length) {
+      for (const g of legacy) {
+        g.imageId = g.id;
+        await persistGalleryImage(g); // 写入 IDB 并摘掉 localStorage 中的大图
+      }
+      toast('已把 ' + legacy.length + ' 张图纸图片转入本地 IndexedDB（更大容量，无需压缩）', 'success', 4000);
+    }
+    await hydrateGalleryImages();
+  }
+  // 从 IndexedDB（必要时云端）取回图片填回内存，供页面渲染
+  async function hydrateGalleryImages() {
+    const need = (state.gallery || []).filter(g => g && g.imageId && !g.image);
+    if (!need.length) return;
+    for (const g of need) {
+      let data = null;
+      try { data = await imgDBGet(g.imageId); } catch (e) { console.warn('IDB 读取失败', g.imageId, e); }
+      if (!data && state.settings.backupImages) { try { data = await fetchImageFromCloud(g.imageId); } catch (e) {} }
+      if (data) g.image = data;
+    }
+    if (['gallery', 'settings', 'recognize'].indexOf(currentView) !== -1) {
+      if (currentView === 'gallery') renderGallery($('#view'));
+      else if (currentView === 'settings') renderSettings($('#view'));
+      else if (currentView === 'recognize') renderRecognize($('#view'));
+    }
+  }
+
   /* ===================== 2. 存储与会话状态 ===================== */
   let state = load();
+  migrateLegacyGalleryImages();
   // 旧版模式（auto/grid/pixel/aligned）已移除，统一为图例识别模式。
   if (state.settings.recognizeMode !== 'legend') state.settings.recognizeMode = 'legend';
 
@@ -197,25 +305,27 @@
     }
   }
   function save() {
+    let str;
+    try { str = serializeState(); }
+    catch (e) { str = JSON.stringify(state); } // 极端兜底
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      localStorage.setItem(STORAGE_KEY, str);
     } catch (e) {
       const isQuota = e && (e.name === 'QuotaExceededError' || /quota|exceeded|storage/i.test(e.message));
-      const approxKB = Math.round(JSON.stringify(state).length / 1024);
+      const approxKB = Math.round(str.length / 1024);
       if (isQuota) {
         openModal('本地存储空间不足', `
           <div class="space-y-3 text-sm">
             <p>当前数据约 <strong>${approxKB}KB</strong>，已超过浏览器 localStorage 容量上限。</p>
-            <p>最常见原因是<strong>图库图片过大</strong>。你可以：</p>
+            <p>图库原图现默认存于浏览器 IndexedDB（容量大得多），通常不会触顶。若仍不足，多为其他数据异常，可：</p>
             <ul class="list-disc pl-5 space-y-1 text-mk-sub">
-              <li>压缩图库图片（标准/强力两档）</li>
-              <li>删除已拼/未拼图纸的图片（保留记录）</li>
-              <li>导出备份后，删除部分图片再恢复</li>
+              <li>导出备份后，恢复默认数据再导入</li>
+              <li>检查是否有损坏的大字段</li>
             </ul>
           </div>`);
         setModalFoot(`
           <button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">稍后再说</button>
-          <button id="save-fail-go-settings" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold">去设置清理</button>`);
+          <button id="save-fail-go-settings" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold">去设置查看</button>`);
         $('#save-fail-go-settings').onclick = () => { closeModal(); switchView('settings'); };
       } else {
         toast('保存失败：' + e.message, 'error', 6000);
@@ -247,7 +357,7 @@
     if (!supabase || !currentUser) return;
     const { error } = await supabase
       .from('user_state')
-      .upsert({ user_id: currentUser.id, data: state, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+      .upsert({ user_id: currentUser.id, data: JSON.parse(serializeState()), updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
     if (error) { console.warn('syncPush 失败', error); toast('云端同步失败：' + error.message, 'error'); }
     else { lastSyncAt = new Date(); }
   }
@@ -270,7 +380,8 @@
       const merged = Object.assign(defaultState(), data.data);
       merged.settings = Object.assign(defaultState().settings, (data.data && data.data.settings) || {});
       state = merged;
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+      await hydrateGalleryImages(); // 云端 state 不含图片，需从 IndexedDB/云端取回
+      try { localStorage.setItem(STORAGE_KEY, serializeState()); } catch (e) {}
       lastSyncAt = data.updated_at ? new Date(data.updated_at) : new Date();
       toast('已从云端同步', 'success');
     } else {
@@ -281,6 +392,51 @@
     else if (currentView === 'warehouse') renderWarehouse($('#view'));
     else if (currentView === 'settings') renderSettings($('#view'));
   }
+  // 图库图片云端备份（Supabase Storage，可选）
+  const IMG_BUCKET = 'gallery-images';
+  function dataURLtoBlob(dataURL) {
+    const parts = String(dataURL).split(',');
+    const mime = (parts[0].match(/:(.*?);/) || [, 'image/jpeg'])[1];
+    const bin = atob(parts[1] || '');
+    const len = bin.length;
+    const arr = new Uint8Array(len);
+    for (let i = 0; i < len; i++) arr[i] = bin.charCodeAt(i);
+    return new Blob([arr], { type: mime });
+  }
+  function blobToDataURL(blob) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+      r.readAsDataURL(blob);
+    });
+  }
+  async function backupImageToCloud(imageId, dataURL) {
+    if (!supabase || !currentUser || !state.settings.backupImages) return;
+    try {
+      const blob = dataURLtoBlob(dataURL);
+      const path = currentUser.id + '/' + imageId + '.jpg';
+      const { error } = await supabase.storage.from(IMG_BUCKET).upload(path, blob, { upsert: true, contentType: 'image/jpeg' });
+      if (error) console.warn('云端备份图片失败', imageId, error.message);
+    } catch (e) { console.warn('云端备份图片异常', imageId, e); }
+  }
+  async function fetchImageFromCloud(imageId) {
+    if (!supabase || !currentUser) return null;
+    try {
+      const path = currentUser.id + '/' + imageId + '.jpg';
+      const { data, error } = await supabase.storage.from(IMG_BUCKET).download(path);
+      if (error || !data) return null;
+      return await blobToDataURL(data);
+    } catch (e) { return null; }
+  }
+  async function deleteImageFromCloud(imageId) {
+    if (!supabase || !currentUser) return;
+    try {
+      const path = currentUser.id + '/' + imageId + '.jpg';
+      await supabase.storage.from(IMG_BUCKET).remove([path]);
+    } catch (e) { console.warn('云端删除图片失败', imageId, e); }
+  }
+
   // 登录 / 注册
   // opts: { nickname, avatar } 仅用于注册时初始化个人资料
   async function doAuth(mode, emailVal, passVal, opts = {}) {
@@ -4255,20 +4411,24 @@ C25   2</pre>
       }));
       wrappedRender();
     };
-    $('#g-save').onclick = () => {
+    $('#g-save').onclick = async () => {
       if (!pendingItems.length) return toast('请上传图纸图片', 'error');
       const t = Date.now();
+      const created = [];
       pendingItems.forEach((it, i) => {
         const name = (it.name || '').trim() || ('图纸 ' + (i + 1));
-        state.gallery.unshift({
-          id: 'g' + (t + i).toString(36) + Math.random().toString(36).slice(2, 6),
-          name, platform: (it.platform || '').trim(), author: (it.author || '').trim(),
-          image: it.img, status: it.status, legend: null,
+        const id = 'g' + (t + i).toString(36) + Math.random().toString(36).slice(2, 6);
+        const g = {
+          id, name, platform: (it.platform || '').trim(), author: (it.author || '').trim(),
+          imageId: id, image: it.img, imageStored: false, status: it.status, legend: null,
           createdAt: t + i
-        });
+        };
+        created.push(g);
+        state.gallery.unshift(g);
       });
       const n = pendingItems.length;
       pendingItems = [];
+      for (const g of created) await persistGalleryImage(g); // 写入 IndexedDB 并摘掉 localStorage 大图
       save(); closeModal(); renderGallery($('#view')); toast('已添加 ' + n + ' 张图纸到图库', 'success');
     };
     updateApplyDisabled();
@@ -4394,6 +4554,8 @@ C25   2</pre>
     for (const g of items) {
       try {
         g.image = await compressDataURL(g.image, maxEdge, quality);
+        g.imageStored = false;
+        await persistGalleryImage(g); // 回写 IndexedDB（覆盖旧图），并同步云端备份
         done++;
       } catch (e) { console.warn('压缩失败', g.id, e); }
     }
@@ -4408,7 +4570,14 @@ C25   2</pre>
     const items = state.gallery.filter(g => g.status === status && g.image);
     if (!items.length) return toast('没有可清理的' + label + '图片', 'info');
     if (!confirm('确定删除 ' + items.length + ' 张' + label + '的图片吗？图纸记录仍会保留，只是不再显示缩略图，可随时重新上传。')) return;
-    items.forEach(g => { g.image = ''; });
+    items.forEach(g => {
+      g.image = '';
+      g.imageStored = false;
+      if (g.imageId) {
+        imgDBDel(g.imageId).catch(() => {});
+        if (state.settings.backupImages) deleteImageFromCloud(g.imageId).catch(() => {});
+      }
+    });
     save();
     if (currentView === 'gallery') renderGallery($('#view'));
     else if (currentView === 'settings') renderSettings($('#view'));
@@ -4583,8 +4752,8 @@ C25   2</pre>
           <h3 class="font-bold mb-3">🖼️ 图库图片管理</h3>
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
             <div class="bg-white/50 rounded-xl p-2.5 text-center">
-              <div class="text-sm font-bold text-mk-ink">${Math.round(JSON.stringify(state).length / 1024)}KB</div>
-              <div class="text-[10px] text-mk-sub">总数据</div>
+              <div class="text-sm font-bold text-mk-ink">${Math.round(serializeState().length / 1024)}KB</div>
+              <div class="text-[10px] text-mk-sub">本地占用(localStorage)</div>
             </div>
             <div class="bg-white/50 rounded-xl p-2.5 text-center">
               <div class="text-sm font-bold text-mk-ink">${gallerySize}KB</div>
@@ -4605,7 +4774,17 @@ C25   2</pre>
             <button id="purge-made" class="px-4 py-2 rounded-xl bg-rose-100 text-rose-500 font-semibold">删除已拼图片</button>
             <button id="purge-unmade" class="px-4 py-2 rounded-xl bg-amber-100 text-amber-600 font-semibold">删除未拼图片</button>
           </div>
-          <p class="text-xs text-mk-sub mt-2">标准压缩：1000px / JPEG 80%；强力压缩：800px / JPEG 70%。删除图片会保留图纸记录，只是清空图片数据，可重新上传。</p>
+          <p class="text-xs text-mk-sub mt-2">图库原图现默认存于浏览器 <strong>IndexedDB</strong>（容量数百 MB~GB，无需压缩）。如需进一步节省本地空间可压缩；删除图片会保留图纸记录，只是清空图片数据，可重新上传。清空 IndexedDB 会丢图，勿在浏览器「清除网站数据」中清理本站。</p>
+        </section>
+
+        <!-- 图库云端备份（可选） -->
+        <section class="mk-card rounded-2xl shadow-soft p-4 sm:p-5 lg:col-span-2">
+          <h3 class="font-bold mb-3">☁️ 图库云端备份（可选）</h3>
+          <label class="flex items-center gap-2 text-sm cursor-pointer">
+            <input id="backup-images-toggle" type="checkbox" ${state.settings.backupImages ? 'checked' : ''} class="w-4 h-4">
+            <span>把图库图片同步到 Supabase Storage（换设备也能恢复）</span>
+          </label>
+          <p class="text-xs text-mk-sub mt-2">开启后，每次添加/修改图纸图片都会上传到云端存储桶 <code>gallery-images</code>（路径 <code>用户ID/图片ID.jpg</code>）。需在 Supabase 后台先创建该存储桶并配置 RLS 策略允许本人读写自己的目录；未配置时上传会静默失败，不影响本地。关闭不会删除已备份的图片。</p>
         </section>
 
         <!-- 账户与云端同步 -->
@@ -4644,6 +4823,20 @@ C25   2</pre>
     $('#compress-gallery-strong').onclick = () => compressGalleryImages({ maxEdge: 800, quality: 0.70, label: '强力' });
     $('#purge-made').onclick = () => purgeGalleryImages('made', '已拼');
     $('#purge-unmade').onclick = () => purgeGalleryImages('unmade', '未拼');
+
+    const backupToggle = $('#backup-images-toggle');
+    if (backupToggle) backupToggle.onchange = async () => {
+      state.settings.backupImages = backupToggle.checked;
+      save();
+      if (state.settings.backupImages) {
+        toast('正在把图库图片备份到云端…', 'info', 1500);
+        let n = 0;
+        for (const g of state.gallery) { if (g.imageId && g.image) { await persistGalleryImage(g); n++; } }
+        toast('已备份 ' + n + ' 张图库图片到云端', 'success');
+      } else {
+        toast('已关闭云端备份（已备份图片保留）', 'info');
+      }
+    };
 
     // 个人信息：头像上传、保存资料、修改密码
     settingsAvatarTemp = state.profile.avatar || '';
@@ -4749,18 +4942,42 @@ C25   2</pre>
       const o = {}; headers.forEach((h, i) => o[h] = cells[i]); return o;
     });
   }
-  function backupAll() {
-    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+  async function backupAll() {
+    // 图库图片单独打包（避免 state 内嵌大图），统一放 galleryImages 映射
+    const galleryImages = {};
+    for (const g of state.gallery) {
+      if (!g || !g.imageId) continue;
+      let img = g.image;
+      if (!img) { try { img = await imgDBGet(g.imageId); } catch (e) {} }
+      if (img) galleryImages[g.imageId] = img;
+    }
+    const payload = Object.assign({}, JSON.parse(serializeState()), { galleryImages });
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = '拼豆豆仓备份_' + Date.now() + '.json'; a.click();
-    toast('已备份', 'success');
+    toast('已备份（含 ' + Object.keys(galleryImages).length + ' 张图库图片）', 'success');
   }
-  function restoreAll(file) {
+  async function restoreAll(file) {
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
         const data = JSON.parse(e.target.result);
+        const galleryImages = data.galleryImages || {};
         state = Object.assign(defaultState(), data);
-        save(); switchView('dashboard'); toast('已恢复', 'success');
+        delete state.galleryImages; // 该字段仅用于备份文件，不应写回 state/localStorage
+        // 把图片写回 IndexedDB 并挂到内存（兼容旧备份内联 image 的情况）
+        for (const g of (state.gallery || [])) {
+          if (!g) continue;
+          if (!g.imageId && g.image) g.imageId = g.id;
+          const img = (g.image || galleryImages[g.imageId] || '');
+          if (img && g.imageId) {
+            g.image = img;
+            try { await imgDBPut(g.imageId, img); g.imageStored = true; } catch (err) { g.imageStored = false; }
+            if (state.settings.backupImages) { try { await backupImageToCloud(g.imageId, img); } catch (err) {} }
+          } else {
+            g.image = ''; g.imageStored = false;
+          }
+        }
+        save(); switchView('dashboard'); await hydrateGalleryImages(); toast('已恢复', 'success');
       } catch (err) { toast('恢复失败：文件格式错误', 'error'); }
     };
     reader.readAsText(file);
@@ -5851,7 +6068,7 @@ ${hasCells ? `
     // 识别模式切换（像素法 vs 格子 OCR）
     $$('.pmode-recog').forEach(b => b.onclick = () => {
       state.settings.gridOCREnabled = b.dataset.mode === 'gridOCR';
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) {}
+      try { localStorage.setItem(STORAGE_KEY, serializeState()); } catch (_) {}
       renderPattern(v);
       toast(state.settings.gridOCREnabled ? '🔠 已切换到「格子 OCR」模式：识别模式将从「每格中央印的色号字符」反解析图纸' : '🎨 已切换到「像素法」模式（默认）：按 cell 颜色聚类', 'info', 2800);
     });
