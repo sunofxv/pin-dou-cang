@@ -4435,7 +4435,7 @@ C25   2</pre>
       pendingItems = [];
       await Promise.all(files.map(async (f, idx) => {
         try {
-          const img = await autoCropDataURL(await fitImageToDataURL(f, 1200));
+          const img = await autoCropDataURL(await fitImageToDataURL(f, 2400));
           const base = (f.name || ('图纸 ' + (idx + 1))).replace(/\.[^.]+$/, '');
           pendingItems.push({ img, name: base, platform: '', author: '', status: 'unmade' });
         } catch (e) { toast('图片读取失败：' + (f.name || ''), 'error'); }
@@ -4465,9 +4465,9 @@ C25   2</pre>
     updateApplyDisabled();
   }
   // 保持比例缩放图片为 data URL（不裁剪），用于图库存储。
-  // 为保证后续图纸识别/网格识别有足够清晰度，默认保存 1600px 长边、JPEG 0.88；
-  // 如 localStorage 空间紧张，可去「设置 → 图库图片管理」手动压缩。
-  function fitImageToDataURL(file, maxEdge = 1600) {
+  // 图片现已存于 IndexedDB（容量大），故不再激进压缩：默认保存 2400px 长边、JPEG 0.95；
+  // 原图若小于该上限则不放大（scale<=1），最大限度保留清晰度。如需进一步节省空间可去「设置 → 图库图片管理」手动压缩。
+  function fitImageToDataURL(file, maxEdge = 2400) {
     return new Promise((resolve, reject) => {
       const img = new Image();
       const url = URL.createObjectURL(file);
@@ -4481,7 +4481,7 @@ C25   2</pre>
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, w, h);
         ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/jpeg', 0.88));
+        resolve(canvas.toDataURL('image/jpeg', 0.95));
       };
       img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('图片加载失败')); };
       img.src = url;
@@ -4547,7 +4547,7 @@ C25   2</pre>
         const out = document.createElement('canvas');
         out.width = cw; out.height = ch;
         out.getContext('2d').drawImage(canvas, left, top, cw, ch, 0, 0, cw, ch);
-        resolve(out.toDataURL('image/jpeg', 0.85));
+        resolve(out.toDataURL('image/jpeg', 0.95));
       };
       img.onerror = () => reject(new Error('图片加载失败'));
       img.src = dataUrl;
