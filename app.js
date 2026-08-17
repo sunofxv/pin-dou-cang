@@ -4435,7 +4435,7 @@ C25   2</pre>
       pendingItems = [];
       await Promise.all(files.map(async (f, idx) => {
         try {
-          const img = await autoCropDataURL(await fitImageToDataURL(f, 2400));
+          const img = await autoCropDataURL(await readFileDataURL(f));
           const base = (f.name || ('图纸 ' + (idx + 1))).replace(/\.[^.]+$/, '');
           pendingItems.push({ img, name: base, platform: '', author: '', status: 'unmade' });
         } catch (e) { toast('图片读取失败：' + (f.name || ''), 'error'); }
@@ -4463,6 +4463,16 @@ C25   2</pre>
       save(); closeModal(); renderGallery($('#view')); toast('已添加 ' + n + ' 张图纸到图库', 'success');
     };
     updateApplyDisabled();
+  }
+  // 读取文件原始 data URL（保留原图格式与分辨率，不缩放、不重编码），用于图库原图存储。
+  // 图片现已存于 IndexedDB（容量大），故不再为节省空间而缩放/转码，确保与原图 100% 一致。
+  function readFileDataURL(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('图片读取失败'));
+      reader.readAsDataURL(file);
+    });
   }
   // 保持比例缩放图片为 data URL（不裁剪），用于图库存储。
   // 图片现已存于 IndexedDB（容量大），故不再激进压缩：默认保存 2400px 长边、JPEG 0.95；
@@ -4547,7 +4557,8 @@ C25   2</pre>
         const out = document.createElement('canvas');
         out.width = cw; out.height = ch;
         out.getContext('2d').drawImage(canvas, left, top, cw, ch, 0, 0, cw, ch);
-        resolve(out.toDataURL('image/jpeg', 0.95));
+        // 裁剪输出无损 PNG，仅改变几何边界、不损失清晰度（拼豆图纸多为线稿/色块，对 JPEG 压缩敏感）
+        resolve(out.toDataURL('image/png'));
       };
       img.onerror = () => reject(new Error('图片加载失败'));
       img.src = dataUrl;
