@@ -180,6 +180,11 @@
         }
       }
 
+      // 迁移：补货记录补充 defaultPerQty（默认每份颗数）字段
+      if (Array.isArray(merged.restockRecords)) {
+        merged.restockRecords.forEach(r => { if (r && r.defaultPerQty === undefined) r.defaultPerQty = DEFAULT_RESTOCK_PER_QTY; });
+      }
+
       // 迁移：图库图片补充 legend 字段（旧数据没有该字段，缺省为 null 表示尚未识别图例）
       if (Array.isArray(merged.gallery)) {
         merged.gallery.forEach(g => { if (g && g.legend === undefined) g.legend = null; });
@@ -1729,7 +1734,8 @@
     const id = uid('rs');
     state.restockRecords.push({
       id, name: nextRestockName(), status: 'pending',
-      createdAt: Date.now(), updatedAt: Date.now(), stockedAt: null, items
+      createdAt: Date.now(), updatedAt: Date.now(), stockedAt: null,
+      defaultPerQty: DEFAULT_RESTOCK_PER_QTY, items
     });
     save();
     restockTab = 'pending';
@@ -1759,7 +1765,7 @@
     state.restockRecords.push({
       id, name: nextRestockName(), status: 'pending',
       createdAt: Date.now(), updatedAt: Date.now(), stockedAt: null,
-      items, note: notePrefix || ''
+      defaultPerQty: DEFAULT_RESTOCK_PER_QTY, items, note: notePrefix || ''
     });
     save();
     restockTab = 'pending';
@@ -1772,6 +1778,10 @@
   // 记录合计颗数（所有清单项之和）
   function restockRecordBeads(r) {
     return (r.items || []).reduce((s, it) => s + (it.portions || 0) * (it.perQty || 0), 0);
+  }
+  // 记录合计份数（所有清单项份数之和）
+  function restockRecordPortions(r) {
+    return (r.items || []).reduce((s, it) => s + (it.portions || 0), 0);
   }
 
   function rStat(label, count, beads, active, tabKey) {
@@ -1815,6 +1825,7 @@
   function restockRecordRow(r, mode) {
     const collapsed = collapsedRestock.has(r.id);
     const total = restockRecordBeads(r);
+    const totalPortions = restockRecordPortions(r);
     const itemCount = (r.items || []).length;
     const timeLabel = mode === 'stocked' && r.stockedAt ? '入库于 ' + fmtTime(r.stockedAt) : '创建 ' + fmtTime(r.createdAt);
     const ringCls = mode === 'stocked' ? 'ring-2 ring-emerald-300 bg-emerald-50/40' : 'ring-2 ring-mk-rose/30 bg-mk-rose/5';
@@ -1827,22 +1838,32 @@
       <div class="flex items-center gap-2 mb-2 flex-wrap">
         <button class="rs-toggle text-mk-sub text-lg leading-none px-1" data-id="${r.id}" title="${collapsed ? '展开' : '折叠'}">${collapsed ? '▸' : '▾'}</button>
         ${nameHtml}
-        <span class="text-[11px] text-mk-sub whitespace-nowrap">${itemCount} 项 · ${total} 颗</span>
+        <span class="text-[11px] text-mk-sub whitespace-nowrap">${itemCount} 项 · ${totalPortions} 份 · ${total} 颗</span>
       </div>
-      <div class="flex flex-wrap gap-2 mb-2">
+      <div class="flex flex-wrap items-center gap-2 mb-2">
         ${mode === 'pending'
           ? `<button class="rs-stock-all px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500 text-white hover:bg-emerald-600" data-id="${r.id}">✅ 一键入库</button>
              <button class="rs-add-item px-3 py-1.5 rounded-xl text-xs font-semibold bg-mk-rose text-white hover:bg-mk-rose/90" data-id="${r.id}">➕ 新增清单</button>`
           : `<button class="rs-undo px-3 py-1.5 rounded-xl text-xs font-semibold bg-amber-500 text-white hover:bg-amber-600" data-id="${r.id}">↩️ 撤销入库</button>`}
         <button class="rs-del-record px-3 py-1.5 rounded-xl text-xs font-semibold bg-white border border-mk-sand text-rose-500 hover:bg-rose-50" data-id="${r.id}">🗑️ 删除记录</button>
-        <span class="text-[11px] text-mk-sub whitespace-nowrap ml-auto self-center">${timeLabel}</span>
+        <label class="flex items-center gap-1.5 ml-auto text-[10px] text-mk-sub whitespace-nowrap">
+          默认每份
+          <input type="number" min="1" step="1" class="rs-default-perqty w-16 px-1.5 py-1 rounded-lg bg-white border border-mk-sand text-xs text-right" data-id="${r.id}" value="${r.defaultPerQty || DEFAULT_RESTOCK_PER_QTY}">
+          颗
+        </label>
       </div>`;
     const itemsHtml = collapsed ? '' :
       `<div class="space-y-1 mt-1">${(r.items || []).map(it => restockItemRow(r, it)).join('') || '<div class="text-xs text-mk-sub text-center py-2">暂无清单项，点「新增清单」添加色号</div>'}</div>`;
+    const footerHtml = collapsed || !itemCount ? '' :
+      `<div class="mt-3 pt-2 border-t border-mk-sand/50 flex items-center justify-between text-sm">
+        <span class="text-mk-sub">当前合计</span>
+        <span class="font-bold text-mk-ink">${totalPortions} 份 · ${total} 颗</span>
+      </div>`;
     return `
     <div class="restock-rec mk-card rounded-2xl shadow-soft p-4 mb-3 ${ringCls}" data-id="${r.id}">
       ${head}
       ${itemsHtml}
+      ${footerHtml}
     </div>`;
   }
 
@@ -1947,6 +1968,12 @@
       let val = parseInt(inp.value, 10); if (!val || val < 1) val = 1;
       it.perQty = val; r.updatedAt = Date.now(); save(); renderRestock(v);
     });
+    // 编辑记录默认每份颗数
+    $$('.rs-default-perqty', v).forEach(inp => inp.onchange = () => {
+      const r = getRestock(inp.dataset.id); if (!r) return;
+      let val = parseInt(inp.value, 10); if (!val || val < 1) val = 1;
+      r.defaultPerQty = val; r.updatedAt = Date.now(); save(); renderRestock(v);
+    });
     // 删除清单项
     $$('.ri-del', v).forEach(b => b.onclick = (e) => {
       e.stopPropagation();
@@ -1968,7 +1995,7 @@
   function addRestockItem(recordId) {
     const r = getRestock(recordId); if (!r) return;
     collapsedRestock.delete(recordId);
-    const it = { id: uid('ri'), colorNumber: '', portions: 1, perQty: DEFAULT_RESTOCK_PER_QTY, note: '' };
+    const it = { id: uid('ri'), colorNumber: '', portions: 1, perQty: r.defaultPerQty || DEFAULT_RESTOCK_PER_QTY, note: '' };
     r.items.push(it); r.updatedAt = Date.now(); save(); renderRestock($('#view'));
     requestAnimationFrame(() => {
       const el = $('#view').querySelector('.ri-color[data-rid="' + recordId + '"][data-iid="' + it.id + '"]');
@@ -2023,7 +2050,8 @@
     const id = uid('rs');
     state.restockRecords.push({
       id, name: nextRestockName(), status: 'pending',
-      createdAt: Date.now(), updatedAt: Date.now(), stockedAt: null, items: []
+      createdAt: Date.now(), updatedAt: Date.now(), stockedAt: null,
+      defaultPerQty: DEFAULT_RESTOCK_PER_QTY, items: []
     });
     save();
     restockTab = 'pending';
@@ -2102,7 +2130,8 @@ C25   2</pre>
     const id = uid('rs');
     state.restockRecords.push({
       id, name: nextRestockName(), status: 'pending',
-      createdAt: Date.now(), updatedAt: Date.now(), stockedAt: null, items
+      createdAt: Date.now(), updatedAt: Date.now(), stockedAt: null,
+      defaultPerQty: DEFAULT_RESTOCK_PER_QTY, items
     });
     save();
     restockTab = 'pending';
