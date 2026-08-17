@@ -197,11 +197,26 @@
     } catch (e) {
       const isQuota = e && (e.name === 'QuotaExceededError' || /quota|exceeded|storage/i.test(e.message));
       const approxKB = Math.round(JSON.stringify(state).length / 1024);
-      const msg = isQuota
-        ? '保存失败：本地存储空间不足（当前数据约 ' + approxKB + 'KB）。通常是图库图片过大，建议到「设置」压缩图库图片，或删除部分图片后再试。'
-        : '保存失败：' + e.message;
-      toast(msg, 'error', 6000);
+      if (isQuota) {
+        openModal('本地存储空间不足', `
+          <div class="space-y-3 text-sm">
+            <p>当前数据约 <strong>${approxKB}KB</strong>，已超过浏览器 localStorage 容量上限。</p>
+            <p>最常见原因是<strong>图库图片过大</strong>。你可以：</p>
+            <ul class="list-disc pl-5 space-y-1 text-mk-sub">
+              <li>压缩图库图片（标准/强力两档）</li>
+              <li>删除已拼/未拼图纸的图片（保留记录）</li>
+              <li>导出备份后，删除部分图片再恢复</li>
+            </ul>
+          </div>`);
+        setModalFoot(`
+          <button class="px-4 py-2 rounded-xl bg-white/70 border border-mk-sand text-mk-sub" onclick="document.getElementById('modal-root').innerHTML=''">稍后再说</button>
+          <button id="save-fail-go-settings" class="px-4 py-2 rounded-xl bg-mk-rose text-white font-semibold">去设置清理</button>`);
+        $('#save-fail-go-settings').onclick = () => { closeModal(); switchView('settings'); };
+      } else {
+        toast('保存失败：' + e.message, 'error', 6000);
+      }
       console.error('save failed', e, 'state approx', approxKB + 'KB');
+      return;
     }
     scheduleSync();
   }
@@ -4338,15 +4353,18 @@ C25   2</pre>
     });
   }
   // 压缩图库中所有图片，减小 localStorage 占用
-  async function compressGalleryImages() {
+  async function compressGalleryImages(opts = {}) {
+    const maxEdge = opts.maxEdge || 1000;
+    const quality = opts.quality || 0.80;
+    const label = opts.label || (maxEdge + 'px/' + Math.round(quality * 100) + '%');
     const items = state.gallery.filter(g => g.image);
     if (!items.length) return toast('图库中没有图片', 'info');
     const totalBefore = items.reduce((s, g) => s + g.image.length, 0);
-    toast('开始压缩图库图片…', 'info', 1500);
+    toast('开始压缩图库图片（' + label + '）…', 'info', 1500);
     let done = 0;
     for (const g of items) {
       try {
-        g.image = await compressDataURL(g.image, 1000, 0.80);
+        g.image = await compressDataURL(g.image, maxEdge, quality);
         done++;
       } catch (e) { console.warn('压缩失败', g.id, e); }
     }
@@ -4355,6 +4373,17 @@ C25   2</pre>
     if (currentView === 'gallery') renderGallery($('#view'));
     else if (currentView === 'settings') renderSettings($('#view'));
     toast('已压缩 ' + done + '/' + items.length + ' 张图片，约节省 ' + Math.round((totalBefore - totalAfter) / 1024) + 'KB', 'success', 4000);
+  }
+  // 删除图库中指定状态图片的 image 字段（保留记录）
+  function purgeGalleryImages(status, label) {
+    const items = state.gallery.filter(g => g.status === status && g.image);
+    if (!items.length) return toast('没有可清理的' + label + '图片', 'info');
+    if (!confirm('确定删除 ' + items.length + ' 张' + label + '的图片吗？图纸记录仍会保留，只是不再显示缩略图，可随时重新上传。')) return;
+    items.forEach(g => { g.image = ''; });
+    save();
+    if (currentView === 'gallery') renderGallery($('#view'));
+    else if (currentView === 'settings') renderSettings($('#view'));
+    toast('已清理 ' + items.length + ' 张' + label + '图片', 'success');
   }
   // 放大查看图库图片（支持滚轮缩放 / 双指缩放 / 拖拽平移）
   function openGalleryImageZoom(g) {
@@ -4523,11 +4552,31 @@ C25   2</pre>
         <!-- 图库图片管理 -->
         <section class="mk-card rounded-2xl shadow-soft p-4 sm:p-5 lg:col-span-2">
           <h3 class="font-bold mb-3">🖼️ 图库图片管理</h3>
-          <div class="flex flex-wrap items-center gap-3">
-            <button id="compress-gallery" class="px-4 py-2 rounded-xl bg-mk-sky text-mk-ink font-semibold">压缩图库图片</button>
-            <span class="text-xs text-mk-sub">当前图库 ${galleryCount} 张图片，约 ${gallerySize}KB（过大时会导致保存失败）</span>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+            <div class="bg-white/50 rounded-xl p-2.5 text-center">
+              <div class="text-sm font-bold text-mk-ink">${Math.round(JSON.stringify(state).length / 1024)}KB</div>
+              <div class="text-[10px] text-mk-sub">总数据</div>
+            </div>
+            <div class="bg-white/50 rounded-xl p-2.5 text-center">
+              <div class="text-sm font-bold text-mk-ink">${gallerySize}KB</div>
+              <div class="text-[10px] text-mk-sub">图库图片</div>
+            </div>
+            <div class="bg-white/50 rounded-xl p-2.5 text-center">
+              <div class="text-sm font-bold text-mk-ink">${galleryCount}</div>
+              <div class="text-[10px] text-mk-sub">图片张数</div>
+            </div>
+            <div class="bg-white/50 rounded-xl p-2.5 text-center">
+              <div class="text-sm font-bold text-mk-ink">${state.gallery.filter(g => g.image).length ? Math.round(Math.max(...state.gallery.filter(g => g.image).map(g => g.image.length)) / 1024) : 0}KB</div>
+              <div class="text-[10px] text-mk-sub">单张最大</div>
+            </div>
           </div>
-          <p class="text-xs text-mk-sub mt-2">压缩会将每张图限制在 1000px 内、JPEG 0.80 质量，可显著减小 localStorage 占用。建议上传时即使用此尺寸。</p>
+          <div class="flex flex-wrap gap-2">
+            <button id="compress-gallery" class="px-4 py-2 rounded-xl bg-mk-sky text-mk-ink font-semibold">标准压缩</button>
+            <button id="compress-gallery-strong" class="px-4 py-2 rounded-xl bg-mk-peach text-mk-ink font-semibold">强力压缩</button>
+            <button id="purge-made" class="px-4 py-2 rounded-xl bg-rose-100 text-rose-500 font-semibold">删除已拼图片</button>
+            <button id="purge-unmade" class="px-4 py-2 rounded-xl bg-amber-100 text-amber-600 font-semibold">删除未拼图片</button>
+          </div>
+          <p class="text-xs text-mk-sub mt-2">标准压缩：1000px / JPEG 80%；强力压缩：800px / JPEG 70%。删除图片会保留图纸记录，只是清空图片数据，可重新上传。</p>
         </section>
 
         <!-- 账户与云端同步 -->
@@ -4562,7 +4611,10 @@ C25   2</pre>
     $('#restore').onclick = () => $('#restore-file').click();
     $('#restore-file').onchange = e => { if (e.target.files[0]) restoreAll(e.target.files[0]); };
     $('#reset').onclick = () => { if (confirm('将恢复为默认 221 色卡（每色 1000 颗），并清空所有日志、配方与自定义映射，且不可恢复。确定？')) { state = defaultState(); save(); toast('已恢复默认数据', 'success'); switchView('dashboard'); } };
-    $('#compress-gallery').onclick = compressGalleryImages;
+    $('#compress-gallery').onclick = () => compressGalleryImages({ maxEdge: 1000, quality: 0.80, label: '标准' });
+    $('#compress-gallery-strong').onclick = () => compressGalleryImages({ maxEdge: 800, quality: 0.70, label: '强力' });
+    $('#purge-made').onclick = () => purgeGalleryImages('made', '已拼');
+    $('#purge-unmade').onclick = () => purgeGalleryImages('unmade', '未拼');
 
     // 个人信息：头像上传、保存资料、修改密码
     settingsAvatarTemp = state.profile.avatar || '';
