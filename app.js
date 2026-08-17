@@ -908,6 +908,55 @@
     console.warn('[extractJson] 全部fallback失败，原始长度:', s.length, '前100字:', s.slice(0, 100));
     return '';
   }
+  async function callVLM(dataUrl, apiKey, model, prompt, baseUrl) {
+    // 代理模式：visionBaseUrl 为空或指向同源 /api/* 时，前端不带 Key，
+    // 由 Vercel Serverless 函数（api/legend-vision.js）用服务端环境变量里的智谱 Key 转发。
+    const viaProxy = !baseUrl || !baseUrl.trim() || baseUrl.trim().indexOf('/api/') === 0;
+    if (viaProxy) {
+      // 代理模式统一走智谱（ZHIPU_API_KEY）。未显式给智谱模型时默认用稳定的 glm-4v-flash（免费、识别色号够用）。
+      const zhipuModel = (model && String(model).toLowerCase().startsWith('glm')) ? model : 'glm-4v-flash';
+      const res = await fetch('/api/legend-vision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: dataUrl, model: zhipuModel, prompt })
+      });
+      if (!res.ok) {
+        let msg = '代理服务返回 ' + res.status;
+        try {
+          const e = await res.json();
+          if (e && e.error) {
+            msg = e.error;
+            if (e.detail) msg += '：' + e.detail.slice(0, 240);
+          }
+        } catch (_) {}
+        throw new Error(msg);
+      }
+      const j = await res.json();
+      const content = (j && j.content) || '{}';
+      return extractJsonContent(content);
+    }
+    // 直连（用户自填 Key + OpenAI 兼容端点，如本地/自托管）
+    const url = baseUrl.trim();
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+      body: JSON.stringify({
+        model: model || 'gpt-4o-mini',
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: prompt },
+          { type: 'image_url', image_url: { url: dataUrl } }
+        ] }]
+      })
+    });
+    if (!res.ok) {
+      let detail = '';
+      try { const e = await res.json(); detail = (e.error && e.error.message) || JSON.stringify(e); } catch (_) {}
+      throw new Error('Vision API ' + res.status + (detail ? '：' + detail : ''));
+    }
+    const j = await res.json();
+    const content = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '{}';
+    return extractJsonContent(content);
+  }
   function normalizeLegendItem(c) {
     c = c || {};
     let hex = (c.hex || '').trim();
