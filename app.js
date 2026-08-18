@@ -908,6 +908,15 @@
     console.warn('[extractJson] 全部fallback失败，原始长度:', s.length, '前100字:', s.slice(0, 100));
     return '';
   }
+  // 把视觉模型返回的文本解析为 JS 对象/数组。
+  // 注意：extractJsonContent 只负责取出 JSON 字符串，这里再 JSON.parse，
+  // 确保 callVLM 返回的是对象/数组而非字符串——否则调用方（callLegendVisionAPI 等）
+  // 用 Array.isArray(字符串) 会恒为 false、字符串.colors 为 undefined，导致永远识别 0 个色块。
+  function parseVLMContent(raw) {
+    const s = extractJsonContent(raw);
+    if (!s) throw new Error('视觉模型未返回可识别的内容');
+    try { return JSON.parse(s); } catch (e) { throw new Error('视觉模型返回内容无法解析为 JSON'); }
+  }
   async function callVLM(dataUrl, apiKey, model, prompt, baseUrl) {
     // 代理模式：visionBaseUrl 为空或指向同源 /api/* 时，前端不带 Key，
     // 由 Vercel Serverless 函数（api/legend-vision.js）用服务端环境变量里的智谱 Key 转发。
@@ -933,7 +942,7 @@
       }
       const j = await res.json();
       const content = (j && j.content) || '{}';
-      return extractJsonContent(content);
+      return parseVLMContent(content);
     }
     // 直连（用户自填 Key + OpenAI 兼容端点，如本地/自托管）
     const url = baseUrl.trim();
@@ -955,7 +964,7 @@
     }
     const j = await res.json();
     const content = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '{}';
-    return extractJsonContent(content);
+    return parseVLMContent(content);
   }
   function normalizeLegendItem(c) {
     c = c || {};
@@ -3576,7 +3585,11 @@ C25   2</pre>
         drawEditor();
         renderRecognize(v);
         const _hasCount = tempLegendMap.some(x => x.count > 0);
-        toast(`AI 已识别 ${tempLegendMap.length} 个图例色${_hasCount ? '（已读入色块下方数量，可直接「存为配方 / 扣减库存」）' : '，如需精确数量请再框选图案区域点「计算整图用量」'}`, tempLegendMap.length ? 'success' : 'warn');
+        if (tempLegendMap.length === 0) {
+          toast('AI 未识别到任何色块：请确认已框选图例区域，或换更清晰的图重试', 'warn', 5000);
+        } else {
+          toast(`AI 已识别 ${tempLegendMap.length} 个图例色${_hasCount ? '（已读入色块下方数量，可直接「存为配方 / 扣减库存」）' : '，如需精确数量请再框选图案区域点「计算整图用量」'}`, 'success');
+        }
       } catch (err) {
         console.error(err);
         toast('AI 识别失败：' + (err.message || err), 'error');
