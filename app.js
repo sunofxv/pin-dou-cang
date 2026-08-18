@@ -5379,8 +5379,27 @@ C25   2</pre>
     // 诊断：采样中心像素确认是否有非白内容
     const diag = octx.getImageData(Math.floor(W/2), Math.floor(H/2), 1, 1).data;
     const isWhite = diag[0]>250 && diag[1]>250 && diag[2]>250;
-    console.log('[gridWarp] v7', iw+'x'+ih, '->', W+'x'+H, 'cellSrc='+cellSrc.toFixed(1),
+    console.log('[gridWarp] v8', iw+'x'+ih, '->', W+'x'+H, 'cellSrc='+cellSrc.toFixed(1),
       'drawn='+drawn, 'oob='+outOfBounds, 'centerPixel=('+diag[0]+','+diag[1]+','+diag[2]+')', isWhite?'⚠️WHITE':'✅CONTENT');
+    // 可见调试：将 warp 产物直接显示为 <img>，绕开 gridDrawResult 渲染链路
+    try {
+      const dbg = document.createElement('img');
+      dbg.src = out.toDataURL('image/png');
+      dbg.style.cssText = 'border:3px dashed red;display:block;margin:8px 0;max-width:100%;';
+      dbg.title = 'gridWarp 产物 (直接 toDataURL) | '+iw+'x'+ih+' -> '+W+'x'+H+' | drawn='+drawn+' oob='+outOfBounds;
+      const ref = document.getElementById('grid-result-canvas');
+      if (ref && ref.parentNode) ref.parentNode.insertBefore(dbg, ref);
+      else { dbg.id='grid-warp-debug-img'; (document.querySelector('[id*=grid-result]')||document.body).appendChild(dbg); }
+      console.log('[gridWarp] DEBUG IMG INSERTED, size=', dbg.naturalWidth, 'x', dbg.naturalHeight);
+    } catch(e) { console.warn('[gridWarp] debug img failed:', e.message); }
+    // 如果逐格截取全白（可能坐标偏差），fallback：整图缩放填充
+    if (isWhite && drawn > 0) {
+      console.warn('[gridWarp] FALLBACK: 逐格截取输出全白，尝试整图缩放填充');
+      octx.drawImage(img, 0, 0, W, H);
+      const fbDiag = octx.getImageData(Math.floor(W/2), Math.floor(H/2), 1, 1).data;
+      const fbWhite = fbDiag[0]>250 && fbDiag[1]>250 && fbDiag[2]>250;
+      console.log('[gridWarp] FALLBACK result:', fbWhite?'⚠️STILL_WHITE':'✅HAS_CONTENT', '('+fbDiag[0]+','+fbDiag[1]+','+fbDiag[2]+')');
+    }
     return out;
   }  function gridSanitizeCode(s) {
     if (!s) return '';
