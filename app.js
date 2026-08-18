@@ -2483,6 +2483,7 @@ C25   2</pre>
   /* ===================== 12. 豆子仓库 ===================== */
   let whFilterLow = false;
   let whSearch = ''; // 仓库搜索关键字（色号/名称/色值/位置）
+  let whSort = ''; // 库存排序：'' 默认（按色号）, 'stock-asc' 从少到多, 'stock-desc' 从多到少
   let pendingWarehouseColor = null; // 从仪表盘点击色号后要跳转/高亮的色号
   function renderWarehouse(v, opts = {}) {
     let list = state.beads.slice();
@@ -2494,6 +2495,8 @@ C25   2</pre>
       (b.hex || '').toLowerCase().includes(q) ||
       (b.location || '').toLowerCase().includes(q)
     );
+    if (whSort === 'stock-asc') list.sort((a, b) => a.stock - b.stock || a.colorNumber.localeCompare(b.colorNumber));
+    else if (whSort === 'stock-desc') list.sort((a, b) => b.stock - a.stock || a.colorNumber.localeCompare(b.colorNumber));
 
     v.innerHTML = `
       <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
@@ -2503,13 +2506,18 @@ C25   2</pre>
           <button id="wh-add" class="px-3 py-1.5 rounded-xl text-sm font-semibold bg-mk-rose text-white shadow-soft">+ 新增豆子</button>
         </div>
       </div>
-      <div class="flex items-center gap-2 mb-4">
+      <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 mb-4">
         <div class="relative flex-1">
           <span class="absolute left-3 top-1/2 -translate-y-1/2 text-mk-sub text-sm">🔍</span>
           <input id="wh-search" type="text" value="${escapeHtml(whSearch)}" placeholder="搜索色号 / 名称 / 色值 / 位置…" class="w-full pl-9 pr-9 py-2.5 rounded-xl bg-white/70 border border-mk-sand text-sm focus:outline-none focus:ring-2 focus:ring-mk-rose/30" />
           ${whSearch ? '<button id="wh-search-clear" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-mk-sub text-xs px-2 py-1 rounded-lg bg-white/70 border border-mk-sand">清除</button>' : ''}
         </div>
-        ${q ? `<span class="text-xs text-mk-sub shrink-0">${list.length} 个结果</span>` : ''}
+        <select id="wh-sort" class="shrink-0 px-3 py-2.5 rounded-xl bg-white/70 border border-mk-sand text-sm focus:outline-none focus:ring-2 focus:ring-mk-rose/30 cursor-pointer">
+          <option value="" ${whSort === '' ? 'selected' : ''}>默认排序</option>
+          <option value="stock-asc" ${whSort === 'stock-asc' ? 'selected' : ''}>库存从少到多</option>
+          <option value="stock-desc" ${whSort === 'stock-desc' ? 'selected' : ''}>库存从多到少</option>
+        </select>
+        ${q || whSort ? `<span class="text-xs text-mk-sub shrink-0 self-center">${list.length} 个结果</span>` : ''}
       </div>
       <div class="mk-card rounded-2xl shadow-soft overflow-hidden hidden sm:block">
         <div class="overflow-x-auto">
@@ -2550,6 +2558,8 @@ C25   2</pre>
     }
     const whSearchClear = $('#wh-search-clear');
     if (whSearchClear) whSearchClear.onclick = () => { whSearch = ''; renderWarehouse(v); };
+    const whSortSelect = $('#wh-sort');
+    if (whSortSelect) whSortSelect.onchange = (e) => { whSort = e.target.value; renderWarehouse(v); };
     $$('.bead-edit').forEach(b => b.onclick = () => openAddBead(b.dataset.id));
     $$('.bead-adj').forEach(b => b.onclick = () => openAdjust(b.dataset.id));
     $$('.bead-del').forEach(b => b.onclick = () => deleteBead(b.dataset.id));
