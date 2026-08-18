@@ -1130,6 +1130,28 @@
     const arr = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.colors) ? parsed.colors : []);
     return arr.map(normalizeLegendItem).filter(c => /^#?[0-9a-fA-F]{6}$/.test(c.hex) || /^#[0-9a-fA-F]{3}$/.test(c.hex));
   }
+  // 数量补全模式：只读每个色块正下方的数字，返回整数数组。
+  // 用于首轮回合漏读 count（尤其是边缘/尾部的色块）时做二次聚焦识别。
+  async function callLegendCountAPI(dataUrl, apiKey, model, baseUrl, expectedCount) {
+    expectedCount = Math.max(1, expectedCount | 0);
+    const prompt = `你正在看一张拼豆(Perler/Hama)图纸的颜色图例区域。图中是一排彩色填充的圆角矩形色块，每个色块【正下方】印有一个整数数字，表示该颜色需要的豆子数量。
+
+任务：按从左到右的顺序，逐个读出每个色块正下方的整数数字，返回一个 JSON 数组。数组长度必须严格等于 ${expectedCount}。
+如果某个色块下方确实没有数字，该位置填 0。
+
+严格要求：
+1. 只读色块【正下方】的纯数字，不要读色块内部的色号文字。
+2. 不要跳过任何色块，尤其是最左边和最右边的边缘色块，必须全部读出。
+3. 只返回 JSON 数组，不要任何额外文字、Markdown 或解释。
+
+示例（假设 5 个色块）：
+[12, 0, 38, 205, 17]`;
+    const parsed = await callVLM(dataUrl, apiKey, model, prompt, baseUrl);
+    if (Array.isArray(parsed)) return parsed.map(v => parseInt(v, 10) || 0);
+    if (parsed && Array.isArray(parsed.counts)) return parsed.counts.map(v => parseInt(v, 10) || 0);
+    if (parsed && Array.isArray(parsed.colors)) return parsed.colors.map(c => parseInt(c.count, 10) || 0);
+    return [];
+  }
   // 将归一化区域裁剪为独立图片 dataURL（用于把图例区域单独发给视觉模型）
   function cropRegionToDataURL(img, region) {
     const { canvas, w, h } = createAnalysisCanvas(img, 2400);
@@ -1274,8 +1296,9 @@
     }
 
     const topMargin = Math.max(2, Math.round(coreH * 0.12));
-    // 两行图例时，下方需要足够空间容纳第二行色块及其数量数字
-    const bottomMargin = Math.max(Math.round(coreH * (coreH > rh * 0.35 ? 1.0 : 1.6)), 20);
+    // 两行图例时，下方需要足够空间容纳第二行色块及其数量数字；
+    // 单行时多留余量，避免把色块正下方的数量数字切掉。
+    const bottomMargin = Math.max(Math.round(coreH * (coreH > rh * 0.35 ? 1.0 : 2.4)), 28);
     const rx0 = x0 + firstX;
     const rx1 = x0 + lastX;
     const ry0 = Math.max(0, y0 + coreY0 - topMargin);
@@ -1556,6 +1579,35 @@
       return buildLegendFromColors(raw, blocks.length || raw.length || undefined);
     }
     throw new Error('裁剪出的图例区为空/过小，请重新框选图例区域');
+  }
+  // 对 aiParseLegend 的结果做数量补全：把 count 为 0 的条目用「数量专用」二次识别填满。
+  // 视觉模型在首轮回合容易漏读边缘/尾部色块的数量，聚焦只读数字能显著改善。
+  async function fillMissingLegendCounts(img, region, legend, baseUrl) {
+    if (!legend || !legend.length) return legend;
+    const missingIdx = [];
+    for (let i = 0; i < legend.length; i++) {
+      if (!legend[i].count && legend[i].colorNumber) missingIdx.push(i);
+    }
+    if (!missingIdx.length) return legend;
+    const dataUrl = cropRegionToDataURL(img, region);
+    if (!dataUrl || dataUrl.length < 500) return legend;
+    try {
+      const counts = await callLegendCountAPI(dataUrl, state.settings.apiKey, state.settings.model, baseUrl, legend.length);
+      if (Array.isArray(counts) && counts.length >= legend.length) {
+        for (const idx of missingIdx) {
+          const c = parseInt(counts[idx], 10);
+          if (c > 0) legend[idx].count = c;
+        }
+        console.debug('[图例识别] 数量补全：%d 个缺失项中已填 %d 个', missingIdx.length,
+          missingIdx.filter(i => legend[i].count > 0).length);
+      }
+    } catch (e) { console.warn('数量补全识别失败：', e.message); }
+    return legend;
+  }
+  // aiParseLegend 的包装：先识别色号，再自动补全缺失的数量。
+  async function aiParseLegendWithCountFix(img, region, baseUrl, opts = {}) {
+    const legend = await aiParseLegend(img, region, baseUrl, opts);
+    return await fillMissingLegendCounts(img, region, legend, baseUrl);
   }
   // 把模型返回的 [{hex,code}] 映射为标准色号清单，并过滤表头/无效行
   function buildLegendFromColors(raw, estimatedCols) {
@@ -3578,7 +3630,7 @@ C25   2</pre>
         const legendStub = window.__aiParseLegendStub;
         tempLegendMap = await (legendStub && typeof legendStub === 'function'
           ? legendStub(img, region, baseUrl)
-          : aiParseLegend(img, region, baseUrl));
+          : aiParseLegendWithCountFix(img, region, baseUrl));
         tempLegendRegion = region;   // 锁定图例区，图案区留给第二步框选
         tempCropRegion = null;
         tempDetectedVLines = []; tempDetectedHLines = [];
