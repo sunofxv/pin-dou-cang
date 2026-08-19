@@ -5381,17 +5381,7 @@ C25   2</pre>
     const isWhite = diag[0]>250 && diag[1]>250 && diag[2]>250;
     console.log('[gridWarp] v8', iw+'x'+ih, '->', W+'x'+H, 'cellSrc='+cellSrc.toFixed(1),
       'drawn='+drawn, 'oob='+outOfBounds, 'centerPixel=('+diag[0]+','+diag[1]+','+diag[2]+')', isWhite?'⚠️WHITE':'✅CONTENT');
-    // 可见调试：将 warp 产物直接显示为 <img>，绕开 gridDrawResult 渲染链路
-    try {
-      const dbg = document.createElement('img');
-      dbg.src = out.toDataURL('image/png');
-      dbg.style.cssText = 'border:3px dashed red;display:block;margin:8px 0;max-width:100%;';
-      dbg.title = 'gridWarp 产物 (直接 toDataURL) | '+iw+'x'+ih+' -> '+W+'x'+H+' | drawn='+drawn+' oob='+outOfBounds;
-      const ref = document.getElementById('grid-result-canvas');
-      if (ref && ref.parentNode) ref.parentNode.insertBefore(dbg, ref);
-      else { dbg.id='grid-warp-debug-img'; (document.querySelector('[id*=grid-result]')||document.body).appendChild(dbg); }
-      console.log('[gridWarp] DEBUG IMG INSERTED, size=', dbg.naturalWidth, 'x', dbg.naturalHeight);
-    } catch(e) { console.warn('[gridWarp] debug img failed:', e.message); }
+    // (debug img removed - gridDrawResult v10 now handles display via <img>)
     // 如果逐格截取全白（可能坐标偏差），fallback：整图缩放填充
     if (isWhite && drawn > 0) {
       console.warn('[gridWarp] FALLBACK: 逐格截取输出全白，尝试整图缩放填充');
@@ -5479,46 +5469,62 @@ C25   2</pre>
     ctx.beginPath(); ctx.arc(ctr.x, ctr.y, 6, 0, Math.PI * 2); ctx.fillStyle = '#ef4444'; ctx.fill();
     ctx.restore();
   }
-  // 结果画布：拉正图 + 网格线 + 高亮（用 RAF 确保 DOM 已就绪）
+  // 结果渲染：用 <img> 显示 warp 产物（绕开 canvas drawImage 跨域/taint 静默失败问题），
+  // 叠加透明 canvas 画网格线和高亮
   function gridDrawResult() {
     const cv = $('#grid-result-canvas');
-    console.log('[gridDrawResult] START cv=', !!cv, 'warp=', !!grid.warp, 'cells=', !!(grid.cells && grid.cells.length));
+    console.log('[gridDrawResult] v10 START cv=', !!cv, 'warp=', !!grid.warp, 'cells=', !!(grid.cells && grid.cells.length));
     if (!cv || !grid.warp || !grid.cells) { console.warn('[gridDrawResult] EARLY RETURN'); return; }
     const w = grid.warp.width, h = grid.warp.height;
-    // 先设尺寸再画（设 width/height 会清空画布，必须在 drawImage 前）
+    // 用 toDataURL 生成 <img> 显示 warp 内容（已证明可行，不受 canvas taint 影响）
+    let warpUrl = '';
+    try { warpUrl = grid.warp.toDataURL('image/png'); } catch(e) { console.warn('[gridDrawResult] toDataURL failed:', e.message); }
+    // 清除旧的调试 img（如果存在）
+    const oldImg = cv.parentNode.querySelector('#grid-warp-display-img');
+    if (oldImg) oldImg.remove();
+    if (warpUrl) {
+      const img = document.createElement('img');
+      img.id = 'grid-warp-display-img';
+      img.src = warpUrl;
+      img.style.cssText = 'display:block;width:100%;height:auto;border:2px solid #8b5cf6;min-height:200px;';
+      img.alt = '识别结果 (' + grid.cols + '×' + grid.rows + ')';
+      cv.parentNode.insertBefore(img, cv);
+      console.log('[gridDrawResult] IMG INSERTED', w+'x'+h);
+    }
+    // canvas 改为透明叠加层：只画网格线 + 高亮（不画图像内容）
     cv.width = w; cv.height = h;
-    // 确保可见：强制内联样式覆盖任何 CSS 冲突
-    cv.style.cssText = 'display:block;width:100%;height:auto;border:2px solid #8b5cf6;min-height:200px;';
+    cv.style.cssText = 'display:block;width:100%;height:auto;position:relative;margin-top:-' + h + 'px;pointer-events:none;border:none;';
     const ctx = cv.getContext('2d');
-    ctx.drawImage(grid.warp, 0, 0);
-    // 诊断：确认 drawImage 后四角+中心像素
-    const corners = [
-      ctx.getImageData(0, 0, 1, 1).data,
-      ctx.getImageData(w-1, 0, 1, 1).data,
-      ctx.getImageData(0, h-1, 1, 1).data,
-      ctx.getImageData(Math.floor(w/2), Math.floor(h/2), 1, 1).data
-    ];
-    console.log('[gridDrawResult] OK drew', w+'x'+h, 'TL='+corners[0].slice(0,3).join(',')+' TR='+corners[1].slice(0,3).join(',')+' BL='+corners[2].slice(0,3).join(',')+' C='+corners[3].slice(0,3).join(','));
     const cw = w / grid.cols, ch = h / grid.rows;
-    ctx.strokeStyle = 'rgba(0,0,0,0.12)'; ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(0,0,0,0.15)'; ctx.lineWidth = 1;
     for (let c = 0; c <= grid.cols; c++) { ctx.beginPath(); ctx.moveTo(c * cw, 0); ctx.lineTo(c * cw, h); ctx.stroke(); }
     for (let r = 0; r <= grid.rows; r++) { ctx.beginPath(); ctx.moveTo(0, r * ch); ctx.lineTo(w, r * ch); ctx.stroke(); }
-    if (grid.highlight) {
-      ctx.fillStyle = 'rgba(255,255,255,0.6)';
-      ctx.fillRect(0, 0, w, h);
+    // 高亮模式：在另一个 canvas 上只显示匹配格子
+    if (grid.highlight && warpUrl) {
+      const hlCv = document.createElement('canvas');
+      hlCv.id = 'grid-highlight-canvas';
+      hlCv.width = w; hlCv.height = h;
+      hlCv.style.cssText = 'display:block;width:100%;height:auto;margin-top:8px;border:2px dashed #ef4444;';
+      const hlCtx = hlCv.getContext('2d');
+      hlCtx.fillStyle = 'rgba(255,255,255,0.65)';
+      hlCtx.fillRect(0, 0, w, h);
       for (let r = 0; r < grid.rows; r++) {
         for (let c = 0; c < grid.cols; c++) {
           if (grid.cells[r][c] && grid.cells[r][c].code === grid.highlight) {
             const x = c * cw, y = r * ch;
-            ctx.drawImage(grid.warp, x, y, cw, ch, x, y, cw, ch);
+            hlCtx.drawImage(grid.warp, x, y, cw, ch, x, y, cw, ch);
             const bead = beadByCode(grid.highlight);
-            ctx.strokeStyle = bead ? bead.hex : '#ef4444';
-            ctx.lineWidth = Math.max(2, cw * 0.06);
-            ctx.strokeRect(x + 1, y + 1, cw - 2, ch - 2);
+            hlCtx.strokeStyle = bead ? bead.hex : '#ef4444';
+            hlCtx.lineWidth = Math.max(2, cw * 0.06);
+            hlCtx.strokeRect(x + 1, y + 1, cw - 2, ch - 2);
           }
         }
       }
+      const ref = document.getElementById('grid-warp-display-img');
+      if (ref && ref.parentNode) ref.parentNode.insertBefore(hlCv, ref.nextSibling);
+      else cv.parentNode.appendChild(hlCv);
     }
+    console.log('[gridDrawResult] v10 DONE');
   }
   function gridCodeCounts() {
     const m = new Map();
