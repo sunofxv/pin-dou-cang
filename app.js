@@ -5495,7 +5495,9 @@ C25   2</pre>
     console.log('[gridCalibClick] fired, p=', p.x.toFixed(1)+','+p.y.toFixed(1), 'calib=', !!grid.calib, 'active=', !!(grid.calib&&grid.calib.active));
     if (!grid.calib || !grid.calib.active || !grid.align || !grid.imgEl) return;
     const iw = grid.imgEl.width, ih = grid.imgEl.height;
-    const sc = cv.width / iw; // canvas px -> image px
+    const _cv = $('#grid-align-canvas');
+    if (!_cv) return;
+    const sc = _cv.width / iw; // canvas px -> image px
     const imgX = p.x / sc, imgY = p.y / sc;
     grid.calib.pts.push({ x: imgX, y: imgY });
     const status = $('#grid-calib-status');
