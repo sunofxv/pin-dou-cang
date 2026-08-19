@@ -5499,6 +5499,11 @@ C25   2</pre>
     if (!_cv) return;
     const sc = _cv.width / iw; // canvas px -> image px
     const imgX = p.x / sc, imgY = p.y / sc;
+    // 防重复：touch+click 同帧 / 双击同一处 → 同坐标会被记两次导致 P1=P2 距离0崩溃
+    if (grid.calib.pts.length) {
+      const last = grid.calib.pts[grid.calib.pts.length - 1];
+      if (Math.hypot(imgX - last.x, imgY - last.y) < 2) { console.log('[gridCalibClick] ignored: too close to last pt'); return; }
+    }
     grid.calib.pts.push({ x: imgX, y: imgY });
     const status = $('#grid-calib-status');
     if (grid.calib.pts.length === 1) {
@@ -5524,12 +5529,14 @@ C25   2</pre>
     const iw = grid.imgEl.width, ih = grid.imgEl.height;
     const A = grid.calib.pts[0], B = grid.calib.pts[1];
     const vx = B.x - A.x, vy = B.y - A.y;
+    const distAB = Math.hypot(vx, vy);
+    if (distAB < 5) return toast('两个交点太近（' + distAB.toFixed(0) + 'px），请点两个相距较远的交点（至少几十像素）', 'error');
     const det = dc * dc + dr * dr;
     const Kc = (vx * dc + vy * dr) / det; // = cellPx*cos(rot)
     const Ks = (vy * dc - vx * dr) / det; // = cellPx*sin(rot)
     const cellPx = Math.sqrt(Kc * Kc + Ks * Ks);
     const rot = Math.atan2(Ks, Kc);
-    if (!(cellPx > 0) || !isFinite(cellPx)) return toast('校准失败：距离/格数异常', 'error');
+    if (!(cellPx > 0) || !isFinite(cellPx)) { console.warn('[gridCalibApply] cellPx invalid', {vx, vy, dc, dr, det, Kc, Ks, cellPx}); return toast('校准失败：距离/格数异常（cellPx=' + cellPx.toFixed(1) + '，请确认两点相距较远且格数>0）', 'error'); }
     // 相位对齐：让 P1 精确落在交点上（中心点 = P1 沿 -dc,-dr 方向回退 cellPx 格）
     const centerX = A.x - (dc * Kc - dr * Ks);
     const centerY = A.y - (dc * Ks + dr * Kc);
