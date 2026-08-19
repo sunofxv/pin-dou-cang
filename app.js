@@ -5478,15 +5478,21 @@ C25   2</pre>
     const panel = $('#grid-calib-panel'); if (panel) panel.classList.remove('hidden');
     const status = $('#grid-calib-status');
     if (status) status.textContent = '请在图纸上点击第一个网格交点（P1）。';
+    const cv = $('#grid-align-canvas');
+    if (cv) cv.style.cursor = 'crosshair';
+    console.log('[gridStartCalib] calib active, cursor=crosshair');
     gridDrawAlign();
   }
   function gridStopCalib(keep) {
     if (!grid.calib) grid.calib = { active: false, pts: [] };
     grid.calib.active = false;
     const panel = $('#grid-calib-panel'); if (panel) panel.classList.add('hidden');
+    const cv = $('#grid-align-canvas');
+    if (cv) cv.style.cursor = '';
     if (!keep) gridDrawAlign();
   }
   function gridCalibClick(p) {
+    console.log('[gridCalibClick] fired, p=', p.x.toFixed(1)+','+p.y.toFixed(1), 'calib=', !!grid.calib, 'active=', !!(grid.calib&&grid.calib.active));
     if (!grid.calib || !grid.calib.active || !grid.align || !grid.imgEl) return;
     const iw = grid.imgEl.width, ih = grid.imgEl.height;
     const sc = cv.width / iw; // canvas px -> image px
@@ -5565,6 +5571,8 @@ C25   2</pre>
         ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
       }
     }
+    // 校准模式：保持十字光标
+    if (grid.calib && grid.calib.active) { const _ccv2 = $('#grid-align-canvas'); if (_ccv2) _ccv2.style.cursor = 'crosshair'; }
     if (grid.calib && grid.calib.active && grid.calib.pts && grid.calib.pts.length) {
       const scx = cv.width / iw, scy = cv.height / ih;
       grid.calib.pts.forEach((pt, idx) => {
@@ -5925,8 +5933,11 @@ C25   2</pre>
       if (grid.calib && grid.calib.active) return; // 校准模式下不拖十字
       if (!grid.align) return; const p = toCanvas(ev); if (hitCenter(p)) { dragging = true; ev.preventDefault(); }
     };
-    const calibClick = (ev) => { if (grid.calib && grid.calib.active) gridCalibClick(toCanvas(ev)); };
+    const calibClick = (ev) => { if (grid.calib && grid.calib.active) { ev.preventDefault(); gridCalibClick(toCanvas(ev)); } };
     cv.addEventListener('click', calibClick);
+    // 备用：touchend 也触发校准点击（部分设备/浏览器 touch 后不触发 click）
+    const calibTouchEnd = (ev) => { if (grid.calib && grid.calib.active) { ev.preventDefault(); const t = ev.changedTouches && ev.changedTouches[0]; if (t) gridCalibClick({ clientX: t.clientX, clientY: t.clientY }); } };
+    cv.addEventListener('touchend', calibTouchEnd);
     const move = (ev) => {
       if (!dragging) { cv.style.cursor = hitCenter(toCanvas(ev)) ? 'grab' : 'default'; return; }
       ev.preventDefault(); cv.style.cursor = 'grabbing';
