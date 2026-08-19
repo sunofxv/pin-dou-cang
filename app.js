@@ -5390,8 +5390,47 @@ C25   2</pre>
       const fbWhite = fbDiag[0]>250 && fbDiag[1]>250 && fbDiag[2]>250;
       console.log('[gridWarp] FALLBACK result:', fbWhite?'⚠️STILL_WHITE':'✅HAS_CONTENT', '('+fbDiag[0]+','+fbDiag[1]+','+fbDiag[2]+')');
     }
+    // 自动裁掉白边：扫描非白像素边界框，裁剪到内容区域
+    const cropped = autoCropCanvas(out);
+    if (cropped && cropped !== out) {
+      console.log('[gridWarp] AUTO-CROP', W+'x'+H, '->', cropped.width+'x'+cropped.height);
+      return cropped;
+    }
     return out;
-  }  function gridSanitizeCode(s) {
+  }
+  // 裁掉 canvas 四周的白边（容差阈值=240，即接近白的都算背景）
+  function autoCropCanvas(canvas, threshold) {
+    threshold = threshold || 240;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    if (w < 3 || h < 3) return canvas;
+    const data = ctx.getImageData(0, 0, w, h).data;
+    // 快速采样（每 4 像素取一点）加速
+    const step = Math.max(1, Math.floor(Math.min(w, h) / 200));
+    let top = h, bottom = 0, left = w, right = 0;
+    for (let y = 0; y < h; y += step) {
+      for (let x = 0; x < w; x += step) {
+        const i = (y * w + x) * 4;
+        if (data[i] < threshold || data[i+1] < threshold || data[i+2] < threshold) {
+          if (y < top) top = y;
+          if (y > bottom) bottom = y;
+          if (x < left) left = x;
+          if (x > right) right = x;
+        }
+      }
+    }
+    if (top >= bottom || left >= right) return canvas; // 全白，不裁
+    // 加 2px 边距
+    left = Math.max(0, left - 2); top = Math.max(0, top - 2);
+    right = Math.min(w - 1, right + 2); bottom = Math.min(h - 1, bottom + 2);
+    const cw = right - left + 1, ch = bottom - top + 1;
+    if (cw < w * 0.3 || ch < h * 0.3) return canvas; // 裁太多，不安全
+    const nc = document.createElement('canvas');
+    nc.width = cw; nc.height = ch;
+    nc.getContext('2d').drawImage(canvas, left, top, cw, ch, 0, 0, cw, ch);
+    return nc;
+  }
+  function gridSanitizeCode(s) {
     if (!s) return '';
     return String(s).toUpperCase().replace(/[\s\u3000]+/g, '').replace(/[^A-Z0-9-]/g, '').trim();
   }
@@ -5515,7 +5554,7 @@ C25   2</pre>
       const img = document.createElement('img');
       img.id = 'grid-warp-display-img';
       img.src = warpUrl;
-      img.style.cssText = 'display:block;width:100%;height:auto;border:3px solid #8b5cf6;border-radius:8px;background:#fff;';
+      img.style.cssText = 'display:block;width:100%;height:auto;max-width:none;border:3px solid #8b5cf6;border-radius:8px;background:#fff;object-fit:contain;';
       img.alt = '识别结果 ' + grid.cols + '×' + grid.rows;
       container.appendChild(img);
       img.onload = () => console.log('[gridDrawResult] IMG LOADED', img.naturalWidth, 'x', img.naturalHeight);
