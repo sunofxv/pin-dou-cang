@@ -6423,6 +6423,7 @@ ${hasCells ? `
               <button id="p-csv" class="flex-1 min-w-[40%] text-center px-3 py-2 rounded-xl bg-mk-sky text-mk-ink text-sm font-semibold">📄 导出用料 CSV</button>
               <button id="p-copy" class="flex-1 min-w-[40%] text-center px-3 py-2 rounded-xl bg-mk-lav text-mk-ink text-sm font-semibold">📋 复制文本</button>
               <button id="p-save" class="flex-1 min-w-[40%] text-center px-3 py-2 rounded-xl bg-mk-lemon text-mk-ink text-sm font-semibold">💾 保存到配方库</button>
+              <button id="p-save-gallery" class="flex-1 min-w-[40%] text-center px-3 py-2 rounded-xl bg-violet-500 hover:bg-violet-600 text-white text-sm font-semibold shadow-soft">📷 保存到图库</button>
               <button id="p-consume" class="flex-1 min-w-[100%] px-3 py-2 rounded-xl bg-mk-rose text-white text-sm font-semibold shadow-soft">✅ 进入确认面板 · 扣减库存</button>
             </div>
           </section>
@@ -6599,6 +6600,8 @@ ${hasCells ? `
     $('#p-csv').onclick = patternExportCSV;
     $('#p-copy').onclick = patternCopyText;
     $('#p-save').onclick = patternSaveRecipe;
+    const saveGalleryBtn = $('#p-save-gallery');
+    if (saveGalleryBtn) saveGalleryBtn.onclick = patternSaveToGallery;
     $('#p-consume').onclick = patternConsume;
     // 图纸名称（导出文件名）
     $('#p-name').oninput = () => { pName = $('#p-name').value; };
@@ -7985,8 +7988,7 @@ ${hasCells ? `
       </table>
       <p class="text-[11px] text-mk-sub mt-2">前 ${pPaletteReport.length} 色共占 ${totalShown}%（剩余 ${100 - totalShown}% 为背景白/网格）</p>`;
   }
-  function patternExportPNG() {
-    const safe = patternSafeName(pName);
+  function patternBuildPNGBoard() {
     const cp = pShowNumbers ? 30 : 20;     // 启用色号时格子大一些，文字才清楚
     const W = pCols * cp;
     const H_grid = pRows * cp;
@@ -8082,6 +8084,11 @@ ${hasCells ? `
       ctx.fillText('所需豆子数量：' + total, 8, sy + 14);
       ctx.fillText('图纸尺寸：' + pCols + ' × ' + pRows + '（共 ' + (pCols * pRows) + ' 格 · 已用 ' + total + ' 格）', 8, sy + 32);
     }
+    return cv;
+  }
+  function patternExportPNG() {
+    const safe = patternSafeName(pName);
+    const cv = patternBuildPNGBoard();
     const a = document.createElement('a');
     a.href = cv.toDataURL('image/png');
     a.download = `${safe}_${pCols}x${pRows}.png`;
@@ -8129,6 +8136,25 @@ ${hasCells ? `
     });
     save();
     toast('已保存到配方库，可随时回来编辑', 'success');
+  }
+  // 把当前图纸的 PNG 预览图存到图库：复用 patternBuildPNGBoard 拿图，组装 gallery item
+  async function patternSaveToGallery() {
+    const bom = patternBOM();
+    if (!bom.length) return toast('画布为空，无法保存', 'warn');
+    pName = ($('#p-name').value || '').trim();
+    const name = pName || ('拼豆图纸 ' + fmtTime(Date.now()));
+    const cv = patternBuildPNGBoard();
+    const dataURL = cv.toDataURL('image/png');
+    const id = 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const g = {
+      id, name, platform: '自制（图纸生成器）', author: '',
+      imageId: id, image: dataURL, imageStored: false, status: 'unmade', legend: null,
+      createdAt: Date.now()
+    };
+    state.gallery.unshift(g);
+    await persistGalleryImage(g);   // 写 IndexedDB 并摘掉 localStorage 大图
+    save();
+    toast('已保存到图库「' + name + '」', 'success', 3200);
   }
   function patternConsume() {
     const bom = patternBOM();
