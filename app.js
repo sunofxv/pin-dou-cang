@@ -5598,17 +5598,16 @@ C25   2</pre>
     ctx.beginPath(); ctx.arc(ctr.x, ctr.y, 6, 0, Math.PI * 2); ctx.fillStyle = '#ef4444'; ctx.fill();
     ctx.restore();
   }
-  // 结果渲染 v12：<img> 显示 warp + 绝对定位 overlay 叠加网格线+高亮 + 点击交互
-  // v11 问题：overlay 在 img 下方(flex列)、drawImage taint 失败导致白底、click 绑到 display:none 的 result-canvas
+  // 结果渲染 v13：原图 <img> 直接显示 + 绝对定位 overlay 画网格/标签/高亮
+  // 彻底解决 canvas taint 导致 drawImage 静默失败→白底的问题：
+  // 不再通过 canvas drawImage 复制原图像素，而是直接将原图作为 <img> 显示，
+  // 再用透明 overlay canvas 在上面画网格线、识别文字标签和高亮。
   function gridDrawResult() {
     const cv = $('#grid-result-canvas');
-    console.log('[gridDrawResult] v12 START cv=', !!cv, 'warp=', !!grid.warp, 'cells=', !!(grid.cells && grid.cells.length));
-    if (!cv || !grid.warp || !grid.cells) { console.warn('[gridDrawResult] EARLY RETURN'); return; }
-    const w = grid.warp.width, h = grid.warp.height;
+    console.log('[gridDrawResult] v13 START imgEl=', !!grid.imgEl, 'align=', !!grid.align, 'cells=', !!(grid.cells && grid.cells.length));
+    if (!cv || !grid.imgEl || !grid.align || !grid.cells) { console.warn('[gridDrawResult] EARLY RETURN'); return; }
     const cols = grid.cols, rows = grid.rows;
-
-    let warpUrl = '';
-    try { warpUrl = grid.warp.toDataURL('image/png'); } catch(e) { console.warn('[gridDrawResult] toDataURL failed:', e.message); }
+    if (!cols || !rows) { console.warn('[gridDrawResult] no cols/rows'); return; }
 
     // 清除旧元素
     ['grid-warp-display-img','grid-highlight-canvas','grid-grid-overlay','grid-result-wrapper'].forEach(id => {
@@ -5621,83 +5620,170 @@ C25   2</pre>
     if (!container) {
       container = document.createElement('div');
       container.id = 'grid-result-container';
-      container.style.cssText = 'width:100%;';
+      container.style.cssText = 'width:100%;max-width:100%;overflow-x:auto;';
       cv.parentNode.insertBefore(container, cv);
     } else {
       container.innerHTML = '';
     }
 
-    // ===== 核心：relative wrapper 让 img 和 overlay 叠加 =====
+    // ===== relative wrapper 让 img 和 overlay 叠加 =====
     const wrapper = document.createElement('div');
     wrapper.id = 'grid-result-wrapper';
-    wrapper.style.cssText = 'position:relative;display:inline-block;width:100%;border:3px solid #8b5cf6;border-radius:8px;overflow:hidden;background:#fff;';
+    wrapper.style.cssText = 'position:relative;display:inline-block;border:3px solid #8b5cf6;border-radius:8px;overflow:hidden;background:#fff;';
     container.appendChild(wrapper);
 
-    // 1) 主图 <img>
-    if (warpUrl && warpUrl.length > 1000) {
-      const img = document.createElement('img');
-      img.id = 'grid-warp-display-img';
-      img.src = warpUrl;
-      img.style.cssText = 'display:block;width:100%;height:auto;';
-      img.alt = '识别结果 ' + cols + '×' + rows;
-      wrapper.appendChild(img);
-      img.onload = () => console.log('[gridDrawResult] IMG LOADED', img.naturalWidth, 'x', img.naturalHeight);
-      img.onerror = (e) => console.error('[gridDrawResult] IMG LOAD ERROR', e);
-    } else {
-      console.warn('[gridDrawResult] warpUrl empty, using fallback canvas');
-      const fc = document.createElement('canvas');
-      fc.id = 'grid-warp-display-canvas';
-      fc.width = w; fc.height = h;
-      fc.style.cssText = 'display:block;width:100%;height:auto;';
-      fc.getContext('2d').fillStyle = '#eee'; fc.getContext('2d').fillRect(0,0,w,h);
-      wrapper.appendChild(fc);
-    }
+    // 1) 主图：直接用原图 imgEl（避免任何 canvas drawImage → 无 taint 问题）
+    const srcImg = grid.imgEl;
+    const img = document.createElement('img');
+    img.id = 'grid-warp-display-img';
+    // 用当前 src（可能是 blob URL / data URL / remote URL）
+    img.src = srcImg.currentSrc || srcImg.src;
+    img.style.cssText = 'display:block;width:100%;height:auto;max-width:900px;';
+    img.alt = '图纸 ' + cols + '×' + rows;
+    img.crossOrigin = 'anonymous';
+    wrapper.appendChild(img);
+    img.onload = () => console.log('[gridDrawResult] IMG LOADED', img.naturalWidth, 'x', img.naturalHeight, 'src=', img.src.substring(0, 80));
+    img.onerror = (e) => console.error('[gridDrawResult] IMG LOAD ERROR', e);
 
-    // 2) 网格线 + 高亮 overlay（绝对定位覆盖在图上）
-    const overlay = document.createElement('canvas');
-    overlay.id = 'grid-grid-overlay';
-    overlay.width = w; overlay.height = h;
-    overlay.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;';
-    wrapper.appendChild(overlay);
-    const octx = overlay.getContext('2d');
-    const cw = w / cols, ch = h / rows;
+    // 2) 等图片加载后创建 overlay（需要知道实际显示尺寸来匹配）
+    const createOverlay = () => {
+      // 移除旧 overlay
+      const oldOv = document.getElementById('grid-grid-overlay');
+      if (oldOv) oldOv.remove();
 
-    // 画网格线
-    octx.strokeStyle = 'rgba(99,102,241,0.35)'; octx.lineWidth = 1;
-    for (let c = 0; c <= cols; c++) { octx.beginPath(); octx.moveTo(c*cw+0.5,0); octx.lineTo(c*cw+0.5,h); octx.stroke(); }
-    for (let r = 0; r <= rows; r++) { octx.beginPath(); octx.moveTo(0,r*ch+0.5); octx.lineTo(w,r*ch+0.5); octx.stroke(); }
+      const displayW = img.naturalWidth || srcImg.width || img.clientWidth || 600;
+      const displayH = img.naturalHeight || srcImg.height || img.clientHeight || 400;
+      // 如果图片还没加载完就用 client 尺寸
+      const ow = img.clientWidth || displayW;
+      const oh = img.clientHeight || displayH;
+      if (ow < 10 || oh < 10) { console.warn('[gridDrawResult] overlay skip: too small', ow, oh); return; }
 
-    // 高亮：如果 grid.highlight 有值，给匹配格子涂半透明色
-    if (grid.highlight) {
-      const hlCode = grid.highlight;
-      let hlCount = 0;
+      const overlay = document.createElement('canvas');
+      overlay.id = 'grid-grid-overlay';
+      overlay.width = ow;
+      overlay.height = oh;
+      overlay.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;';
+      wrapper.appendChild(overlay);
+      const octx = overlay.getContext('2d');
+
+      // 用 align 参数算每个格子在显示图上的位置
+      const a = grid.align;
+      // 图像归一化坐标 -> overlay 像素坐标
+      const toPx = (nx, ny) => ({
+        x: nx * ow,
+        y: ny * oh
+      });
+      const centerPx = toPx(a.cx, a.cy);
+      // 格距（像素）
+      const cellWPx = (a.cell || 0.03) * ow;
+      const cellHPx = (a.cell || 0.03) * oh;
+      const rot = a.rot || 0;
+
+      // 画网格线：从中心向两边延伸
+      octx.strokeStyle = 'rgba(99,102,241,0.5)';
+      octx.lineWidth = 1;
+
+      // 预计算所有格子的四个角（带旋转）
+      const cellCorner = (cr, cc) => {
+        // 格子中心在归一化坐标
+        const dc = cc - (a.cols !== undefined ? (a.cols - 1) / 2 : cols / 2);
+        const dr = cr - (a.rows !== undefined ? (a.rows - 1) / 2 : rows / 2);
+        // 未旋转的偏移
+        let ux = dc * (a.cell || 0.03);
+        let uy = dr * (a.cell || 0.03);
+        // 旋转
+        const cos = Math.cos(rot), sin = Math.sin(rot);
+        const rx = ux * cos - uy * sin;
+        const ry = ux * sin + uy * cos;
+        return toPx(a.cx + rx, a.cy + ry);
+      };
+
+      // 画垂直网格线（列间）
+      for (let c = 0; c <= cols; c++) {
+        const topP = cellCorner(0, c);
+        const botP = cellCorner(rows, c);
+        octx.beginPath();
+        octx.moveTo(topP.x, topP.y);
+        octx.lineTo(botP.x, botP.y);
+        octx.stroke();
+      }
+      // 画水平网格线（行间）
+      for (let r = 0; r <= rows; r++) {
+        const leftP = cellCorner(r, 0);
+        const rightP = cellCorner(r, cols);
+        octx.beginPath();
+        octx.moveTo(leftP.x, leftP.y);
+        octx.lineTo(rightP.x, rightP.y);
+        octx.stroke();
+      }
+
+      // 在每个格子中心写识别到的色号文字
+      octx.textAlign = 'center';
+      octx.textBaseline = 'middle';
+      const fontSize = Math.max(9, Math.min(16, Math.min(cellWPx, cellHPx) * 0.45));
+      octx.font = 'bold ' + fontSize + 'px sans-serif';
+
+      let labeled = 0;
       for (let r = 0; r < rows; r++)
         for (let c = 0; c < cols; c++) {
           const cell = grid.cells[r] && grid.cells[r][c];
-          if (cell && cell.code === hlCode) {
-            octx.fillStyle = 'rgba(239,68,68,0.35)';
-            octx.fillRect(c*cw+1, r*ch+1, cw-2, ch-2);
-            octx.strokeStyle = 'rgba(220,38,38,0.8)'; octx.lineWidth = 2;
-            octx.strokeRect(c*cw+1, r*ch+1, cw-2, ch-2);
-            hlCount++;
-          }
+          if (!cell || !cell.code) continue;
+          const cp = cellCorner(r + 0.5, c + 0.5);
+          // 文字背景（提高可读性）
+          const text = String(cell.code);
+          const tw = octx.measureText(text).width;
+          octx.fillStyle = 'rgba(255,255,255,0.75)';
+          octx.fillRect(cp.x - tw/2 - 2, cp.y - fontSize/2 - 1, tw + 4, fontSize + 2);
+          // 文字
+          octx.fillStyle = '#1e1b4b';
+          octx.fillText(text, cp.x, cp.y);
+          labeled++;
         }
-      console.log('[gridDrawResult] HIGHLIGHT', hlCode, '->', hlCount, 'cells');
+      console.log('[gridDrawResult] OVERLAY', ow+'x'+oh, 'labeled=' + labeled + '/' + (cols*rows));
+
+      // 高亮
+      if (grid.highlight) {
+        const hlCode = grid.highlight;
+        let hlCount = 0;
+        for (let r = 0; r < rows; r++)
+          for (let c = 0; c < cols; c++) {
+            const cell = grid.cells[r] && grid.cells[r][c];
+            if (cell && cell.code === hlCode) {
+              const tl = cellCorner(r, c);
+              const br = cellCorner(r + 1, c + 1);
+              octx.fillStyle = 'rgba(239,68,68,0.35)';
+              octx.fillRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+              octx.strokeStyle = 'rgba(220,38,38,0.8)';
+              octx.lineWidth = 2;
+              octx.strokeRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+              hlCount++;
+            }
+        }
+        console.log('[gridDrawResult] HIGHLIGHT', hlCode, '->', hlCount, 'cells');
+      }
+    };
+
+    // 图片可能已加载或正在加载
+    if (img.complete && img.naturalWidth > 0) {
+      createOverlay();
+    } else {
+      img.onload = () => { createOverlay(); };
+      // 超时兜底：500ms 后即使没加载完也尝试
+      setTimeout(() => { if (!document.getElementById('grid-grid-overlay')) createOverlay(); }, 500);
     }
 
-    // 3) 点击交互：绑定到 wrapper（pointer-events:auto 覆盖 overlay 的 none）
+    // 3) 点击交互
     wrapper.style.cursor = 'pointer';
     const clickHandler = (ev) => {
-      // 找到 wrapper 内的图片/overlay 实际尺寸
       const rect = wrapper.getBoundingClientRect();
       const cx = ev.clientX !== undefined ? ev.clientX : (ev.changedTouches && ev.changedTouches[0] && ev.changedTouches[0].clientX);
       const cy = ev.clientY !== undefined ? ev.clientY : (ev.changedTouches && ev.changedTouches[0] && ev.changedTouches[0].clientY);
       if (cx == null || cy == null) return;
-      // 坐标映射到 overlay 的逻辑像素
-      const ox = (cx - rect.left) / rect.width * w;
-      const oy = (cy - rect.top) / rect.height * h;
-      const cc = Math.min(cols - 1, Math.max(0, Math.floor(ox / cw)));
-      const rr = Math.min(rows - 1, Math.max(0, Math.floor(oy / ch)));
+      const ox = (cx - rect.left) / rect.width * (img.naturalWidth || img.clientWidth || 800);
+      const oy = (cy - rect.top) / rect.height * (img.naturalHeight || img.clientHeight || 600);
+      // 反算格子坐标（简化：按均匀分布映射）
+      const cc = Math.min(cols - 1, Math.max(0, Math.floor(ox / ((img.naturalWidth || 800) / cols))));
+      const rr = Math.min(rows - 1, Math.max(0, Math.floor(oy / ((img.naturalHeight || 600) / rows))));
       console.log('[gridResultClick] cell', rr+1, 'x', cc+1, 'code=', grid.cells[rr] && grid.cells[rr][cc] ? grid.cells[rr][cc].code : '?');
       gridOpenCellEditor(rr, cc);
     };
@@ -5707,7 +5793,7 @@ C25   2</pre>
     // 4) 隐藏原 result-canvas
     cv.style.display = 'none';
 
-    console.log('[gridDrawResult] v12 DONE', w+'x'+h, cols+'x'+rows);
+    console.log('[gridDrawResult] v13 DONE', cols+'x'+rows);
   }
   function gridCodeCounts() {
     const m = new Map();
@@ -5864,38 +5950,110 @@ C25   2</pre>
     if (bar) bar.style.width = (Math.max(0, Math.min(100, pct || 0))) + '%';
     if (txt) txt.textContent = text || '';
   }
+  // v13: 云端视觉识别 — 直接从原图截取块（不走 warp canvas，避免 taint 静默失败）
+  // 核心改变：每块用"整图 drawImage + 裁剪区域"方式（同 gridDrawAlign 的成功路径），
+  // 而非从 warp（逐格 drawImage→全白）再裁剪。
   async function gridRecognizeVision(img) {
+    const iw = img.width || img.naturalWidth || 1;
+    const ih = img.height || img.naturalHeight || 1;
+    const a = grid.align;
+    const cols = grid.cols, rows = grid.rows;
+
+    // 仍创建 warp 给显示层用（gridDrawResult v13 已改为直接用原图，warp 仅作后备）
     const cellPx = gridCellPx();
-    const warp = gridWarp(img, grid.align, grid.cols, grid.rows, cellPx);
-    grid.warp = warp;
-    // 大模型无法一次吐出几千个色号（会截断/读不清）。切成接近方形的小块：
-    // 每块 <= ~300 格、图片近方形，模型在上下文分辨率下才读得清每个色号；逐块识别后拼回二维数组。
+    try { grid.warp = gridWarp(img, a, cols, rows, cellPx); } catch(e) { console.warn('[gridVision] warp failed (non-fatal):', e.message); }
+
+    // 分块参数
     const target = 300;
     const blockN = Math.max(1, Math.round(Math.sqrt(target)));
-    const blockCols = Math.max(1, Math.min(grid.cols, blockN));
-    const blockRows = Math.max(1, Math.min(grid.rows, blockN));
-    const nBc = Math.max(1, Math.ceil(grid.cols / blockCols));
-    const nBr = Math.max(1, Math.ceil(grid.rows / blockRows));
+    const bCols = Math.max(1, Math.min(cols, blockN));
+    const bRows = Math.max(1, Math.min(rows, blockN));
+    const nBc = Math.max(1, Math.ceil(cols / bCols));
+    const nBr = Math.max(1, Math.ceil(rows / bRows));
     const totalBlocks = nBc * nBr;
     grid.cells = [];
-    for (let r = 0; r < grid.rows; r++) grid.cells.push(new Array(grid.cols).fill(null));
+    for (let r = 0; r < rows; r++) grid.cells.push(new Array(cols).fill(null));
     let doneBlocks = 0;
-    setGridProgress(2, '准备分块识别（' + grid.cols + '×' + grid.rows + '，共 ' + totalBlocks + ' 块）');
+    setGridProgress(2, '准备分块识别（' + cols + '×' + rows + '，共 ' + totalBlocks + ' 块）');
+
+    // 每块的输出尺寸（足够大让 AI 看清文字）
+    const outBlockPx = 296;
+
     for (let br = 0; br < nBr; br++) {
       if (grid.cancel) throw new Error('已取消');
-      const r0 = br * blockRows, rN = Math.min(grid.rows - r0, blockRows);
+      const r0 = br * bRows, rN = Math.min(rows - r0, bRows);
       for (let bc = 0; bc < nBc; bc++) {
         if (grid.cancel) throw new Error('已取消');
-        const c0 = bc * blockCols, cN = Math.min(grid.cols - c0, blockCols);
-        const x0 = Math.round(c0 * cellPx), y0 = Math.round(r0 * cellPx);
-        const bw = Math.round(cN * cellPx), bh = Math.round(rN * cellPx);
+        const c0 = bc * bCols, cN = Math.min(cols - c0, bCols);
+
+        // === 用原图直接绘制块区域（避免 taint）===
         const tmp = document.createElement('canvas');
-        tmp.width = bw; tmp.height = bh;
+        const bw_out = outBlockPx * cN;
+        const bh_out = outBlockPx * rN;
+        tmp.width = Math.max(bw_out, 64);
+        tmp.height = Math.max(bh_out, 64);
         const tctx = tmp.getContext('2d');
-        tctx.drawImage(warp, x0, y0, bw, bh, 0, 0, bw, bh);
-        const dataUrl = tmp.toDataURL('image/png');
+        tctx.fillStyle = '#fff';
+        tctx.fillRect(0, 0, tmp.width, tmp.height);
+
+        // 计算这个块在原图上的包围框（用四个角的归一化坐标）
+        const blockCorner = (cr, cc) => {
+          if (!a) return { x: cc / cols, y: cr / rows };
+          const dc = cc - ((a.cols !== undefined ? a.cols : cols) - 1) / 2;
+          const dr = cr - ((a.rows !== undefined ? a.rows : rows) - 1) / 2;
+          let ux = dc * (a.cell || 1/Math.max(cols, rows));
+          let uy = dr * (a.cell || 1/Math.max(cols, rows));
+          const rot = a.rot || 0;
+          const cos_r = Math.cos(rot), sin_r = Math.sin(rot);
+          return { x: a.cx + ux * cos_r - uy * sin_r, y: a.cy + ux * sin_r + uy * cos_r };
+        };
+
+        const tl = blockCorner(r0, c0);
+        const br_pt = blockCorner(r0 + rN, c0 + cN);
+
+        // 扩展 0.5 格 padding 让 AI 能看到格子边界
+        const pad = (a.cell || 0.02) * 0.6;
+        const sx = Math.max(0, (tl.x - pad) * iw);
+        const sy = Math.max(0, (tl.y - pad) * ih);
+        const sw = Math.min(iw - sx, (br_pt.x - tl.x + pad * 2) * iw);
+        const sh = Math.min(ih - sy, (br_pt.y - tl.y + pad * 2) * ih);
+
+        if (sw > 10 && sh > 10) {
+          // 关键：这里是对原图做单次 drawImage（和 gridDrawAlign 一样的成功路径）
+          try { tctx.drawImage(img, sx, sy, sw, sh, 0, 0, tmp.width, tmp.height); } catch(e) {
+            console.warn('[gridVision] block drawImage failed:', e.message, 'fallback to full image');
+            try { tctx.drawImage(img, 0, 0, tmp.width, tmp.height); } catch(e2) {
+              console.error('[gridVision] fallback also failed:', e2.message);
+            }
+          }
+        } else {
+          // 区间太小就画整图
+          try { tctx.drawImage(img, 0, 0, tmp.width, tmp.height); } catch(e) { /* ignore */ }
+        }
+
+        // 在块上画网格线帮助 AI 定位
+        tctx.strokeStyle = 'rgba(99,102,241,0.4)';
+        tctx.lineWidth = 1;
+        const tcw = tmp.width / cN, tch = tmp.height / rN;
+        for (let c = 0; c <= cN; c++) { tctx.beginPath(); tctx.moveTo(c*tcw, 0); tctx.lineTo(c*tcw, tmp.height); tctx.stroke(); }
+        for (let r = 0; r <= rN; r++) { tctx.beginPath(); tctx.moveTo(0, r*tch); tctx.lineTo(tmp.width, r*tch); tctx.stroke(); }
+
+        let dataUrl = '';
+        try { dataUrl = tmp.toDataURL('image/png'); } catch(e) {
+          console.warn('[gridVision] toDataURL failed:', e.message);
+          // 如果 toDataURL 失败（taint），发一个带提示的纯色图
+          const fallback = document.createElement('canvas');
+          fallback.width = 200; fallback.height = 80;
+          const fctx = fallback.getContext('2d');
+          fctx.fillStyle = '#fee2e2'; fctx.fillRect(0,0,200,80);
+          fctx.fillStyle = '#dc2626'; fctx.font = '14px sans-serif';
+          fctx.fillText('图像加载失败(跨域)', 30, 45);
+          dataUrl = fallback.toDataURL();
+        }
+
         const label = (br + 1) + '/' + nBr + ' 行块 · ' + (bc + 1) + '/' + nBc + ' 列块';
         setGridProgress(Math.round(doneBlocks / totalBlocks * 100), '识别中 第 ' + (doneBlocks + 1) + '/' + totalBlocks + ' 块（' + label + '）');
+
         let res, tries = 0;
         while (true) {
           try {
@@ -5923,30 +6081,55 @@ C25   2</pre>
     }
     setGridProgress(100, '识别完成');
   }
+  // v13: Tesseract 本地 OCR — 直接从原图截取每格（不走 warp canvas）
   async function gridRecognizeTesseract(img) {
+    const iw = img.width || img.naturalWidth || 1;
+    const ih = img.height || img.naturalHeight || 1;
+    const a = grid.align;
+    const cols = grid.cols, rows = grid.rows;
     const cellPx = gridCellPx();
-    const warp = gridWarp(img, grid.align, grid.cols, grid.rows, cellPx);
-    grid.warp = warp;
+    // warp 仅作后备（v13 显示层已不用）
+    try { grid.warp = gridWarp(img, a, cols, rows, cellPx); } catch(e) { console.warn('[gridTess] warp failed (non-fatal):', e.message); }
     const worker = await gridGetWorker();
     grid.cells = [];
-    for (let r = 0; r < grid.rows; r++) {
+    for (let r = 0; r < rows; r++) {
       const row = [];
-      for (let c = 0; c < grid.cols; c++) row.push({ code: '', src: '', conf: 0 });
+      for (let c = 0; c < cols; c++) row.push({ code: '', src: '', conf: 0 });
       grid.cells.push(row);
     }
-    const total = grid.rows * grid.cols;
+    const total = rows * cols;
     let done = 0;
-    const m = Math.round(cellPx * 0.12);
-    for (let r = 0; r < grid.rows; r++) {
-      for (let c = 0; c < grid.cols; c++) {
+    // 每格的采样尺寸（放大 2x 给 OCR）
+    const samplePx = Math.max(24, Math.round(cellPx * 0.7));
+    const outSz = samplePx * 2;
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
         if (grid.cancel) throw new Error('已取消');
-        const cw = cellPx - 2 * m, ch = cellPx - 2 * m;
         const tmp = document.createElement('canvas');
-        tmp.width = cw * 2; tmp.height = ch * 2;
+        tmp.width = outSz; tmp.height = outSz;
         const tctx = tmp.getContext('2d');
-        tctx.fillStyle = '#fff'; tctx.fillRect(0, 0, tmp.width, tmp.height);
+        tctx.fillStyle = '#fff'; tctx.fillRect(0, 0, outSz, outSz);
         tctx.imageSmoothingEnabled = true;
-        tctx.drawImage(warp, c * cellPx + m, r * cellPx + m, cw, ch, 0, 0, cw * 2, ch * 2);
+
+        // 用 gridCellCenter 算格子中心在原图的坐标，直接从原图截取
+        const ctr = gridCellCenter(a, r + 0.5, c + 0.5, iw, ih);
+        const halfCell = ((a && a.cell) || (1 / Math.max(cols, rows))) * 0.55;
+        let sx = (ctr.x - halfCell) * iw, sy = (ctr.y - halfCell) * ih;
+        let sw = halfCell * 2 * iw, sh = halfCell * 2 * ih;
+        // 边界钳制
+        if (sx < 0) { sw += sx; sx = 0; }
+        if (sy < 0) { sh += sy; sy = 0; }
+        if (sx + sw > iw) sw = iw - sx;
+        if (sy + sh > ih) sh = ih - sy;
+
+        if (sw > 2 && sh > 2) {
+          try { tctx.drawImage(img, sx, sy, sw, sh, 0, 0, outSz, outSz); } catch(e) {
+            // taint fallback：画整图缩略
+            try { tctx.drawImage(img, 0, 0, outSz, outSz); } catch(e2) { /* keep white */ }
+          }
+        }
+
         const { data } = await worker.recognize(tmp);
         grid.cells[r][c] = { code: gridSanitizeCode(data.text), src: 'ocr', conf: data.confidence || 0 };
         done++;
@@ -5954,7 +6137,7 @@ C25   2</pre>
           const pct = Math.round(done / total * 100);
           const bar = $('#grid-progress-bar'), txt = $('#grid-progress-text');
           if (bar) bar.style.width = pct + '%';
-          if (txt) txt.textContent = `已识别 ${done}/${total}`;
+          if (txt) txt.textContent = '已识别 ' + done + '/' + total;
         }
       }
     }
