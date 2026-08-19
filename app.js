@@ -5398,9 +5398,9 @@ C25   2</pre>
     }
     return out;
   }
-  // 裁掉 canvas 四周的白边（容差阈值=240，即接近白的都算背景）
+  // 裁掉 canvas 四周的白边（容差阈值=252，只裁纯白/近纯白区域，避免误裁浅色格子如G11/G17）
   function autoCropCanvas(canvas, threshold) {
-    threshold = threshold || 240;
+    threshold = threshold || 252;
     const ctx = canvas.getContext('2d');
     const w = canvas.width, h = canvas.height;
     if (w < 3 || h < 3) return canvas;
@@ -5598,84 +5598,116 @@ C25   2</pre>
     ctx.beginPath(); ctx.arc(ctr.x, ctr.y, 6, 0, Math.PI * 2); ctx.fillStyle = '#ef4444'; ctx.fill();
     ctx.restore();
   }
-  // 结果渲染 v11：用 <img> 显示 warp 产物（绕开 canvas drawImage 跨域/taint 静默失败）
-  // 核心发现：gridWarp 的 toDataURL 能产出有内容的 PNG（v9 调试 img 已验证），
-  // 但必须在正确的时机和位置插入 DOM
+  // 结果渲染 v12：<img> 显示 warp + 绝对定位 overlay 叠加网格线+高亮 + 点击交互
+  // v11 问题：overlay 在 img 下方(flex列)、drawImage taint 失败导致白底、click 绑到 display:none 的 result-canvas
   function gridDrawResult() {
     const cv = $('#grid-result-canvas');
-    console.log('[gridDrawResult] v11 START cv=', !!cv, 'warp=', !!grid.warp, 'cells=', !!(grid.cells && grid.cells.length));
+    console.log('[gridDrawResult] v12 START cv=', !!cv, 'warp=', !!grid.warp, 'cells=', !!(grid.cells && grid.cells.length));
     if (!cv || !grid.warp || !grid.cells) { console.warn('[gridDrawResult] EARLY RETURN'); return; }
     const w = grid.warp.width, h = grid.warp.height;
-
-    // 诊断：检查 warp canvas 本身是否有内容
-    let warpDataSize = 0, warpCenterPixel = [255,255,255];
-    try {
-      const wd = grid.warp.getContext('2d').getImageData(Math.floor(w/2), Math.floor(h/2), 1, 1).data;
-      warpCenterPixel = [wd[0], wd[1], wd[2]];
-    } catch(e) { console.warn('[gridDrawResult] warp getImageData failed (taint?):', e.message); }
+    const cols = grid.cols, rows = grid.rows;
 
     let warpUrl = '';
-    try {
-      warpUrl = grid.warp.toDataURL('image/png');
-      warpDataSize = warpUrl.length;
-    } catch(e) { console.warn('[gridDrawResult] toDataURL failed:', e.message); }
-    console.log('[gridDrawResult] v11 DIAG', w+'x'+h, 'warpCenter='+warpCenterPixel.join(','),
-      'dataURLsize='+warpDataSize, 'urlStarts='+warpUrl.substring(0,30));
+    try { warpUrl = grid.warp.toDataURL('image/png'); } catch(e) { console.warn('[gridDrawResult] toDataURL failed:', e.message); }
 
     // 清除旧元素
-    ['grid-warp-display-img','grid-highlight-canvas','grid-grid-overlay'].forEach(id => {
+    ['grid-warp-display-img','grid-highlight-canvas','grid-grid-overlay','grid-result-wrapper'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.remove();
     });
 
-    // 创建结果容器（确保布局独立）
+    // 创建结果容器
     let container = document.getElementById('grid-result-container');
     if (!container) {
       container = document.createElement('div');
       container.id = 'grid-result-container';
-      container.style.cssText = 'display:flex;flex-direction:column;gap:8px;width:100%;';
+      container.style.cssText = 'width:100%;';
       cv.parentNode.insertBefore(container, cv);
     } else {
       container.innerHTML = '';
     }
 
-    // 1) 主图 <img> —— 用 warp 的 toDataURL
-    if (warpUrl && warpDataSize > 1000) {
+    // ===== 核心：relative wrapper 让 img 和 overlay 叠加 =====
+    const wrapper = document.createElement('div');
+    wrapper.id = 'grid-result-wrapper';
+    wrapper.style.cssText = 'position:relative;display:inline-block;width:100%;border:3px solid #8b5cf6;border-radius:8px;overflow:hidden;background:#fff;';
+    container.appendChild(wrapper);
+
+    // 1) 主图 <img>
+    if (warpUrl && warpUrl.length > 1000) {
       const img = document.createElement('img');
       img.id = 'grid-warp-display-img';
       img.src = warpUrl;
-      img.style.cssText = 'display:block;width:100%;height:auto;max-width:none;border:3px solid #8b5cf6;border-radius:8px;background:#fff;object-fit:contain;';
-      img.alt = '识别结果 ' + grid.cols + '×' + grid.rows;
-      container.appendChild(img);
+      img.style.cssText = 'display:block;width:100%;height:auto;';
+      img.alt = '识别结果 ' + cols + '×' + rows;
+      wrapper.appendChild(img);
       img.onload = () => console.log('[gridDrawResult] IMG LOADED', img.naturalWidth, 'x', img.naturalHeight);
       img.onerror = (e) => console.error('[gridDrawResult] IMG LOAD ERROR', e);
     } else {
-      console.warn('[gridDrawResult] warpUrl empty or too small, skipping img');
-      // fallback：直接把 warp canvas 插入 DOM（canvas→DOM 不受 taint 影响）
-      grid.warp.style.cssText = 'display:block;width:100%;height:auto;border:3px solid #ef4444;border-radius:8px;';
-      grid.warp.id = 'grid-warp-display-canvas';
-      container.appendChild(grid.warp);
+      console.warn('[gridDrawResult] warpUrl empty, using fallback canvas');
+      const fc = document.createElement('canvas');
+      fc.id = 'grid-warp-display-canvas';
+      fc.width = w; fc.height = h;
+      fc.style.cssText = 'display:block;width:100%;height:auto;';
+      fc.getContext('2d').fillStyle = '#eee'; fc.getContext('2d').fillRect(0,0,w,h);
+      wrapper.appendChild(fc);
     }
 
-    // 2) 网格线叠加 canvas（透明，覆盖在图上）
+    // 2) 网格线 + 高亮 overlay（绝对定位覆盖在图上）
     const overlay = document.createElement('canvas');
     overlay.id = 'grid-grid-overlay';
     overlay.width = w; overlay.height = h;
-    overlay.style.cssText = 'display:block;width:100%;height:auto;border:1px solid rgba(128,128,128,0.3);border-radius:4px;';
-    container.appendChild(overlay);
+    overlay.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;';
+    wrapper.appendChild(overlay);
     const octx = overlay.getContext('2d');
-    octx.fillStyle = '#fff'; octx.fillRect(0, 0, w, h);
-    // 从 warp 复制像素到 overlay（如果 warp 可读）
-    try { octx.drawImage(grid.warp, 0, 0); } catch(e) { /* taint, skip */ }
-    const cw = w / grid.cols, ch = h / grid.rows;
-    octx.strokeStyle = 'rgba(0,0,0,0.2)'; octx.lineWidth = 1;
-    for (let c = 0; c <= grid.cols; c++) { octx.beginPath(); octx.moveTo(c*cw,0); octx.lineTo(c*cw,h); octx.stroke(); }
-    for (let r = 0; r <= grid.rows; r++) { octx.beginPath(); octx.moveTo(0,r*ch); octx.lineTo(w,r*ch); octx.stroke(); }
+    const cw = w / cols, ch = h / rows;
 
-    // 3) 隐藏原 result-canvas（保留但不显示）
+    // 画网格线
+    octx.strokeStyle = 'rgba(99,102,241,0.35)'; octx.lineWidth = 1;
+    for (let c = 0; c <= cols; c++) { octx.beginPath(); octx.moveTo(c*cw+0.5,0); octx.lineTo(c*cw+0.5,h); octx.stroke(); }
+    for (let r = 0; r <= rows; r++) { octx.beginPath(); octx.moveTo(0,r*ch+0.5); octx.lineTo(w,r*ch+0.5); octx.stroke(); }
+
+    // 高亮：如果 grid.highlight 有值，给匹配格子涂半透明色
+    if (grid.highlight) {
+      const hlCode = grid.highlight;
+      let hlCount = 0;
+      for (let r = 0; r < rows; r++)
+        for (let c = 0; c < cols; c++) {
+          const cell = grid.cells[r] && grid.cells[r][c];
+          if (cell && cell.code === hlCode) {
+            octx.fillStyle = 'rgba(239,68,68,0.35)';
+            octx.fillRect(c*cw+1, r*ch+1, cw-2, ch-2);
+            octx.strokeStyle = 'rgba(220,38,38,0.8)'; octx.lineWidth = 2;
+            octx.strokeRect(c*cw+1, r*ch+1, cw-2, ch-2);
+            hlCount++;
+          }
+        }
+      console.log('[gridDrawResult] HIGHLIGHT', hlCode, '->', hlCount, 'cells');
+    }
+
+    // 3) 点击交互：绑定到 wrapper（pointer-events:auto 覆盖 overlay 的 none）
+    wrapper.style.cursor = 'pointer';
+    const clickHandler = (ev) => {
+      // 找到 wrapper 内的图片/overlay 实际尺寸
+      const rect = wrapper.getBoundingClientRect();
+      const cx = ev.clientX !== undefined ? ev.clientX : (ev.changedTouches && ev.changedTouches[0] && ev.changedTouches[0].clientX);
+      const cy = ev.clientY !== undefined ? ev.clientY : (ev.changedTouches && ev.changedTouches[0] && ev.changedTouches[0].clientY);
+      if (cx == null || cy == null) return;
+      // 坐标映射到 overlay 的逻辑像素
+      const ox = (cx - rect.left) / rect.width * w;
+      const oy = (cy - rect.top) / rect.height * h;
+      const cc = Math.min(cols - 1, Math.max(0, Math.floor(ox / cw)));
+      const rr = Math.min(rows - 1, Math.max(0, Math.floor(oy / ch)));
+      console.log('[gridResultClick] cell', rr+1, 'x', cc+1, 'code=', grid.cells[rr] && grid.cells[rr][cc] ? grid.cells[rr][cc].code : '?');
+      gridOpenCellEditor(rr, cc);
+    };
+    wrapper.onclick = clickHandler;
+    wrapper.addEventListener('touchstart', (e) => { e.preventDefault(); clickHandler(e); }, { passive: false });
+
+    // 4) 隐藏原 result-canvas
     cv.style.display = 'none';
 
-    console.log('[gridDrawResult] v11 DONE');
+    console.log('[gridDrawResult] v12 DONE', w+'x'+h, cols+'x'+rows);
   }
   function gridCodeCounts() {
     const m = new Map();
@@ -5970,22 +6002,12 @@ C25   2</pre>
     cv.ondblclick = () => { grid.zoom = 1; gridDrawAlign(); };
   }
   function gridBindResult() {
-    const cv = $('#grid-result-canvas');
-    if (!cv || !grid.warp) return;
-    const handler = (ev) => {
-      const rect = cv.getBoundingClientRect();
-      const cx = ev.clientX !== undefined ? ev.clientX : (ev.changedTouches && ev.changedTouches[0] && ev.changedTouches[0].clientX);
-      const cy = ev.clientY !== undefined ? ev.clientY : (ev.changedTouches && ev.changedTouches[0] && ev.changedTouches[0].clientY);
-      if (cx == null || cy == null) return;
-      const x = (cx - rect.left) / rect.width * cv.width;
-      const y = (cy - rect.top) / rect.height * cv.height;
-      const cw = cv.width / grid.cols, ch = cv.height / grid.rows;
-      const c = Math.min(grid.cols - 1, Math.max(0, Math.floor(x / cw)));
-      const r = Math.min(grid.rows - 1, Math.max(0, Math.floor(y / ch)));
-      gridOpenCellEditor(r, c);
-    };
-    cv.onclick = handler;
-    cv.addEventListener('touchstart', (e) => { e.preventDefault(); handler(e); }, { passive: false });
+    // v12: 绑定到可见的 wrapper（不再绑定 display:none 的 result-canvas）
+    const wrapper = document.getElementById('grid-result-wrapper');
+    if (!wrapper) { console.warn('[gridBindResult] wrapper not found, fallback to canvas'); const cv = $('#grid-result-canvas'); if (!cv || !grid.warp) return; cv.onclick = (ev) => { /* no-op: canvas hidden */ }; return; }
+    // 点击交互已在 gridDrawResult 内部绑定到 wrapper
+    // 此函数保留用于未来扩展（如拖拽选区等）
+    console.log('[gridBindResult] v12 OK, click handler already on wrapper');
   }
   // ---- 剪裁模式：渲染剪裁画布 + 拖拽框选 ----
   let gridCropDrag = null; // {x0,y0,x1,y1} 归一化拖拽状态
