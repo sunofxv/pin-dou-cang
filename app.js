@@ -5471,6 +5471,71 @@ C25   2</pre>
     gridDrawAlign();
     toast(`已检测 ${det.cols} 列 × ${det.rows} 行，可拖动中心十字 + 调格子大小微调`, 'success');
   }
+  // ---- 两点校准：点两个真实交点 + 填相隔格数，反推精确 cell/rot 并做相位对齐 ----
+  function gridStartCalib() {
+    if (!grid.align || !grid.imgEl) return toast('请先上传/导入图纸并拖十字对准一个交点', 'warn');
+    grid.calib = { active: true, pts: [] };
+    const panel = $('#grid-calib-panel'); if (panel) panel.classList.remove('hidden');
+    const status = $('#grid-calib-status');
+    if (status) status.textContent = '请在图纸上点击第一个网格交点（P1）。';
+    gridDrawAlign();
+  }
+  function gridStopCalib(keep) {
+    if (!grid.calib) grid.calib = { active: false, pts: [] };
+    grid.calib.active = false;
+    const panel = $('#grid-calib-panel'); if (panel) panel.classList.add('hidden');
+    if (!keep) gridDrawAlign();
+  }
+  function gridCalibClick(p) {
+    if (!grid.calib || !grid.calib.active || !grid.align || !grid.imgEl) return;
+    const iw = grid.imgEl.width, ih = grid.imgEl.height;
+    const sc = cv.width / iw; // canvas px -> image px
+    const imgX = p.x / sc, imgY = p.y / sc;
+    grid.calib.pts.push({ x: imgX, y: imgY });
+    const status = $('#grid-calib-status');
+    if (grid.calib.pts.length === 1) {
+      if (status) status.textContent = '已记录 P1。请点击另一个远处交点（P2，尽量同一行/列、离 P1 远）。';
+    } else if (grid.calib.pts.length === 2) {
+      const A = grid.calib.pts[0], B = grid.calib.pts[1];
+      const dx = B.x - A.x, dy = B.y - A.y;
+      const curCellPx = Math.max(2, grid.align.cell * iw);
+      let dc, dr;
+      if (Math.abs(dx) >= Math.abs(dy)) { dc = Math.max(1, Math.round(Math.abs(dx) / curCellPx)); dr = 0; }
+      else { dc = 0; dr = Math.max(1, Math.round(Math.abs(dy) / curCellPx)); }
+      const dcEl = $('#grid-calib-dc'), drEl = $('#grid-calib-dr');
+      if (dcEl) dcEl.value = dc; if (drEl) drEl.value = dr;
+      if (status) status.textContent = '已记录 P2（距 P1 ' + Math.round(Math.hypot(dx, dy)) + 'px）。请确认两点间相隔的格数，再点「应用校准」。';
+    }
+    gridDrawAlign();
+  }
+  function gridCalibApply() {
+    if (!grid.calib || !grid.calib.pts || grid.calib.pts.length < 2 || !grid.align || !grid.imgEl) return toast('请先在图上点选两个交点', 'warn');
+    const dc = parseInt($('#grid-calib-dc').value, 10) || 0;
+    const dr = parseInt($('#grid-calib-dr').value, 10) || 0;
+    if (dc === 0 && dr === 0) return toast('横向/纵向格数不能都为 0', 'error');
+    const iw = grid.imgEl.width, ih = grid.imgEl.height;
+    const A = grid.calib.pts[0], B = grid.calib.pts[1];
+    const vx = B.x - A.x, vy = B.y - A.y;
+    const det = dc * dc + dr * dr;
+    const Kc = (vx * dc + vy * dr) / det; // = cellPx*cos(rot)
+    const Ks = (vy * dc - vx * dr) / det; // = cellPx*sin(rot)
+    const cellPx = Math.sqrt(Kc * Kc + Ks * Ks);
+    const rot = Math.atan2(Ks, Kc);
+    if (!(cellPx > 0) || !isFinite(cellPx)) return toast('校准失败：距离/格数异常', 'error');
+    // 相位对齐：让 P1 精确落在交点上（中心点 = P1 沿 -dc,-dr 方向回退 cellPx 格）
+    const centerX = A.x - (dc * Kc - dr * Ks);
+    const centerY = A.y - (dc * Ks + dr * Kc);
+    grid.align.cell = cellPx / iw;
+    grid.align.rot = rot;
+    grid.align.cx = Math.min(1, Math.max(0, centerX / iw));
+    grid.align.cy = Math.min(1, Math.max(0, centerY / ih));
+    const cellEl = $('#grid-cell'); if (cellEl) cellEl.value = Math.round(cellPx);
+    const rotEl = $('#grid-rot'); if (rotEl) rotEl.value = (rot * 180 / Math.PI).toFixed(2);
+    gridStopCalib(true);
+    gridDrawAlign();
+    toast('✓ 已校准：格距 ' + Math.round(cellPx) + 'px，旋转 ' + (rot * 180 / Math.PI).toFixed(2) + '°', 'success');
+  }
+
   // 对齐画布：原图 + 正交网格预览 + 中心十字手柄
   function gridDrawAlign() {
     const cv = $('#grid-align-canvas');
@@ -5499,6 +5564,14 @@ C25   2</pre>
         const A = node(ri, 0), B = node(ri, a.cols);
         ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
       }
+    }
+    if (grid.calib && grid.calib.active && grid.calib.pts && grid.calib.pts.length) {
+      const scx = cv.width / iw, scy = cv.height / ih;
+      grid.calib.pts.forEach((pt, idx) => {
+        ctx.fillStyle = '#22c55e';
+        ctx.beginPath(); ctx.arc(pt.x * scx, pt.y * scy, 7, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 11px sans-serif'; ctx.fillText('P' + (idx + 1), pt.x * scx + 9, pt.y * scy + 4);
+      });
     }
     const ctr = { x: a.cx * cv.width, y: a.cy * cv.height };
     ctx.save();
@@ -5848,7 +5921,12 @@ C25   2</pre>
       return { x: (cx - rect.left) / rect.width * cv.width, y: (cy - rect.top) / rect.height * cv.height };
     };
     const hitCenter = (p) => Math.hypot(p.x - grid.align.cx * cv.width, p.y - grid.align.cy * cv.height) < 24;
-    const down = (ev) => { if (!grid.align) return; const p = toCanvas(ev); if (hitCenter(p)) { dragging = true; ev.preventDefault(); } };
+    const down = (ev) => {
+      if (grid.calib && grid.calib.active) return; // 校准模式下不拖十字
+      if (!grid.align) return; const p = toCanvas(ev); if (hitCenter(p)) { dragging = true; ev.preventDefault(); }
+    };
+    const calibClick = (ev) => { if (grid.calib && grid.calib.active) gridCalibClick(toCanvas(ev)); };
+    cv.addEventListener('click', calibClick);
     const move = (ev) => {
       if (!dragging) { cv.style.cursor = hitCenter(toCanvas(ev)) ? 'grab' : 'default'; return; }
       ev.preventDefault(); cv.style.cursor = 'grabbing';
@@ -6024,7 +6102,7 @@ C25   2</pre>
         ${hasImg && grid.cropped ? `
         <section class="mk-card rounded-2xl shadow-soft p-5">
           <h3 class="font-bold mb-2">② 对齐网格</h3>
-          <p class="text-[11px] text-mk-sub mb-2">把图上的<span class="text-rose-500 font-semibold">红色十字</span>中心点拖到图纸某个网格交叉点上，再调「格子大小」让网格贴合图纸格子（可旋转校正倾斜）。先填列数/行数，或点「自动检测」。</p>
+          <p class="text-[11px] text-mk-sub mb-2">把图上的<span class="text-rose-500 font-semibold">红色十字</span>中心点拖到图纸某个网格交叉点上，再调「格子大小」让网格贴合。若远处仍对不齐（累积误差），用<span class="text-violet-600 font-semibold">📏 两点校准格距</span>：点两个真实交点 + 填相隔格数，系统自动算出精确格距与旋转。先填列数/行数，或点「自动检测」。</p>
           <div class="relative inline-block w-full">
             <div class="grid-canvas-wrap w-full rounded-xl border border-mk-sand bg-white overflow-auto" style="max-height:min(58vh,520px)"><canvas id="grid-align-canvas" class="block" style="touch-action:none;width:100%;height:auto;"></canvas></div>
           </div>
@@ -6032,6 +6110,17 @@ C25   2</pre>
             <label class="text-xs text-mk-sub">列数 <input id="grid-cols" type="number" min="1" max="400" value="${grid.cols || ''}" class="w-16 px-2 py-1 rounded bg-mk-sand/30 border border-mk-sand text-sm"></label>
             <label class="text-xs text-mk-sub">行数 <input id="grid-rows" type="number" min="1" max="400" value="${grid.rows || ''}" class="w-16 px-2 py-1 rounded bg-mk-sand/30 border border-mk-sand text-sm"></label>
             <button id="grid-auto" type="button" class="px-3 py-1.5 rounded-lg bg-mk-lav/70 text-mk-ink text-xs font-semibold hover:bg-mk-lav/90">🎯 自动检测网格</button>
+            <button id="grid-calib-btn" type="button" class="px-3 py-1.5 rounded-lg bg-violet-400/80 text-white text-xs font-semibold hover:bg-violet-400">📏 两点校准格距</button>
+            <div id="grid-calib-panel" class="hidden mt-3 p-3 bg-violet-50/60 rounded-xl border border-violet-200">
+              <p class="text-[11px] text-mk-sub mb-2">① 拖红色十字对准一个交点（已完成）→ ② 点上方「📏 两点校准格距」→ ③ 在图上点<span class="text-rose-500 font-semibold">另一个远处交点</span>（尽量同一行/列、离得远）→ ④ 填两点间相隔的格数 → 应用。</p>
+              <div class="flex flex-wrap items-center gap-3">
+                <label class="text-xs text-mk-sub">横向跨几格 <input id="grid-calib-dc" type="number" min="1" max="400" value="10" class="w-16 px-2 py-1 rounded bg-white border border-mk-sand text-sm"></label>
+                <label class="text-xs text-mk-sub">纵向跨几格 <input id="grid-calib-dr" type="number" min="0" max="400" value="0" class="w-16 px-2 py-1 rounded bg-white border border-mk-sand text-sm"></label>
+                <button id="grid-calib-apply" type="button" class="px-3 py-1.5 rounded-lg bg-mk-rose text-white text-xs font-semibold">✓ 应用校准</button>
+                <button id="grid-calib-cancel" type="button" class="px-3 py-1.5 rounded-lg bg-white border border-mk-sand text-mk-sub text-xs">取消</button>
+              </div>
+              <p id="grid-calib-status" class="text-[11px] text-violet-700 mt-2"></p>
+            </div>
           </div>
           <div class="flex flex-wrap items-center gap-3 mt-3">
             <label class="text-xs text-mk-sub">格子大小(px) <input id="grid-cell" type="number" min="2" max="4000" value="${grid.align ? Math.round(grid.align.cell * grid.imgEl.width) : ''}" class="w-20 px-2 py-1 rounded bg-mk-sand/30 border border-mk-sand text-sm"></label>
@@ -6115,6 +6204,12 @@ ${hasCells ? `
       if (ri) ri.oninput = () => { grid.rows = Math.max(0, parseInt(ri.value, 10) || 0); if (grid.align) grid.align.rows = grid.rows; gridDrawAlign(); };
       const autoBtn = $('#grid-auto');
       if (autoBtn) autoBtn.onclick = () => gridAutoDetect();
+      const calibBtn = $('#grid-calib-btn');
+      if (calibBtn) calibBtn.onclick = () => gridStartCalib();
+      const calibApply = $('#grid-calib-apply');
+      if (calibApply) calibApply.onclick = () => gridCalibApply();
+      const calibCancel = $('#grid-calib-cancel');
+      if (calibCancel) calibCancel.onclick = () => gridStopCalib(false);
       const cellEl = $('#grid-cell');
       if (cellEl) cellEl.oninput = () => {
         const v = parseInt(cellEl.value, 10);
